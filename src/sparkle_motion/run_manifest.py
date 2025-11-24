@@ -6,6 +6,8 @@ import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import os
+import tempfile
 
 
 @dataclass
@@ -51,8 +53,38 @@ class RunManifest:
         p = Path(path) if path is not None else self.path
         if p is None:
             raise RuntimeError("No path provided for saving manifest")
+        # Ensure parent exists
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"run_id": self.run_id, "events": self.events}, indent=2), encoding="utf-8")
+
+        # Write atomically: write to a temp file in the same directory, fsync,
+        # then atomically replace the target path. This avoids partial-file
+        # states if the process is killed while writing.
+        data = json.dumps({"run_id": self.run_id, "events": self.events}, indent=2)
+        dirpath = str(p.parent)
+        fd = None
+        tmp_path = None
+        try:
+            # Create a named temporary file in the same directory
+            fd, tmp_path = tempfile.mkstemp(prefix=".manifest-", dir=dirpath)
+            # Write bytes and force to disk
+            os.write(fd, data.encode("utf-8"))
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            # Atomically replace the target file
+            os.replace(tmp_path, str(p))
+            tmp_path = None
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
     @classmethod
     def load(cls, path: Path) -> "RunManifest":
