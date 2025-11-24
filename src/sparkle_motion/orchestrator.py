@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
+from .run_manifest import RunManifest, retry as manifest_retry
 
 
 def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float = 2.0, jitter: float = 0.2):
@@ -131,10 +132,21 @@ class Runner:
 
             print(f"[runner] running stage {stage_name}")
 
-            # run with retries
+            # create or load run manifest and save it at runs/<run_id>/manifest.json
+            manifest_path = run_dir / "manifest.json"
+            manifest = RunManifest(run_id=run_id, path=manifest_path)
+
+            # We need a small wrapper so the retry decorator can receive the manifest kwarg
+            def _stage_wrapper(mp, ar, rd, *, manifest=None):
+                # delegate to actual stage implementation; ignore manifest here
+                return stage_fn(mp, ar, rd)
+
+            # decorate wrapper with manifest-aware retry (records events)
+            wrapped = manifest_retry(max_attempts=3, base_delay=0.5, jitter=0.2, stage_name=stage_name)(_stage_wrapper)
+
+            # run the stage with retries and manifest recording
             try:
-                wrapped = retry_with_backoff(attempts=3)(stage_fn)
-                asset_refs = wrapped(movie_plan, asset_refs, run_dir)
+                asset_refs = wrapped(movie_plan, asset_refs, run_dir, manifest=manifest)
                 # persist asset_refs and checkpoint
                 self._write_json(asset_refs_path, asset_refs)
                 cp_obj = {
@@ -143,6 +155,11 @@ class Runner:
                     "timestamp": time.time(),
                 }
                 self._write_json(cp_path, cp_obj)
+                # persist manifest
+                try:
+                    manifest.save()
+                except Exception:
+                    print(f"[runner] warning: failed to save manifest for {run_id}")
             except Exception as e:
                 print(f"[runner] stage {stage_name} failed permanently: {e!r}")
                 cp_obj = {
@@ -152,6 +169,10 @@ class Runner:
                     "error": repr(e),
                 }
                 self._write_json(cp_path, cp_obj)
+                try:
+                    manifest.save()
+                except Exception:
+                    print(f"[runner] warning: failed to save manifest for failed stage {run_id}")
                 # stop the run on failure
                 break
 
