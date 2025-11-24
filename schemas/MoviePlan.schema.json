@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MoviePlan",
+  "type": "object",
+  "required": ["title", "shots"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Movie title"
+    },
+    "characters": {
+      "type": "array",
+      "description": "List of character specs",
+      "items": {"$ref": "#/definitions/CharacterSpec"},
+      "default": []
+    },
+    "shots": {
+      "type": "array",
+      "description": "Ordered list of shots",
+      "items": {"$ref": "#/definitions/ShotSpec"},
+      "minItems": 1
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional metadata (seed, model refs)",
+      "additionalProperties": {"type": "string"},
+      "default": {}
+    }
+  },
+  "definitions": {
+    "CharacterSpec": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        "description": {"type": ["string", "null"]},
+        "voice_profile": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "default": {}
+        }
+      }
+    },
+    "DialogueLine": {
+      "type": "object",
+      "required": ["character_id", "text"],
+      "properties": {
+        "character_id": {"type": "string"},
+        "text": {"type": "string"},
+        "start_time_sec": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "ShotSpec": {
+      "type": "object",
+      "required": ["id", "duration_sec", "visual_description", "start_frame_prompt", "end_frame_prompt"],
+      "properties": {
+        "id": {"type": "string"},
+        "duration_sec": {"type": "number", "exclusiveMinimum": 0},
+        "setting": {"type": ["string", "null"]},
+        "visual_description": {"type": "string"},
+        "start_frame_prompt": {"type": "string"},
+        "end_frame_prompt": {"type": "string"},
+        "motion_prompt": {"type": ["string", "null"]},
+        "is_talking_closeup": {"type": "boolean", "default": false},
+        "dialogue": {"type": "array", "items": {"$ref": "#/definitions/DialogueLine"}, "default": []}
+      }
+    },
+    "AssetRefsShot": {
+      "type": "object",
+      "properties": {
+        "start_frame": {"type": ["string", "null"]},
+        "end_frame": {"type": ["string", "null"]},
+        "raw_clip": {"type": ["string", "null"]},
+        "dialogue_audio": {"type": "array", "items": {"type": "string"}, "default": []},
+        "final_video_clip": {"type": ["string", "null"]}
+      }
+    },
+    "AssetRefs": {
+      "type": "object",
+      "properties": {
+        "shots": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/definitions/AssetRefsShot"},
+          "default": {}
+        },
+        "extras": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}}
+      }
+    },
+    "QAReportPerShot": {
+      "type": "object",
+      "required": ["shot_id", "prompt_match"],
+      "properties": {
+        "shot_id": {"type": "string"},
+        "prompt_match": {"type": "string"},
+        "finger_issues": {"type": "boolean", "default": false},
+        "artifact_notes": {"type": "array", "items": {"type": "string"}, "default": []}
+      }
+    },
+    "QAReport": {
+      "type": "object",
+      "properties": {
+        "movie_title": {"type": ["string", "null"]},
+        "per_shot": {"type": "array", "items": {"$ref": "#/definitions/QAReportPerShot"}, "default": []},
+        "summary": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "examples": [
+    {
+      "title": "Night Rooftop Confession",
+      "characters": [{"id": "c1", "name": "Ava"}],
+      "shots": [
+        {
+          "id": "shot_001",
+          "duration_sec": 8,
+          "visual_description": "Wide shot with neon signs",
+          "start_frame_prompt": "A neon-lit rooftop, rain...",
+          "end_frame_prompt": "Same rooftop, Ava closeup...",
+          "motion_prompt": "A slow dolly from wide to close",
+          "is_talking_closeup": true,
+          "dialogue": [{"character_id": "c1", "text": "I always loved you."}]
+        }
+      ],
+      "metadata": {"seed": "12345"}
+    }
+  ]
+}
