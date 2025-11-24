@@ -26,6 +26,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
 from .run_manifest import RunManifest, retry as manifest_retry
+from .services import ArtifactService, MemoryService, SessionContext, SessionService, ToolRegistry
+from .human_review import HumanReviewCoordinator, HumanReviewDecision
 
 
 def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float = 2.0, jitter: float = 0.2):
@@ -55,19 +57,29 @@ def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float
 
 
 class Runner:
-    """Simple stage runner.
+    """Simple stage runner that plugs into lightweight ADK-style services."""
 
-    Stages are a list of tuples (stage_name, stage_callable).
-    Each stage_callable receives (movie_plan: dict, asset_refs: dict, run_dir: Path)
-    and must return an updated asset_refs dict.
-    """
-
-    def __init__(self, runs_root: str = "runs") -> None:
+    def __init__(
+        self,
+        runs_root: str = "runs",
+        *,
+        session_service: Optional[SessionService] = None,
+        tool_registry: Optional[ToolRegistry] = None,
+        artifact_service_factory: Optional[Callable[[SessionContext], ArtifactService]] = None,
+        memory_service_factory: Optional[Callable[[SessionContext], MemoryService]] = None,
+        human_review_factory: Optional[Callable[[MemoryService], HumanReviewCoordinator]] = None,
+    ) -> None:
         self.runs_root = Path(runs_root)
-        self.runs_root.mkdir(parents=True, exist_ok=True)
+        self.session_service = session_service or SessionService(self.runs_root)
+        self.tool_registry = tool_registry or ToolRegistry()
+        self.artifact_service_factory = artifact_service_factory or (lambda session: ArtifactService(session))
+        self.memory_service_factory = memory_service_factory or (lambda session: MemoryService(session))
+        self.human_review_factory = human_review_factory or (lambda memory: HumanReviewCoordinator(memory))
 
-        # default stages order (placeholders)
-        self.stages: List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]] = [
+        self._stages: List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]] = []
+        self.stage_order: List[str] = []
+        # default stage registration
+        self.stages = [
             ("script", self.stage_script),
             ("images", self.stage_images),
             ("videos", self.stage_videos),
@@ -76,6 +88,22 @@ class Runner:
             ("assemble", self.stage_assemble),
             ("qa", self.stage_qa),
         ]
+
+    @property
+    def stages(self) -> List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]]:
+        return list(self._stages)
+
+    @stages.setter
+    def stages(self, new_stages: List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]]) -> None:
+        self._stages = list(new_stages)
+        self.stage_order = [name for name, _ in self._stages]
+        for stage_name, stage_fn in self._stages:
+            self.tool_registry.register(
+                name=stage_name,
+                description=f"Stage tool: {stage_name}",
+                func=stage_fn,
+                config={"category": "stage"},
+            )
 
     def _run_dir(self, run_id: str) -> Path:
         p = self.runs_root / run_id
@@ -86,6 +114,27 @@ class Runner:
         cp_dir = run_dir / "checkpoints"
         cp_dir.mkdir(parents=True, exist_ok=True)
         return cp_dir / f"{stage}.json"
+
+    def _load_movie_plan(self, movie_plan_path: Path) -> Dict[str, Any]:
+        if not movie_plan_path.exists():
+            raise FileNotFoundError(
+                f"Movie plan not found at {movie_plan_path}. Provide a movie_plan or run the full pipeline first."
+            )
+        return json.loads(movie_plan_path.read_text(encoding="utf-8"))
+
+    def _select_stages(self, *, start_stage: Optional[str], only_stage: Optional[str]) -> List[str]:
+        if start_stage and only_stage:
+            raise ValueError("start_stage and only_stage are mutually exclusive")
+        if only_stage:
+            if only_stage not in self.stage_order:
+                raise ValueError(f"Stage '{only_stage}' is not registered")
+            return [only_stage]
+        if start_stage:
+            if start_stage not in self.stage_order:
+                raise ValueError(f"Stage '{start_stage}' is not registered")
+            idx = self.stage_order.index(start_stage)
+            return self.stage_order[idx:]
+        return self.stage_order
 
     def _atomic_write_json(self, path: Path, obj: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,33 +224,40 @@ class Runner:
         }
         return payload
 
-    def run(self, movie_plan: Dict[str, Any], run_id: Optional[str] = None, resume: bool = False) -> Dict[str, Any]:
-        """Run the pipeline for the given movie_plan.
+    def run(
+        self,
+        movie_plan: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        resume: bool = False,
+        *,
+        start_stage: Optional[str] = None,
+        only_stage: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run the pipeline for the given movie_plan."""
 
-        Args:
-            movie_plan: plain dict representing the plan.
-            run_id: optional run id; if None, a timestamp-based id is created.
-            resume: if True, skip stages that have successful checkpoints.
+        session_ctx = self.session_service.create_session(run_id)
+        run_id = session_ctx.run_id
+        run_dir = session_ctx.run_dir
+        artifact_service = self.artifact_service_factory(session_ctx)
+        memory_service = self.memory_service_factory(session_ctx)
+        human_review = self.human_review_factory(memory_service) if self.human_review_factory else None
 
-        Returns:
-            final asset_refs dict (may be empty if nothing generated).
-        """
-
-        if run_id is None:
-            run_id = time.strftime("run_%Y%m%d_%H%M%S")
-
-        run_dir = self._run_dir(run_id)
         movie_plan_path = run_dir / "movie_plan.json"
         asset_refs_path = run_dir / "asset_refs.json"
 
-        # persist the input plan
-        self._atomic_write_json(movie_plan_path, movie_plan)
+        if movie_plan is None:
+            movie_plan = self._load_movie_plan(movie_plan_path)
+        else:
+            self._atomic_write_json(movie_plan_path, movie_plan)
+        artifact_service.register(name="movie_plan", path=movie_plan_path)
 
         # load existing asset_refs if present
         if asset_refs_path.exists():
             asset_refs = json.loads(asset_refs_path.read_text(encoding="utf-8"))
         else:
             asset_refs = {"shots": {}}
+            self._atomic_write_json(asset_refs_path, asset_refs)
+        artifact_service.register(name="asset_refs", path=asset_refs_path, metadata={"stage": "init"})
 
         # create or load run manifest and save it at runs/<run_id>/manifest.json
         manifest_path = run_dir / "manifest.json"
@@ -209,17 +265,24 @@ class Runner:
             try:
                 manifest = RunManifest.load(manifest_path)
             except Exception:
-                # if manifest is corrupted, start a fresh one but keep path
                 print("[runner] warning: failed to load existing manifest; creating a new one")
                 manifest = RunManifest(run_id=run_id, path=manifest_path)
         else:
             manifest = RunManifest(run_id=run_id, path=manifest_path)
 
-        for stage_name, stage_fn in self.stages:
+        selected_stages = self._select_stages(start_stage=start_stage, only_stage=only_stage)
+        force_rerun_stages = set(selected_stages) if (start_stage or only_stage) else set()
+
+        for stage_name in selected_stages:
+            try:
+                stage_spec = self.tool_registry.get(stage_name)
+            except KeyError as exc:
+                raise RuntimeError(f"Stage '{stage_name}' is not registered in the tool catalog") from exc
+            stage_fn = stage_spec.func
             cp_path = self._checkpoint_path(run_dir, stage_name)
 
             # If resume requested, consult both checkpoint file and manifest events
-            if resume:
+            if resume and stage_name not in force_rerun_stages:
                 skipped = False
                 if cp_path.exists():
                     try:
@@ -260,6 +323,7 @@ class Runner:
                 stage_end_time = time.time()
                 asset_refs, stage_metadata = self._normalize_stage_result(stage_result)
                 self._atomic_write_json(asset_refs_path, asset_refs)
+                artifact_service.register(name="asset_refs", path=asset_refs_path, metadata={"stage": stage_name})
                 attempts_used = manifest.last_attempt_for_stage(stage_name) if manifest else 1
                 metadata = self._finalize_stage_metadata(
                     stage_name=stage_name,
@@ -276,11 +340,60 @@ class Runner:
                     metadata=metadata,
                 )
                 self._atomic_write_json(cp_path, cp_obj)
+                memory_service.record_event(
+                    "stage_success",
+                    {
+                        "stage": stage_name,
+                        "attempt": attempts_used,
+                        "metadata": metadata,
+                    },
+                )
                 # persist manifest
                 try:
                     manifest.save()
                 except Exception:
                     print(f"[runner] warning: failed to save manifest for {run_id}")
+
+                # route QA decisions + artifacts
+                if stage_name == "qa":
+                    qa_report = run_dir / "qa_report.json"
+                    if qa_report.exists():
+                        artifact_service.register(name="qa_report", path=qa_report, metadata=metadata)
+                    decision = metadata.get("decision") or metadata.get("qa_decision")
+                    if decision:
+                        memory_service.record_event(
+                            "qa_decision",
+                            {"decision": decision, "issues_found": metadata.get("issues_found")},
+                        )
+
+                # handle human review gates
+                if human_review:
+                    if stage_name == "script":
+                        decision = human_review.require_script_signoff()
+                        if decision.status == "revise":
+                            memory_service.record_event(
+                                "human_review_blocked",
+                                {"stage": "script", "notes": decision.notes},
+                            )
+                            break
+                        if decision.status == "approved":
+                            memory_service.record_event(
+                                "human_review_approved",
+                                {"stage": "script", "notes": decision.notes},
+                            )
+                    if stage_name == "images":
+                        decision = human_review.require_images_signoff()
+                        if decision.status == "revise":
+                            memory_service.record_event(
+                                "human_review_blocked",
+                                {"stage": "images", "notes": decision.notes},
+                            )
+                            break
+                        if decision.status == "approved":
+                            memory_service.record_event(
+                                "human_review_approved",
+                                {"stage": "images", "notes": decision.notes},
+                            )
             except Exception as e:
                 print(f"[runner] stage {stage_name} failed permanently: {e!r}")
                 stage_end_time = time.time()
@@ -301,6 +414,14 @@ class Runner:
                     error=repr(e),
                 )
                 self._atomic_write_json(cp_path, cp_obj)
+                memory_service.record_event(
+                    "stage_failure",
+                    {
+                        "stage": stage_name,
+                        "attempt": attempts_used,
+                        "error": repr(e),
+                    },
+                )
                 try:
                     manifest.save()
                 except Exception:
@@ -401,7 +522,12 @@ class Runner:
             qa_result = qa_adapter.run_qa(movie_plan, asset_refs, run_dir)
             qa_path = run_dir / "qa_report.json"
             self._atomic_write_json(qa_path, qa_result)
-            return asset_refs
+            metadata = {
+                "qa_report": str(qa_path),
+                "decision": qa_result.get("decision"),
+                "issues_found": qa_result.get("issues_found"),
+            }
+            return asset_refs, metadata
         except MissingDependencyError as e:
             print(f"[adapter] QA adapter unavailable: {e}")
             qa = {"movie_title": movie_plan.get("title"), "per_shot": []}
@@ -409,7 +535,7 @@ class Runner:
                 qa["per_shot"].append({"shot_id": sid, "prompt_match": "unknown", "finger_issues": False, "artifact_notes": []})
             qa_path = run_dir / "qa_report.json"
             self._atomic_write_json(qa_path, qa)
-            return asset_refs
+            return asset_refs, {"qa_report": str(qa_path), "decision": "pending"}
 
 
 if __name__ == "__main__":
