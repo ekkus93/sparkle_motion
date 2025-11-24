@@ -33,18 +33,60 @@ Side-effects:
 | Stage name | Purpose / external dependency | Inputs consumed | Fields written in `AssetRefs` | Recommended checkpoint metadata |
 | --- | --- | --- | --- | --- |
 | `script` | Normalize `MoviePlan`, ensure every shot has an `AssetRefsShot` entry (no heavy model). | `MoviePlan.shots`, `MoviePlan.characters` | Creates `asset_refs.shots[shot_id]` dictionaries with empty `start_frame`, `end_frame`, `raw_clip`, `dialogue_audio`, `final_video_clip`. | `{"shots_initialized": <int>}` plus an `adapter` label (`"script_stub"`). |
-| `images` | Call SDXL (or fallback) to render keyframe PNGs. | `ShotSpec.start_frame_prompt`, `ShotSpec.end_frame_prompt`, optional `MoviePlan.metadata["seed"]`. | Populates `start_frame`/`end_frame` paths per shot. | `{"frames_written": <int>, "adapter": "sdxl"}` and optionally `seed` used. |
-| `videos` | Call Wan / video adapter to create motion clips. | Newly written keyframe paths, `ShotSpec.motion_prompt`, `duration_sec`. | Updates `raw_clip` per shot. | `{"clips_written": <int>, "adapter": "wan"}`. |
-| `tts` | Generate dialogue WAVs via TTS adapter. | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores a list of WAV paths in `dialogue_audio`. | `{"lines_synthesized": <int>}` and `voice_model`. |
-| `lipsync` | Wav2Lip (or stub) to merge audio + raw video. | `raw_clip`, `dialogue_audio`. | Writes `final_video_clip` per shot. | `{"clips_synced": <int>}` plus adapter identifier. |
+| `images` | Call SDXL (or fallback) to render keyframe PNGs. | `ShotSpec.start_frame_prompt`, `ShotSpec.end_frame_prompt`, optional `MoviePlan.metadata["seed"].` | Populates `start_frame`/`end_frame` paths per shot. | `{"frames_written": <int>, "adapter": "sdxl"}` and optionally `seed` used. |
+| `videos` | Call Wan / video adapter to create motion clips. | Newly written keyframe paths, `ShotSpec.motion_prompt`, `ShotSpec.duration_sec`. | Updates `raw_clip` per shot. | `{"clips_written": <int>, "adapter": "wan"}`. |
+| `tts` | Generate dialogue WAVs via TTS adapter. | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores a list of WAV paths in `dialogue_audio`. | `{"lines_synthesized": <int>, "voice_model": "polyglot-v1"}`. |
+| `lipsync` | Wav2Lip (or stub) to merge audio + raw video. | `raw_clip`, `dialogue_audio`. | Writes `final_video_clip` per shot. | `{"clips_synced": <int>, "adapter": "wav2lip"}`. |
 | `assemble` | Concatenate final clips, add BGM, output movie. | `final_video_clip` entries, `MoviePlan.metadata` (e.g., frame rate). | May record top-level extras such as `asset_refs.extras["final_movie"] = str(path)`. | `{"final_path": "movie_final.mp4", "duration": 12.4, "video_codec": "mpeg4", "audio_codec": "aac"}`. |
-| `qa` | Run automated QA (policy TBD) and persist report. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json`; `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>}`. |
+| `qa` | Run automated QA and persist report. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json`; `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>, "decision": "approve"}`. |
 
 Stages run in the order defined above. Each stage is responsible for:
 1. Reading only the inputs listed in the table (other keys are considered implementation detail and should not be relied upon).
 2. Writing artifacts to subdirectories of `run_dir` (never outside of the run sandbox).
 3. Updating `asset_refs` atomically (mutate then persist `runs/<run_id>/asset_refs.json`).
 4. Emitting a checkpoint JSON payload that captures the stage status and enough metadata for operators to reason about retries.
+
+#### Stage deep-dive
+
+Below is the canonical contract for each stage. When multiple adapters exist (e.g., SDXL vs. fallback), they must satisfy the same observable behavior and metadata.
+
+##### `script`
+- **Reads**: the entire `MoviePlan` plus referenced `CharacterSpec` entries.
+- **Writes**: initializes `asset_refs.shots[shot_id]` with placeholders; no filesystem assets are produced.
+- **Checkpoint metadata**: include `shots_initialized`, `characters_linked`, and the adapter name.
+- **Failure modes**: invalid `ShotSpec` references, duplicate shot IDs.
+
+##### `images`
+- **Reads**: prompts from each shot plus optional global seed.
+- **Writes**: PNG paths saved under `run_dir/frames/<shot_id>_{start,end}.png` and stored in `asset_refs`.
+- **Metadata**: `frames_written`, `adapter`, `seed`, and `avg_latency_ms` for observability.
+- **Notes**: Must detect missing prompts early and fail-fast.
+
+##### `videos`
+- **Reads**: keyframe paths, motion prompt, clip duration, optional fps.
+- **Writes**: MP4 files at `run_dir/videos/<shot_id>.mp4` stored as `raw_clip`.
+- **Metadata**: `clips_written`, `adapter`, `avg_decode_time_ms`.
+- **Notes**: Should propagate reference to the keyframes used for traceability.
+
+##### `tts`
+- **Reads**: `ShotSpec.dialogue` text and per-character `voice_profile`.
+- **Writes**: WAV files per line under `run_dir/audio/<shot_id>/<line>.wav` and list stored in `dialogue_audio`.
+- **Metadata**: `lines_synthesized`, `voice_model`, `characters_processed`.
+
+##### `lipsync`
+- **Reads**: `raw_clip` and `dialogue_audio` lists for each shot.
+- **Writes**: muxed clips under `run_dir/lipsync/<shot_id>.mp4` updating `final_video_clip`.
+- **Metadata**: `clips_synced`, `adapter`, `avg_rtf` (real-time factor).
+
+##### `assemble`
+- **Reads**: list of final per-shot clips plus global metadata (fps, soundtrack path).
+- **Writes**: final MP4 (and optional thumbnails) stored in `asset_refs.extras`.
+- **Metadata**: `final_path`, `duration_sec`, `video_codec`, `audio_codec`, `shots_used` (ordered list).
+
+##### `qa`
+- **Reads**: canonical QA policy, `MoviePlan`, `AssetRefs`.
+- **Writes**: `qa_report.json` under `run_dir`, checkpoint with decision, optional HTML summary.
+- **Metadata**: `qa_report`, `decision`, `issues_found`, `policy_version`.
 
 2) Checkpoint format
 ---------------------
@@ -58,8 +100,30 @@ The JSON payload must include the following fields:
 | `status` | `"begin" | "success" | "failed"` | ✅ | State of the most recent attempt. |
 | `timestamp` | `float` (epoch seconds) | ✅ | When the status was recorded. |
 | `attempt` | `int` | ✅ | 1-based attempt count for visibility when retries trigger. |
-| `error` | `str  optional` | ❌ | Present only when `status == "failed"`. |
+| `error` | `str | null` | ❌ | Present only when `status == "failed"`. |
 | `metadata` | `dict[str, Any]` | ✅ (can be empty) | Stage-specific summary: counts, codec names, adapter id, etc. |
+
+To keep the format machine-validated, we export the `Checkpoint` JSON Schema via `src/sparkle_motion/schemas.py`. Abbreviated schema (draft-07):
+
+```json
+{
+  "$id": "sparkle_motion/checkpoint.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["stage", "status", "timestamp", "attempt", "metadata"],
+  "properties": {
+    "stage": {"type": "string"},
+    "status": {"type": "string", "enum": ["begin", "success", "failed"]},
+    "timestamp": {"type": "number"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "error": {"type": ["string", "null"]},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}
+```
+
+Adapters should extend the `metadata` object with stage-specific keys but avoid removing the base properties. If a stage needs nested structures (e.g., per-shot stats), nest them under a descriptive key such as `"shots": {"s1": {...}}`.
 
 Example success checkpoint:
 
@@ -97,6 +161,13 @@ Status values:
 - `begin` — stage started (optional)
 - `success` — stage completed successfully
 - `failed` — stage failed and should be retried or investigated
+
+#### Checkpoint file layout
+
+- Directory: `runs/<run_id>/checkpoints/`
+- Filename: `<stage>.json` (e.g., `images.json`)
+- Write strategy: write to `<stage>.json.tmp` then atomically replace to avoid half-written JSON.
+- Lifecycle: checkpoints are append-only per attempt (each retry overwrites with the latest state plus incremented `attempt`).
 
 3) Manifest events
 ------------------

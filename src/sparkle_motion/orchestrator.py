@@ -16,10 +16,12 @@ implementations that call SDXL/Wan/TTS/Wav2Lip later.
 from __future__ import annotations
 
 import json
-import time
+import os
 import random
+import tempfile
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
@@ -85,8 +87,93 @@ class Runner:
         cp_dir.mkdir(parents=True, exist_ok=True)
         return cp_dir / f"{stage}.json"
 
-    def _write_json(self, path: Path, obj: Any) -> None:
-        path.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _atomic_write_json(self, path: Path, obj: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(obj, indent=2, ensure_ascii=False)
+        dir_path = str(path.parent)
+        fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", dir=dir_path)
+        tmp_file = None
+        try:
+            tmp_file = os.fdopen(fd, "w", encoding="utf-8")
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+            tmp_file.close()
+            tmp_file = None
+            os.replace(tmp_path, str(path))
+            tmp_path = None
+        finally:
+            if tmp_file is not None:
+                try:
+                    tmp_file.close()
+                except Exception:
+                    pass
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+    def _normalize_stage_result(self, result: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        metadata: Dict[str, Any] = {}
+        asset_refs = result
+        if isinstance(result, tuple) and len(result) == 2:
+            asset_refs = result[0]
+            maybe_meta = result[1]
+            if isinstance(maybe_meta, dict):
+                metadata = maybe_meta
+        return asset_refs, metadata
+
+    def _finalize_stage_metadata(
+        self,
+        *,
+        stage_name: str,
+        stage_fn: Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]],
+        asset_refs: Dict[str, Any],
+        run_dir: Path,
+        duration_sec: float,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "adapter": getattr(stage_fn, "__module__", stage_name).split(".")[-1],
+            "duration_sec": round(max(duration_sec, 0.0), 4),
+            "shots_total": len(asset_refs.get("shots", {})),
+        }
+
+        extras = extra_metadata or {}
+        for key, value in extras.items():
+            if value is None:
+                continue
+            metadata[key] = value
+
+        if stage_name == "qa":
+            metadata.setdefault("qa_report", str(run_dir / "qa_report.json"))
+        if stage_name == "assemble":
+            final_movie = asset_refs.get("extras", {}).get("final_movie") if isinstance(asset_refs, dict) else None
+            if final_movie:
+                metadata.setdefault("final_movie", final_movie)
+
+        return metadata
+
+    def _checkpoint_payload(
+        self,
+        *,
+        stage: str,
+        status: str,
+        attempt: Optional[int],
+        metadata: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        attempt_val = attempt if isinstance(attempt, int) and attempt > 0 else 1
+        payload = {
+            "stage": stage,
+            "status": status,
+            "timestamp": time.time(),
+            "attempt": attempt_val,
+            "error": error,
+            "metadata": metadata or {},
+        }
+        return payload
 
     def run(self, movie_plan: Dict[str, Any], run_id: Optional[str] = None, resume: bool = False) -> Dict[str, Any]:
         """Run the pipeline for the given movie_plan.
@@ -108,7 +195,7 @@ class Runner:
         asset_refs_path = run_dir / "asset_refs.json"
 
         # persist the input plan
-        self._write_json(movie_plan_path, movie_plan)
+        self._atomic_write_json(movie_plan_path, movie_plan)
 
         # load existing asset_refs if present
         if asset_refs_path.exists():
@@ -168,15 +255,27 @@ class Runner:
 
             # run the stage with retries and manifest recording
             try:
-                asset_refs = wrapped(movie_plan, asset_refs, run_dir, manifest=manifest)
-                # persist asset_refs and checkpoint
-                self._write_json(asset_refs_path, asset_refs)
-                cp_obj = {
-                    "stage": stage_name,
-                    "status": "success",
-                    "timestamp": time.time(),
-                }
-                self._write_json(cp_path, cp_obj)
+                stage_start_time = time.time()
+                stage_result = wrapped(movie_plan, asset_refs, run_dir, manifest=manifest)
+                stage_end_time = time.time()
+                asset_refs, stage_metadata = self._normalize_stage_result(stage_result)
+                self._atomic_write_json(asset_refs_path, asset_refs)
+                attempts_used = manifest.last_attempt_for_stage(stage_name) if manifest else 1
+                metadata = self._finalize_stage_metadata(
+                    stage_name=stage_name,
+                    stage_fn=stage_fn,
+                    asset_refs=asset_refs,
+                    run_dir=run_dir,
+                    duration_sec=stage_end_time - stage_start_time,
+                    extra_metadata=stage_metadata,
+                )
+                cp_obj = self._checkpoint_payload(
+                    stage=stage_name,
+                    status="success",
+                    attempt=attempts_used,
+                    metadata=metadata,
+                )
+                self._atomic_write_json(cp_path, cp_obj)
                 # persist manifest
                 try:
                     manifest.save()
@@ -184,13 +283,24 @@ class Runner:
                     print(f"[runner] warning: failed to save manifest for {run_id}")
             except Exception as e:
                 print(f"[runner] stage {stage_name} failed permanently: {e!r}")
-                cp_obj = {
-                    "stage": stage_name,
-                    "status": "failed",
-                    "timestamp": time.time(),
-                    "error": repr(e),
-                }
-                self._write_json(cp_path, cp_obj)
+                stage_end_time = time.time()
+                attempts_used = manifest.last_attempt_for_stage(stage_name) if manifest else 1
+                metadata = self._finalize_stage_metadata(
+                    stage_name=stage_name,
+                    stage_fn=stage_fn,
+                    asset_refs=asset_refs,
+                    run_dir=run_dir,
+                    duration_sec=stage_end_time - stage_start_time,
+                    extra_metadata={},
+                )
+                cp_obj = self._checkpoint_payload(
+                    stage=stage_name,
+                    status="failed",
+                    attempt=attempts_used,
+                    metadata=metadata,
+                    error=repr(e),
+                )
+                self._atomic_write_json(cp_path, cp_obj)
                 try:
                     manifest.save()
                 except Exception:
@@ -290,7 +400,7 @@ class Runner:
         try:
             qa_result = qa_adapter.run_qa(movie_plan, asset_refs, run_dir)
             qa_path = run_dir / "qa_report.json"
-            self._write_json(qa_path, qa_result)
+            self._atomic_write_json(qa_path, qa_result)
             return asset_refs
         except MissingDependencyError as e:
             print(f"[adapter] QA adapter unavailable: {e}")
@@ -298,7 +408,7 @@ class Runner:
             for sid in asset_refs.get("shots", {}).keys():
                 qa["per_shot"].append({"shot_id": sid, "prompt_match": "unknown", "finger_issues": False, "artifact_notes": []})
             qa_path = run_dir / "qa_report.json"
-            self._write_json(qa_path, qa)
+            self._atomic_write_json(qa_path, qa)
             return asset_refs
 
 

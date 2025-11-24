@@ -105,6 +105,16 @@ class RunManifest:
                 return ev.get("status")
         return None
 
+    def last_attempt_for_stage(self, stage: str) -> Optional[int]:
+        """Return the attempt counter recorded for the most recent stage event."""
+
+        for ev in reversed(self.events):
+            if ev.get("stage") == stage and "attempt" in ev:
+                attempt = ev.get("attempt")
+                if isinstance(attempt, int):
+                    return attempt
+        return None
+
 
 def retry(
     *,
