@@ -102,3 +102,39 @@ def test_manifest_save_is_atomic(tmp_path: Path) -> None:
     # There should be no temp manifest files left in the directory
     tmp_files = [x for x in p.parent.iterdir() if x.name.startswith(".manifest-")]
     assert not tmp_files, f"temp files left behind: {tmp_files}"
+
+
+def test_retry_decorator_fails_after_max_attempts() -> None:
+    """If the wrapped function always fails, the decorator should raise after max_attempts
+    and the manifest should contain the corresponding fail events."""
+    m = RunManifest(run_id="t_fail", path=None)
+
+    def always_fail(*, manifest: RunManifest = None):
+        raise RuntimeError("permanent")
+
+    wrapped = retry(max_attempts=2, base_delay=0.0, max_delay=0.0, jitter=0.0, stage_name="always_fail")(always_fail)
+
+    try:
+        wrapped(manifest=m)
+        assert False, "wrapped should have raised"
+    except RuntimeError:
+        pass
+
+    statuses = [e.get("status") for e in m.events]
+    assert statuses[0] == "begin"
+    # two fail attempts recorded
+    assert statuses.count("fail") == 2
+    assert "success" not in statuses
+
+
+def test_last_status_for_stage_returns_latest() -> None:
+    m = RunManifest(run_id="s_test", path=None)
+    m.add_event(StageEvent(run_id="s_test", stage="a", status="begin", timestamp=time.time(), attempt=0))
+    m.add_event(StageEvent(run_id="s_test", stage="a", status="fail", timestamp=time.time(), attempt=1))
+    m.add_event(StageEvent(run_id="s_test", stage="b", status="success", timestamp=time.time(), attempt=1))
+    # latest for stage 'a' should be 'fail'
+    assert m.last_status_for_stage("a") == "fail"
+    # latest for stage 'b' should be 'success'
+    assert m.last_status_for_stage("b") == "success"
+    # unknown stage returns None
+    assert m.last_status_for_stage("zzz") is None
