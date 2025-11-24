@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ekkus93/sparkle_motion/configs/qa_policy.schema.json",
+  "title": "Sparkle Motion QA Policy",
+  "type": "object",
+  "required": ["version", "thresholds", "actions"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Policy format version. Increment on breaking changes."
+    },
+    "thresholds": {
+      "type": "object",
+      "required": [
+        "prompt_match_min",
+        "max_finger_issue_ratio",
+        "allow_missing_audio",
+        "rerun_on_artifact_notes",
+        "min_audio_peak_db"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "prompt_match_min": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Cosine similarity threshold for prompt alignment."
+        },
+        "max_finger_issue_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Maximum ratio of frames allowed to report finger issues."
+        },
+        "allow_missing_audio": {
+          "type": "boolean",
+          "description": "When true, missing dialogue audio does not escalate automatically."
+        },
+        "rerun_on_artifact_notes": {
+          "type": "boolean",
+          "description": "If true, artifact notes trigger the regenerate path."
+        },
+        "min_audio_peak_db": {
+          "type": "number",
+          "description": "Minimum acceptable peak level (dB) for dialogue audio clips."
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "required": ["approve_if", "regenerate_if", "escalate_if"],
+      "additionalProperties": false,
+      "properties": {
+        "approve_if": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of predicates that must all be satisfied to approve a run."
+        },
+        "regenerate_if": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Predicates that trigger automatic regeneration of one or more stages."
+        },
+        "escalate_if": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Predicates that require human review before approving deliverables."
+        }
+      }
+    },
+    "regenerate_stages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["script", "images", "videos", "tts", "lipsync", "assemble", "qa"]
+      },
+      "description": "Ordered list of stages to rerun when regenerate conditions match."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form annotations such as owner, updated date, or contact info."
+    }
+  }
+}
