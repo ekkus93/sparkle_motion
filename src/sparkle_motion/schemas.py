@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class CharacterSpec(BaseModel):
@@ -76,8 +76,8 @@ class MoviePlan(BaseModel):
     shots: List[ShotSpec] = Field(default_factory=list)
     metadata: Dict[str, str] = Field(default_factory=dict)
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "title": "Night Rooftop Confession",
@@ -98,3 +98,4 @@ class MoviePlan(BaseModel):
                 }
             ]
         }
+    )

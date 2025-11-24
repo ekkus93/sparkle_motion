@@ -34,13 +34,11 @@ def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float
 
     def decorator(fn: Callable):
         def wrapper(*args, **kwargs):
-            last_exc = None
             delay = base_delay
             for attempt in range(1, attempts + 1):
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:
-                    last_exc = e
                     if attempt == attempts:
                         raise
                     # sleep with jitter
@@ -125,7 +123,7 @@ class Runner:
                 manifest = RunManifest.load(manifest_path)
             except Exception:
                 # if manifest is corrupted, start a fresh one but keep path
-                print(f"[runner] warning: failed to load existing manifest; creating a new one")
+                print("[runner] warning: failed to load existing manifest; creating a new one")
                 manifest = RunManifest(run_id=run_id, path=manifest_path)
         else:
             manifest = RunManifest(run_id=run_id, path=manifest_path)

@@ -34,6 +34,7 @@ def test_runner_resume_skips_completed_stages(tmp_path: Path):
 
     # run with resume=True — the runner should skip script/images and not overwrite their checkpoints
     out = runner.run(movie_plan=example, run_id=run_id, resume=True)
+    assert "shots" in out
 
     # ensure the preexisting checkpoint markers remain (i.e., they were not overwritten)
     assert json.loads(script_cp.read_text(encoding="utf-8")).get("marker") == "preexisting"

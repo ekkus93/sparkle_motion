@@ -75,7 +75,8 @@ def test_runner_reruns_failed_stage(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest_json), encoding="utf-8")
 
     # run with resume=True; runner should re-run images and produce a success checkpoint
-    out = runner.run(movie_plan=example, run_id=run_id, resume=True)
+    asset_refs = runner.run(movie_plan=example, run_id=run_id, resume=True)
+    assert asset_refs.get("shots", {}).get("s1") is not None
 
     # reload manifest and checkpoint to confirm success
     from sparkle_motion.run_manifest import RunManifest as RM

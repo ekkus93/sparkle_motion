@@ -35,7 +35,6 @@ def generate_frames(
 
   try:
     import torch
-    from PIL import Image
     from diffusers import StableDiffusionXLPipeline
   except Exception as e:  # ImportError or others
     raise MissingDependencyError(

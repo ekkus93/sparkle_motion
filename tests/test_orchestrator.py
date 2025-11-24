@@ -11,6 +11,7 @@ def test_runner_creates_checkpoints(tmp_path: Path):
     movie_plan = {"title": "t", "shots": [{"id": "s1", "duration_sec": 1.0, "visual_description": "x"}]}
     run_id = "test_run"
     asset_refs = runner.run(movie_plan=movie_plan, run_id=run_id, resume=False)
+    assert "shots" in asset_refs
 
     run_dir = runs_root / run_id
     assert run_dir.exists()

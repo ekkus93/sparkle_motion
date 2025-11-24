@@ -6,6 +6,9 @@ dependencies and where to implement a real adapter.
 """
 
 from .common import MissingDependencyError
+from .stub_adapter import StubAdapter, get_stub_adapter, StubAssetRef, AssemblyResult
+__all__ = ["MissingDependencyError", "StubAdapter", "get_stub_adapter", "StubAssetRef"]
+__all__ = ["MissingDependencyError", "StubAdapter", "get_stub_adapter", "StubAssetRef", "AssemblyResult"]
 
-__all__ = ["MissingDependencyError"]
+__all__ = ["MissingDependencyError", "StubAdapter", "get_stub_adapter", "StubAssetRef"]
 
