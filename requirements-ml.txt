@@ -1,0 +1,13 @@
+# Heavy ML requirements (install on a machine with sufficient disk/GPU).
+# On Google Colab prefer installing torch with the official CUDA wheel first
+# (see the notebook `notebooks/sparkle_motion.ipynb` for an example).
+ diffusers>=0.17
+ transformers>=4.30
+ accelerate
+ safetensors
+ huggingface_hub
+ bitsandbytes
+ xformers
+ Pillow
+ moviepy
+ ffmpeg-python
