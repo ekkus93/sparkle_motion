@@ -118,23 +118,47 @@ class Runner:
         else:
             asset_refs = {"shots": {}}
 
+        # create or load run manifest and save it at runs/<run_id>/manifest.json
+        manifest_path = run_dir / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = RunManifest.load(manifest_path)
+            except Exception:
+                # if manifest is corrupted, start a fresh one but keep path
+                print(f"[runner] warning: failed to load existing manifest; creating a new one")
+                manifest = RunManifest(run_id=run_id, path=manifest_path)
+        else:
+            manifest = RunManifest(run_id=run_id, path=manifest_path)
+
         for stage_name, stage_fn in self.stages:
             cp_path = self._checkpoint_path(run_dir, stage_name)
-            if resume and cp_path.exists():
+
+            # If resume requested, consult both checkpoint file and manifest events
+            if resume:
+                skipped = False
+                if cp_path.exists():
+                    try:
+                        cp = json.loads(cp_path.read_text(encoding="utf-8"))
+                        if cp.get("status") == "success":
+                            print(f"[runner] skipping stage {stage_name} (checkpoint success)")
+                            skipped = True
+                    except Exception:
+                        print(f"[runner] warning: failed to read checkpoint for {stage_name}; re-running")
+
+                # consult manifest events for a successful completion as well
                 try:
-                    cp = json.loads(cp_path.read_text(encoding="utf-8"))
-                    if cp.get("status") == "success":
-                        print(f"[runner] skipping stage {stage_name} (checkpoint success)")
-                        continue
+                    last_status = manifest.last_status_for_stage(stage_name)
+                    if last_status == "success":
+                        print(f"[runner] skipping stage {stage_name} (manifest indicates success)")
+                        skipped = True
                 except Exception:
-                    # if checkpoint is corrupted, we re-run stage
-                    print(f"[runner] warning: failed to read checkpoint for {stage_name}; re-running")
+                    # if manifest helper fails for any reason, ignore and proceed
+                    pass
+
+                if skipped:
+                    continue
 
             print(f"[runner] running stage {stage_name}")
-
-            # create or load run manifest and save it at runs/<run_id>/manifest.json
-            manifest_path = run_dir / "manifest.json"
-            manifest = RunManifest(run_id=run_id, path=manifest_path)
 
             # We need a small wrapper so the retry decorator can receive the manifest kwarg
             def _stage_wrapper(mp, ar, rd, *, manifest=None):

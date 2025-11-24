@@ -61,6 +61,18 @@ class RunManifest:
         m.events = data.get("events", [])
         return m
 
+    def last_status_for_stage(self, stage: str) -> Optional[str]:
+        """Return the most recent status for a given stage, or None if no events.
+
+        Status values are strings like "begin", "success", "fail" as recorded
+        in the events list. This helper scans events in reverse to find the
+        latest matching stage entry.
+        """
+        for ev in reversed(self.events):
+            if ev.get("stage") == stage:
+                return ev.get("status")
+        return None
+
 
 def retry(
     *,
