@@ -211,3 +211,4 @@ resources/
 .github/copilot-instructions.md
 memory.md
 tmp*/
+*.code-workspace
