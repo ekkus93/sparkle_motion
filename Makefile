@@ -14,5 +14,7 @@ test:
 
 .PHONY: lint
 lint:
+	@echo "Checking for legacy runner artifacts"
+	python scripts/check_no_legacy.py
 	@echo "Running ruff against '.'"
 	ruff check .
