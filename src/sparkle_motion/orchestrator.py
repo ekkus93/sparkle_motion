@@ -15,6 +15,7 @@ implementations that call SDXL/Wan/TTS/Wav2Lip later.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -22,6 +23,11 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events.event_actions import EventActions
+from google.adk.tools.tool_context import ToolContext
 
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
@@ -90,6 +96,10 @@ class Runner:
         )
         self.auto_regenerate_on_qa_fail = auto_regenerate_on_qa_fail
         self._auto_regen_active = False
+        self._agent_stub = BaseAgent(
+            name="sparkle_motion_runner",
+            description="Local runner orchestrating ADK FunctionTools",
+        )
 
         self._stages: List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]] = []
         self.stage_order: List[str] = []
@@ -412,13 +422,19 @@ class Runner:
 
         selected_stages = self._select_stages(start_stage=start_stage, only_stage=only_stage)
         force_rerun_stages = set(selected_stages) if (start_stage or only_stage) else set()
+        invocation_context = self._create_invocation_context(
+            session_ctx=session_ctx,
+            artifact_service=artifact_service,
+            memory_service=memory_service,
+        )
 
         for stage_name in selected_stages:
             try:
                 stage_spec = self.tool_registry.get(stage_name)
             except KeyError as exc:
                 raise RuntimeError(f"Stage '{stage_name}' is not registered in the tool catalog") from exc
-            stage_fn = stage_spec.func
+            stage_tool = stage_spec.function_tool
+            stage_fn = stage_tool.func
             cp_path = self._checkpoint_path(run_dir, stage_name)
 
             # If resume requested, consult both checkpoint file and manifest events
@@ -450,8 +466,17 @@ class Runner:
 
             # We need a small wrapper so the retry decorator can receive the manifest kwarg
             def _stage_wrapper(mp, ar, rd, *, manifest=None):
-                # delegate to actual stage implementation; ignore manifest here
-                return stage_fn(mp, ar, rd)
+                tool_context = self._build_tool_context(
+                    invocation_context=invocation_context,
+                    stage_name=stage_name,
+                )
+                return self._invoke_function_tool(
+                    stage_tool=stage_tool,
+                    movie_plan=mp,
+                    asset_refs=ar,
+                    run_dir=rd,
+                    tool_context=tool_context,
+                )
 
             # decorate wrapper with manifest-aware retry (records events)
             wrapped = manifest_retry(max_attempts=3, base_delay=0.5, jitter=0.2, stage_name=stage_name)(_stage_wrapper)
@@ -462,6 +487,11 @@ class Runner:
                 stage_result = wrapped(movie_plan, asset_refs, run_dir, manifest=manifest)
                 stage_end_time = time.time()
                 asset_refs, stage_metadata = self._normalize_stage_result(stage_result)
+                stage_metadata = dict(stage_metadata)
+                stage_metadata.setdefault("tool_name", stage_tool.name)
+                stage_metadata.setdefault("tool_description", stage_tool.description)
+                if stage_spec.config and "tool_config" not in stage_metadata:
+                    stage_metadata["tool_config"] = stage_spec.config
                 self._atomic_write_json(asset_refs_path, asset_refs)
                 artifact_service.register(name="asset_refs", path=asset_refs_path, metadata={"stage": stage_name})
                 attempts_used = manifest.last_attempt_for_stage(stage_name) if manifest else 1
@@ -670,6 +700,50 @@ class Runner:
             start_stage=None,
             only_stage=stage,
         )
+
+    def _create_invocation_context(
+        self,
+        *,
+        session_ctx: SessionContext,
+        artifact_service: ArtifactService,
+        memory_service: MemoryService,
+    ) -> InvocationContext:
+        return InvocationContext(
+            session_service=self.session_service.adk_service,
+            artifact_service=artifact_service.adk_artifact_service,
+            memory_service=memory_service.adk_memory_service,
+            session=session_ctx.adk_session,
+            agent=self._agent_stub,
+            invocation_id=f"runner-{session_ctx.run_id}-{int(time.time() * 1000)}",
+        )
+
+    def _build_tool_context(
+        self,
+        *,
+        invocation_context: InvocationContext,
+        stage_name: str,
+    ) -> ToolContext:
+        return ToolContext(
+            invocation_context=invocation_context,
+            function_call_id=f"{stage_name}-{int(time.time() * 1000)}",
+            event_actions=EventActions(),
+        )
+
+    def _invoke_function_tool(
+        self,
+        *,
+        stage_tool,
+        movie_plan: Dict[str, Any],
+        asset_refs: Dict[str, Any],
+        run_dir: Path,
+        tool_context: ToolContext,
+    ):
+        args = {
+            "movie_plan": movie_plan,
+            "asset_refs": asset_refs,
+            "run_dir": run_dir,
+        }
+        return asyncio.run(stage_tool.run_async(args=args, tool_context=tool_context))
 
     # --- stage implementations (call adapters when available; fallback to simulation) ---
     def stage_script(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:

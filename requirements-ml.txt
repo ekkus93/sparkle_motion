@@ -12,3 +12,4 @@
  moviepy
  ffmpeg-python
 PyYAML>=6.0
+google-adk

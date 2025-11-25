@@ -5,3 +5,4 @@ jsonschema>=4.0
 ruff
 Pillow
 PyYAML>=6.0
+google-adk
