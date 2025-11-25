@@ -71,6 +71,14 @@ These abstractions keep the runner faithful to ADK patterns while remaining ligh
   `run_events` so operators download a single JSON file for debugging or
   dashboards.
 
+#### Smoke test coverage
+
+- `tests/test_smoke.py` exercises the default stubbed adapters end-to-end using
+  a tiny `MoviePlan`. It asserts the run directory contains `movie_plan.json`,
+  `asset_refs.json`, `qa_report.json`, generated media assets, and the merged
+  `run_events.json` timeline. This test runs quickly (<1s) and serves as a CI
+  gate before wiring heavier adapters or Colab workflows.
+
 #### Stage deep-dive
 
 Below is the canonical contract for each stage. When multiple adapters exist (e.g., SDXL vs. fallback), they must satisfy the same observable behavior and metadata.
