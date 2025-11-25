@@ -46,6 +46,8 @@ Stages run in the order defined above. Each stage is responsible for:
 3. Updating `asset_refs` atomically (mutate then persist `runs/<run_id>/asset_refs.json`).
 4. Emitting a checkpoint JSON payload that captures the stage status and enough metadata for operators to reason about retries.
 
+**Stub adapters for local runs.** Wan, TTS, Wav2Lip, assemble, and QA adapters now ship with deterministic fallbacks backed by `src/sparkle_motion/adapters/stub_adapter.py`. These helpers generate minimal-yet-valid PNG/MP4/WAV artifacts (leveraging `ffmpeg` when available) so that `tests/test_smoke.py` and Colab dry runs produce the same filesystem layout as production, minus the heavyweight models. Replacing them with real integrations only requires swapping the adapter implementation; the orchestrator contract remains unchanged.
+
 ### Service wiring & tool catalog
 
 - **SessionService** (`src/sparkle_motion/services.py`) issues the `run_id`, prepares `runs/<run_id>/` (artifacts, checkpoints, human-review folders), and hands the runner a `SessionContext`. Plugging in the official ADK service later is a matter of passing a different implementation into `Runner(session_service=...)`.

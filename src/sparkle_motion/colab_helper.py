@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
@@ -20,6 +21,18 @@ class WorkspaceLayout:
 
 
 DEFAULT_SUBDIRS: Sequence[str] = ("models", "assets", "outputs", "runs", "logs")
+
+
+@dataclass(frozen=True)
+class ModelSmokeResult:
+    """Outcome of validating a single downloaded model snapshot."""
+
+    repo_id: str
+    status: str
+    model_path: str
+    files_present: int
+    bytes_total: int
+    sample_file: Optional[str] = None
 
 
 def ensure_workspace(root: Path, subdirs: Optional[Iterable[str]] = None) -> WorkspaceLayout:
@@ -45,6 +58,64 @@ def ensure_workspace(root: Path, subdirs: Optional[Iterable[str]] = None) -> Wor
         runs=paths["runs"],
         logs=paths["logs"],
     )
+
+
+def _sanitize_repo_id(repo_id: str) -> str:
+    return repo_id.replace("/", "__")
+
+
+def _model_dir(workspace: WorkspaceLayout, repo_id: str) -> Path:
+    return workspace.models / _sanitize_repo_id(repo_id)
+
+
+def _dir_file_stats(path: Path, *, limit: int = 1024) -> tuple[int, int, Optional[Path]]:
+    files = 0
+    total = 0
+    sample: Optional[Path] = None
+    for root, _, filenames in os.walk(path):
+        for name in filenames:
+            files += 1
+            fp = Path(root) / name
+            if sample is None:
+                sample = fp
+            try:
+                total += fp.stat().st_size
+            except OSError:
+                pass
+            if files >= limit:
+                return files, total, sample
+    return files, total, sample
+
+
+def collect_model_smoke_checks(workspace: WorkspaceLayout, models: Sequence[str]) -> list[ModelSmokeResult]:
+    results: list[ModelSmokeResult] = []
+    for repo_id in models:
+        model_path = _model_dir(workspace, repo_id)
+        if not model_path.exists():
+            results.append(
+                ModelSmokeResult(
+                    repo_id=repo_id,
+                    status="missing",
+                    model_path=str(model_path),
+                    files_present=0,
+                    bytes_total=0,
+                    sample_file=None,
+                )
+            )
+            continue
+        file_count, total_bytes, sample = _dir_file_stats(model_path)
+        status = "ok" if file_count > 0 else "empty"
+        results.append(
+            ModelSmokeResult(
+                repo_id=repo_id,
+                status=status,
+                model_path=str(model_path),
+                files_present=file_count,
+                bytes_total=total_bytes,
+                sample_file=str(sample) if sample else None,
+            )
+        )
+    return results
 
 
 def download_model(
@@ -83,15 +154,30 @@ def download_model(
     return Path(snapshot_path)
 
 
-def run_smoke_check(workspace: WorkspaceLayout, *, message: str = "sparkle-motion ready") -> Path:
-    """Write a lightweight smoke artifact to confirm Drive permissions."""
+def run_smoke_check(
+    workspace: WorkspaceLayout,
+    *,
+    message: str = "sparkle-motion ready",
+    models: Optional[Sequence[str]] = None,
+) -> Path:
+    """Write a lightweight smoke artifact including per-model validation results."""
 
     workspace.outputs.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {"ok": True, "timestamp": timestamp, "message": message}
+    model_results = collect_model_smoke_checks(workspace, models or []) if models else []
+    if model_results:
+        payload["models"] = [asdict(result) for result in model_results]
+        payload["ok"] = payload["ok"] and all(result.status == "ok" for result in model_results)
     smoke_path = workspace.outputs / "colab_smoke.json"
     smoke_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return smoke_path
 
-
-__all__ = ["WorkspaceLayout", "ensure_workspace", "download_model", "run_smoke_check"]
+__all__ = [
+    "WorkspaceLayout",
+    "ModelSmokeResult",
+    "ensure_workspace",
+    "download_model",
+    "collect_model_smoke_checks",
+    "run_smoke_check",
+]

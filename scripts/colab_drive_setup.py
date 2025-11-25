@@ -31,6 +31,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--repo-id",
         help="Hugging Face repo id to download (e.g., stabilityai/stable-diffusion-xl-base-1.0)",
     )
+    parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        help="Repeat to download multiple Hugging Face repo ids (in addition to --repo-id)",
+    )
     parser.add_argument("--revision", help="Specific repo revision or commit", default=None)
     parser.add_argument(
         "--no-download",
@@ -61,6 +67,19 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    requested_models: list[str] = []
+    if args.repo_id:
+        requested_models.append(args.repo_id)
+    if args.model:
+        requested_models.extend(filter(None, args.model))
+    # preserve order while deduplicating
+    seen: set[str] = set()
+    models: list[str] = []
+    for repo_id in requested_models:
+        if repo_id not in seen:
+            seen.add(repo_id)
+            models.append(repo_id)
+
     drive_root = _mount_drive(args.mount_point)
     workspace_root = drive_root / "MyDrive" / args.workspace
     layout = ensure_workspace(workspace_root)
@@ -70,24 +89,27 @@ def main(argv: Optional[list[str]] = None) -> None:
     print(f"[colab] assets -> {layout.assets}")
     print(f"[colab] outputs -> {layout.outputs}")
 
-    if args.repo_id and not (args.no_download or args.dry_run):
-        target_dir = layout.models / args.repo_id.replace("/", "__")
-        print(f"[colab] Downloading {args.repo_id} into {target_dir}")
-        download_model(
-            repo_id=args.repo_id,
-            target_dir=target_dir,
-            revision=args.revision,
-            allow_patterns=args.allow_pattern,
-            ignore_patterns=args.ignore_pattern,
-        )
-    elif args.repo_id:
-        print("[colab] (dry-run) Would download", args.repo_id)
+    if models and not (args.no_download or args.dry_run):
+        for repo_id in models:
+            target_dir = layout.models / repo_id.replace("/", "__")
+            print(f"[colab] Downloading {repo_id} into {target_dir}")
+            download_model(
+                repo_id=repo_id,
+                target_dir=target_dir,
+                revision=args.revision,
+                allow_patterns=args.allow_pattern,
+                ignore_patterns=args.ignore_pattern,
+            )
+    elif models:
+        for repo_id in models:
+            print("[colab] (dry-run) Would download", repo_id)
 
     if not args.no_smoke and not args.dry_run:
-        smoke_path = run_smoke_check(layout)
+        smoke_path = run_smoke_check(layout, models=models)
         print(f"[colab] Smoke artifact written to {smoke_path}")
     elif not args.no_smoke:
-        print("[colab] (dry-run) Would write smoke artifact")
+        model_list = ", ".join(models) if models else "none"
+        print(f"[colab] (dry-run) Would write smoke artifact (models={model_list})")
 
     print("[colab] Setup complete")
 

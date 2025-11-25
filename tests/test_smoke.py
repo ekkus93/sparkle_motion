@@ -41,8 +41,19 @@ def test_runner_smoke(tmp_path: Path) -> None:
     shot_refs = shots["shot_001"]
     assert shot_refs.get("start_frame")
     assert shot_refs.get("end_frame")
+    assert shot_refs.get("raw_clip")
+    assert Path(shot_refs["raw_clip"]).exists(), "raw clip should be written"
+    audio_clips = shot_refs.get("dialogue_audio", [])
+    assert audio_clips, "dialogue audio should be generated"
+    for audio_path in audio_clips:
+        assert Path(audio_path).exists(), f"audio file missing: {audio_path}"
     assert shot_refs.get("final_video_clip")
     assert Path(shot_refs["final_video_clip"]).exists(), "final video clip should be written"
+
+    extras = asset_refs.get("extras", {})
+    final_movie = extras.get("final_movie")
+    assert final_movie, "assemble stage should write final_movie reference"
+    assert Path(final_movie).exists(), "final movie artifact should exist"
 
     run_events = json.loads((run_dir / "run_events.json").read_text(encoding="utf-8"))
     assert run_events["timeline"], "timeline should contain entries"

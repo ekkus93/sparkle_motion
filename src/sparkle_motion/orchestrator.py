@@ -704,87 +704,32 @@ class Runner:
             return asset_refs
 
     def stage_videos(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-        """Try Wan adapter; fallback to simulation."""
-        try:
-            return wan_adapter.generate_video(movie_plan, asset_refs, run_dir)
-        except MissingDependencyError as e:
-            print(f"[adapter] Wan adapter unavailable: {e}")
-            for sid, info in asset_refs.get("shots", {}).items():
-                raw = run_dir / f"{sid}_raw.mp4"
-                raw.write_text("raw-clip", encoding="utf-8")
-                info["raw_clip"] = str(raw)
-            return asset_refs
+        """Generate raw shot clips via Wan adapter (stubbed in tests)."""
+        return wan_adapter.generate_video(movie_plan, asset_refs, run_dir)
 
     def stage_tts(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-        """Try TTS adapter; fallback to simulation."""
-        try:
-            return tts_adapter.generate_audio(movie_plan, asset_refs, run_dir)
-        except MissingDependencyError as e:
-            print(f"[adapter] TTS adapter unavailable: {e}")
-            for s in movie_plan.get("shots", []):
-                sid = s.get("id")
-                dialogue = s.get("dialogue", [])
-                if not dialogue:
-                    continue
-                wavs = []
-                for i, line in enumerate(dialogue):
-                    wav = run_dir / f"{sid}_line_{i}.wav"
-                    wav.write_text(line.get("text", ""), encoding="utf-8")
-                    wavs.append(str(wav))
-                asset_refs["shots"][sid]["dialogue_audio"] = wavs
-            return asset_refs
+        """Generate dialogue audio via the configured TTS adapter."""
+        return tts_adapter.generate_audio(movie_plan, asset_refs, run_dir)
 
     def stage_lipsync(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-        """Try Wav2Lip adapter; fallback to simulation."""
-        try:
-            return wav2lip_adapter.lipsync(movie_plan, asset_refs, run_dir)
-        except MissingDependencyError as e:
-            print(f"[adapter] Wav2Lip adapter unavailable: {e}")
-            for sid, info in asset_refs.get("shots", {}).items():
-                final = run_dir / f"{sid}_final.mp4"
-                final.write_text("final-video", encoding="utf-8")
-                info["final_video_clip"] = str(final)
-            return asset_refs
+        """Produce final per-shot clips using the Wav2Lip adapter."""
+        return wav2lip_adapter.lipsync(movie_plan, asset_refs, run_dir)
 
     def stage_assemble(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-        """Try assemble adapter; fallback to simulation."""
-        try:
-            return assemble_adapter.assemble(movie_plan, asset_refs, run_dir)
-        except MissingDependencyError as e:
-            print(f"[adapter] Assemble adapter unavailable: {e}")
-            out = run_dir / "movie_final.mp4"
-            out.write_text("movie-final", encoding="utf-8")
-            return asset_refs
+        """Assemble all clips into a final movie artifact."""
+        return assemble_adapter.assemble(movie_plan, asset_refs, run_dir)
 
     def stage_qa(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
-        """Try QA adapter; fallback to simulation."""
-        try:
-            qa_result = qa_adapter.run_qa(movie_plan, asset_refs, run_dir)
-            qa_path = run_dir / "qa_report.json"
-            self._atomic_write_json(qa_path, qa_result)
-            metadata = {
-                "qa_report": str(qa_path),
-                "decision": qa_result.get("decision"),
-                "issues_found": qa_result.get("issues_found"),
-            }
-            return asset_refs, metadata
-        except MissingDependencyError as e:
-            print(f"[adapter] QA adapter unavailable: {e}")
-            qa = {"movie_title": movie_plan.get("title"), "per_shot": []}
-            for sid in asset_refs.get("shots", {}).keys():
-                qa["per_shot"].append(
-                    {
-                        "shot_id": sid,
-                        "prompt_match": 0.0,
-                        "finger_issues": False,
-                        "artifact_notes": [],
-                        "missing_audio_detected": False,
-                        "safety_violation": False,
-                    }
-                )
-            qa_path = run_dir / "qa_report.json"
-            self._atomic_write_json(qa_path, qa)
-            return asset_refs, {"qa_report": str(qa_path), "decision": "pending"}
+        """Run QA checks through the adapter and persist the report."""
+        qa_result = qa_adapter.run_qa(movie_plan, asset_refs, run_dir)
+        qa_path = run_dir / "qa_report.json"
+        self._atomic_write_json(qa_path, qa_result)
+        metadata = {
+            "qa_report": str(qa_path),
+            "decision": qa_result.get("decision"),
+            "issues_found": qa_result.get("issues_found"),
+        }
+        return asset_refs, metadata
 
 
 if __name__ == "__main__":
