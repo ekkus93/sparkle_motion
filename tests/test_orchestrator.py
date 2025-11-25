@@ -24,6 +24,13 @@ def test_runner_creates_checkpoints(tmp_path: Path):
     assert obj.get("attempt") == 1
     assert obj.get("metadata", {}).get("adapter")
 
+    # merged run events log should exist
+    events_log = run_dir / "run_events.json"
+    assert events_log.exists()
+    log_data = json.loads(events_log.read_text(encoding="utf-8"))
+    assert log_data["run_id"] == run_id
+    assert log_data["timeline"], "timeline should not be empty"
+
 
 def test_runner_checkpoint_attempt_counts(tmp_path: Path):
     runner = Runner(runs_root=str(tmp_path))

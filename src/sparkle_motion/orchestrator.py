@@ -25,7 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
-from . import qa_policy
+from . import qa_policy, observability
 from .run_manifest import RunManifest, retry as manifest_retry
 from .services import ArtifactService, MemoryService, SessionContext, SessionService, ToolRegistry
 from .human_review import HumanReviewCoordinator
@@ -611,6 +611,25 @@ class Runner:
                     print(f"[runner] warning: failed to save manifest for failed stage {run_id}")
                 # stop the run on failure
                 break
+
+        try:
+            events_path = run_dir / "run_events.json"
+            events_data = observability.write_run_events_log(
+                run_id=run_id,
+                output_path=events_path,
+                stage_events=manifest.events,
+                memory_events=memory_service.list_events(),
+            )
+            artifact_service.register(
+                name="run_events",
+                path=events_path,
+                metadata={"timeline_entries": len(events_data.get("timeline", []))},
+            )
+        except Exception as exc:
+            memory_service.record_event(
+                "observability_log_error",
+                {"error": str(exc)},
+            )
 
         return asset_refs
 

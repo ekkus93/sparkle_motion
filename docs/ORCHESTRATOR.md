@@ -55,6 +55,22 @@ Stages run in the order defined above. Each stage is responsible for:
 
 These abstractions keep the runner faithful to ADK patterns while remaining lightweight for the current Colab workflow.
 
+### Observability, logging, and retries
+
+- The `run_manifest.retry` decorator (see `src/sparkle_motion/run_manifest.py`) records
+  `begin`/`fail`/`success` events with timestamps, attempts, and optional error
+  strings. Defaults: `max_attempts=3`, `base_delay=0.5s`, exponential
+  backoff capped at 30s, `jitter=0.2`.
+- `MemoryService.record_event(event_type, payload)` writes structured entries of
+  the form `{"timestamp": <float>, "event_type": <str>, "payload": <dict>}` to
+  `memory_log.json`. `MemoryService.list_events()` returns a copy for
+  aggregation or API responses.
+- `observability.write_run_events_log(...)` merges manifest events and memory
+  entries into `run_events.json`, producing a chronological timeline with
+  `source="stage"` or `source="memory"`. The runner registers this artifact as
+  `run_events` so operators download a single JSON file for debugging or
+  dashboards.
+
 #### Stage deep-dive
 
 Below is the canonical contract for each stage. When multiple adapters exist (e.g., SDXL vs. fallback), they must satisfy the same observable behavior and metadata.
