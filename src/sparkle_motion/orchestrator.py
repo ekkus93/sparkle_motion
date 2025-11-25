@@ -136,6 +136,10 @@ class Runner:
             return self.stage_order[idx:]
         return self.stage_order
 
+    def _assert_stage_registered(self, stage: str) -> None:
+        if stage not in self.stage_order:
+            raise ValueError(f"Stage '{stage}' is not registered")
+
     def _atomic_write_json(self, path: Path, obj: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = json.dumps(obj, indent=2, ensure_ascii=False)
@@ -430,6 +434,44 @@ class Runner:
                 break
 
         return asset_refs
+
+    def resume_from_stage(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        movie_plan: Optional[Dict[str, Any]] = None,
+        resume: bool = True,
+    ) -> Dict[str, Any]:
+        """Resume a run starting at ``stage`` (rerunning that stage and everything after)."""
+
+        self._assert_stage_registered(stage)
+        return self.run(
+            movie_plan=movie_plan,
+            run_id=run_id,
+            resume=resume,
+            start_stage=stage,
+            only_stage=None,
+        )
+
+    def retry_stage(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        movie_plan: Optional[Dict[str, Any]] = None,
+        resume: bool = True,
+    ) -> Dict[str, Any]:
+        """Retry a single stage (rerun only ``stage`` without touching others)."""
+
+        self._assert_stage_registered(stage)
+        return self.run(
+            movie_plan=movie_plan,
+            run_id=run_id,
+            resume=resume,
+            start_stage=None,
+            only_stage=stage,
+        )
 
     # --- stage implementations (call adapters when available; fallback to simulation) ---
     def stage_script(self, movie_plan: Dict[str, Any], asset_refs: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:

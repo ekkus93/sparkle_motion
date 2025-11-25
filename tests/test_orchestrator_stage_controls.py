@@ -60,3 +60,37 @@ def test_invalid_stage_requests_raise(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         runner.run(movie_plan=None, run_id="invalid", resume=False, start_stage="script", only_stage="images")
+
+
+def test_resume_from_stage_helper(tmp_path: Path) -> None:
+    run_id = "resume_helper"
+    run_dir = _bootstrap_run(tmp_path, run_id=run_id)
+    runner = Runner(runs_root=str(tmp_path))
+
+    script_cp = run_dir / "checkpoints" / "script.json"
+    images_cp = run_dir / "checkpoints" / "images.json"
+    before_script = script_cp.stat().st_mtime
+    before_images = images_cp.stat().st_mtime
+
+    time.sleep(0.02)
+    runner.resume_from_stage(run_id=run_id, stage="images")
+
+    assert script_cp.stat().st_mtime == pytest.approx(before_script)
+    assert images_cp.stat().st_mtime > before_images
+
+
+def test_retry_stage_helper(tmp_path: Path) -> None:
+    run_id = "retry_helper"
+    run_dir = _bootstrap_run(tmp_path, run_id=run_id)
+    runner = Runner(runs_root=str(tmp_path))
+
+    qa_cp = run_dir / "checkpoints" / "qa.json"
+    videos_cp = run_dir / "checkpoints" / "videos.json"
+    before_qa = qa_cp.stat().st_mtime
+    before_videos = videos_cp.stat().st_mtime
+
+    time.sleep(0.02)
+    runner.retry_stage(run_id=run_id, stage="qa")
+
+    assert videos_cp.stat().st_mtime == pytest.approx(before_videos)
+    assert qa_cp.stat().st_mtime > before_qa

@@ -46,6 +46,15 @@ Stages run in the order defined above. Each stage is responsible for:
 3. Updating `asset_refs` atomically (mutate then persist `runs/<run_id>/asset_refs.json`).
 4. Emitting a checkpoint JSON payload that captures the stage status and enough metadata for operators to reason about retries.
 
+### Service wiring & tool catalog
+
+- **SessionService** (`src/sparkle_motion/services.py`) issues the `run_id`, prepares `runs/<run_id>/` (artifacts, checkpoints, human-review folders), and hands the runner a `SessionContext`. Plugging in the official ADK service later is a matter of passing a different implementation into `Runner(session_service=...)`.
+- **ArtifactService** records every persisted output in `runs/<run_id>/artifacts.json` so humans/agents have a canonical lookup for Drive paths or URIs. Stage adapters call `artifact_service.register(name, path)` after writing files.
+- **MemoryService** appends structured events (stage begin/success/fail, QA verdicts, human-review notes) to `runs/<run_id>/memory_log.json`. This is the long-lived log ADK agents or dashboards can consume.
+- **ToolRegistry** mirrors ADK’s FunctionTool catalog. Each stage registers its callable/metadata with the registry, and the runner resolves stages via registry lookups, which allows hot-swapping adapters (local vs. remote) without editing orchestrator logic.
+
+These abstractions keep the runner faithful to ADK patterns while remaining lightweight for the current Colab workflow.
+
 #### Stage deep-dive
 
 Below is the canonical contract for each stage. When multiple adapters exist (e.g., SDXL vs. fallback), they must satisfy the same observable behavior and metadata.
@@ -87,6 +96,7 @@ Below is the canonical contract for each stage. When multiple adapters exist (e.
 - **Reads**: canonical QA policy, `MoviePlan`, `AssetRefs`.
 - **Writes**: `qa_report.json` under `run_dir`, checkpoint with decision, optional HTML summary.
 - **Metadata**: `qa_report`, `decision`, `issues_found`, `policy_version`.
+- **Human review bridge**: after QA (or earlier stages), the runner consults `runs/<run_id>/human_review/*.json` (see “Human review checkpoints”) and records reviewer decisions in `memory_log.json` so manual approvals integrate cleanly with automation.
 
 2) Checkpoint format
 ---------------------
@@ -330,6 +340,21 @@ Per-shot entries should also include any measurements referenced by the policy
   checkpoint indicates `status == "success"` or the manifest's last status
   for the stage is `success`.
 
+### Helper APIs for selective resume/retry
+
+- `Runner.resume_from_stage(run_id=..., stage="images", movie_plan=None)` — reruns the
+  specified stage and every subsequent stage while skipping earlier ones. When
+  `movie_plan` is omitted the runner loads `runs/<run_id>/movie_plan.json`.
+  Useful after manual edits to assets or when a stage failed mid-run.
+- `Runner.retry_stage(run_id=..., stage="qa", movie_plan=None)` — reruns only the
+  provided stage (no other stages execute). This forces a new checkpoint even if
+  the previous run succeeded, which is helpful after fixing QA policies or
+  assets referenced by a single stage.
+- Both helpers validate the stage name and internally delegate to
+  `Runner.run()` with the appropriate `resume/start_stage/only_stage` values, so
+  service wiring, manifest updates, and human-review hooks continue to work
+  identically to a full run.
+
 9) Example minimal stage
 ------------------------
 
@@ -346,6 +371,15 @@ def stage_images(movie_plan, asset_refs, run_dir):
 This document is a short contract; implementations should keep checkpoints
 small and resilient to partial writes (the runner uses atomic manifest writes
 and the checkpoint files are small JSON objects).
+
+10) Human review checkpoints
+-----------------------------
+
+- **Script review**: if `runs/<run_id>/human_review/script.json` exists with `{"decision": "revise"}`, the runner halts after writing `movie_plan.json`, logs the decision via MemoryService, and waits for the reviewer to clear/update the file before resuming.
+- **Images/clip review**: `human_review/images.json` blocks after the `images` stage so humans can inspect keyframes before paying for Wan or later stages. Decisions (`approve`, `revise`, optional notes) are mirrored into `memory_log.json` for auditability.
+- **Usage pattern**: reviewers edit the JSON via Colab/Drive, the runner polls between stages, and ArtifactService ensures referenced assets are easy to find.
+
+These checkpoints keep the prototype human-in-the-loop friendly while aligning with ADK’s expectation that Session/Artifact/Memory services provide a consistent audit trail.
 
 For additional context, see:
 - `src/sparkle_motion/orchestrator.py` for the reference runner implementation and fallback behavior.
