@@ -25,9 +25,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .adapters.common import MissingDependencyError
 from .adapters import sdxl_adapter, wan_adapter, tts_adapter, wav2lip_adapter, assemble_adapter, qa_adapter
+from . import qa_policy
 from .run_manifest import RunManifest, retry as manifest_retry
 from .services import ArtifactService, MemoryService, SessionContext, SessionService, ToolRegistry
-from .human_review import HumanReviewCoordinator, HumanReviewDecision
+from .human_review import HumanReviewCoordinator
 
 
 def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float = 2.0, jitter: float = 0.2):
@@ -56,6 +57,11 @@ def retry_with_backoff(attempts: int = 3, base_delay: float = 0.5, factor: float
     return decorator
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_QA_POLICY_PATH = PROJECT_ROOT / "configs" / "qa_policy.yaml"
+DEFAULT_QA_POLICY_SCHEMA_PATH = PROJECT_ROOT / "configs" / "qa_policy.schema.json"
+
+
 class Runner:
     """Simple stage runner that plugs into lightweight ADK-style services."""
 
@@ -68,6 +74,9 @@ class Runner:
         artifact_service_factory: Optional[Callable[[SessionContext], ArtifactService]] = None,
         memory_service_factory: Optional[Callable[[SessionContext], MemoryService]] = None,
         human_review_factory: Optional[Callable[[MemoryService], HumanReviewCoordinator]] = None,
+        qa_policy_path: Optional[Path | str] = None,
+        qa_policy_schema_path: Optional[Path | str] = None,
+        auto_regenerate_on_qa_fail: bool = False,
     ) -> None:
         self.runs_root = Path(runs_root)
         self.session_service = session_service or SessionService(self.runs_root)
@@ -75,6 +84,12 @@ class Runner:
         self.artifact_service_factory = artifact_service_factory or (lambda session: ArtifactService(session))
         self.memory_service_factory = memory_service_factory or (lambda session: MemoryService(session))
         self.human_review_factory = human_review_factory or (lambda memory: HumanReviewCoordinator(memory))
+        self.qa_policy_path = Path(qa_policy_path) if qa_policy_path else DEFAULT_QA_POLICY_PATH
+        self.qa_policy_schema_path = (
+            Path(qa_policy_schema_path) if qa_policy_schema_path else DEFAULT_QA_POLICY_SCHEMA_PATH
+        )
+        self.auto_regenerate_on_qa_fail = auto_regenerate_on_qa_fail
+        self._auto_regen_active = False
 
         self._stages: List[tuple[str, Callable[[Dict[str, Any], Dict[str, Any], Path], Dict[str, Any]]]] = []
         self.stage_order: List[str] = []
@@ -228,6 +243,127 @@ class Runner:
         }
         return payload
 
+    def _earliest_regeneration_stage(self, candidate_stages: List[str]) -> Optional[str]:
+        if not candidate_stages:
+            return None
+        order_index = {name: idx for idx, name in enumerate(self.stage_order)}
+        best: Optional[str] = None
+        best_idx: Optional[int] = None
+        for stage in candidate_stages:
+            idx = order_index.get(stage)
+            if idx is None:
+                continue
+            if best_idx is None or idx < best_idx:
+                best = stage
+                best_idx = idx
+        return best
+
+    def _auto_regenerate_from_stage(
+        self,
+        *,
+        movie_plan: Dict[str, Any],
+        run_id: str,
+        start_stage: str,
+    ) -> Dict[str, Any]:
+        """Re-run the pipeline starting from ``start_stage`` once for QA auto-regenerate."""
+
+        self._auto_regen_active = True
+        try:
+            return self.run(
+                movie_plan=movie_plan,
+                run_id=run_id,
+                resume=True,
+                start_stage=start_stage,
+                only_stage=None,
+            )
+        finally:
+            self._auto_regen_active = False
+
+    def _apply_qa_policy(
+        self,
+        *,
+        run_dir: Path,
+        artifact_service: ArtifactService,
+        memory_service: MemoryService,
+        metadata: Dict[str, Any],
+    ) -> Optional[qa_policy.QAGatingDecision]:
+        qa_report_path = metadata.get("qa_report")
+        if qa_report_path:
+            qa_report_path = Path(qa_report_path)
+        else:
+            qa_report_path = run_dir / "qa_report.json"
+
+        if not qa_report_path.exists():
+            memory_service.record_event(
+                "qa_policy_skipped",
+                {"reason": f"QA report missing at {qa_report_path}"},
+            )
+            return None
+
+        policy_path = self.qa_policy_path
+        if not policy_path or not policy_path.exists():
+            memory_service.record_event(
+                "qa_policy_skipped",
+                {"reason": f"QA policy missing at {policy_path}"},
+            )
+            return None
+
+        schema_path = self.qa_policy_schema_path if self.qa_policy_schema_path.exists() else None
+
+        try:
+            decision = qa_policy.evaluate_report(
+                report_path=qa_report_path,
+                policy_path=policy_path,
+                policy_schema_path=schema_path,
+            )
+        except qa_policy.QAPolicyError as exc:
+            memory_service.record_event(
+                "qa_policy_error",
+                {"error": str(exc)},
+            )
+            return None
+
+        metadata["qa_policy_action"] = decision.action
+        memory_service.record_event(
+            "qa_gating_decision",
+            {
+                "action": decision.action,
+                "reasons": decision.reasons,
+                "regenerate_stages": decision.regenerate_stages,
+                "metrics": decision.metrics,
+            },
+        )
+        actions_path = run_dir / "qa_actions.json"
+        self._atomic_write_json(
+            actions_path,
+            {
+                "decision": decision.action,
+                "reasons": decision.reasons,
+                "regenerate_stages": decision.regenerate_stages,
+                "metrics": decision.metrics,
+                "policy_path": str(policy_path),
+                "schema_path": str(schema_path) if schema_path else None,
+                "qa_report": str(qa_report_path),
+            },
+        )
+        artifact_service.register(
+            name="qa_actions",
+            path=actions_path,
+            metadata={"decision": decision.action},
+        )
+        if decision.action == "regenerate":
+            memory_service.record_event(
+                "qa_regenerate_required",
+                {"stages": decision.regenerate_stages, "reasons": decision.reasons},
+            )
+        elif decision.action == "escalate":
+            memory_service.record_event(
+                "qa_escalated",
+                {"reasons": decision.reasons},
+            )
+
+        return decision
+
     def run(
         self,
         movie_plan: Optional[Dict[str, Any]] = None,
@@ -369,6 +505,49 @@ class Runner:
                             "qa_decision",
                             {"decision": decision, "issues_found": metadata.get("issues_found")},
                         )
+                    qa_policy_decision = self._apply_qa_policy(
+                        run_dir=run_dir,
+                        artifact_service=artifact_service,
+                        memory_service=memory_service,
+                        metadata=metadata,
+                    )
+                    if (
+                        self.auto_regenerate_on_qa_fail
+                        and qa_policy_decision
+                        and qa_policy_decision.action == "regenerate"
+                    ):
+                        if self._auto_regen_active:
+                            memory_service.record_event(
+                                "qa_auto_regenerate_skipped",
+                                {
+                                    "reason": "auto_regen_already_running",
+                                    "requested_stages": qa_policy_decision.regenerate_stages,
+                                },
+                            )
+                        else:
+                            target_stage = self._earliest_regeneration_stage(qa_policy_decision.regenerate_stages)
+                            if target_stage:
+                                memory_service.record_event(
+                                    "qa_auto_regenerate_triggered",
+                                    {
+                                        "target_stage": target_stage,
+                                        "requested_stages": qa_policy_decision.regenerate_stages,
+                                        "reasons": qa_policy_decision.reasons,
+                                    },
+                                )
+                                return self._auto_regenerate_from_stage(
+                                    movie_plan=movie_plan,
+                                    run_id=run_id,
+                                    start_stage=target_stage,
+                                )
+                            else:
+                                memory_service.record_event(
+                                    "qa_auto_regenerate_skipped",
+                                    {
+                                        "reason": "no_valid_stage",
+                                        "requested_stages": qa_policy_decision.regenerate_stages,
+                                    },
+                                )
 
                 # handle human review gates
                 if human_review:
@@ -574,7 +753,16 @@ class Runner:
             print(f"[adapter] QA adapter unavailable: {e}")
             qa = {"movie_title": movie_plan.get("title"), "per_shot": []}
             for sid in asset_refs.get("shots", {}).keys():
-                qa["per_shot"].append({"shot_id": sid, "prompt_match": "unknown", "finger_issues": False, "artifact_notes": []})
+                qa["per_shot"].append(
+                    {
+                        "shot_id": sid,
+                        "prompt_match": 0.0,
+                        "finger_issues": False,
+                        "artifact_notes": [],
+                        "missing_audio_detected": False,
+                        "safety_violation": False,
+                    }
+                )
             qa_path = run_dir / "qa_report.json"
             self._atomic_write_json(qa_path, qa)
             return asset_refs, {"qa_report": str(qa_path), "decision": "pending"}
@@ -588,6 +776,11 @@ if __name__ == "__main__":
     parser.add_argument("--run-id", help="run id (directory name)", default=None)
     parser.add_argument("--runs-root", help="root runs dir", default="runs")
     parser.add_argument("--resume", help="resume existing run if checkpoints exist", action="store_true")
+    parser.add_argument(
+        "--auto-qa-regenerate",
+        help="automatically resume from the first QA-recommended stage when QA policy requests regeneration",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     # example minimal movie plan
@@ -595,6 +788,6 @@ if __name__ == "__main__":
         "title": "Example Run",
         "shots": [{"id": "shot_001", "duration_sec": 4.0, "visual_description": "Test"}],
     }
-    runner = Runner(runs_root=args.runs_root)
+    runner = Runner(runs_root=args.runs_root, auto_regenerate_on_qa_fail=args.auto_qa_regenerate)
     out = runner.run(movie_plan=example, run_id=args.run_id, resume=args.resume)
     print("Final asset_refs:", out)

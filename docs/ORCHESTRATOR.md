@@ -38,7 +38,7 @@ Side-effects:
 | `tts` | Generate dialogue WAVs via TTS adapter. | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores a list of WAV paths in `dialogue_audio`. | `{"lines_synthesized": <int>, "voice_model": "polyglot-v1"}`. |
 | `lipsync` | Wav2Lip (or stub) to merge audio + raw video. | `raw_clip`, `dialogue_audio`. | Writes `final_video_clip` per shot. | `{"clips_synced": <int>, "adapter": "wav2lip"}`. |
 | `assemble` | Concatenate final clips, add BGM, output movie. | `final_video_clip` entries, `MoviePlan.metadata` (e.g., frame rate). | May record top-level extras such as `asset_refs.extras["final_movie"] = str(path)`. | `{"final_path": "movie_final.mp4", "duration": 12.4, "video_codec": "mpeg4", "audio_codec": "aac"}`. |
-| `qa` | Run automated QA and persist report. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json`; `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>, "decision": "approve"}`. |
+| `qa` | Run automated QA, persist report, and evaluate policy gates. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json` and `qa_actions.json` (gating summary); `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>, "decision": "approve", "qa_policy_action": "approve"}`. |
 
 Stages run in the order defined above. Each stage is responsible for:
 1. Reading only the inputs listed in the table (other keys are considered implementation detail and should not be relied upon).
@@ -278,7 +278,8 @@ Key requirements:
 ### QA report payload
 
 The QA adapter must emit JSON conforming to `QAReport` in
-`src/sparkle_motion/schemas.py` and save it at `runs/<run_id>/qa_report.json`.
+`src/sparkle_motion/schemas.py` (exported to `schemas/QAReport.schema.json`)
+and save it at `runs/<run_id>/qa_report.json`.
 Field overview:
 
 | Field | Notes |
@@ -286,7 +287,10 @@ Field overview:
 | `movie_title` | Optional copy of `MoviePlan.title` for completeness. |
 | `per_shot` | List of entries: `shot_id`, numeric `prompt_match`, boolean `finger_issues`, `artifact_notes` (list of strings). Extra metadata is allowed if backward compatible. |
 | `summary` | Free-form text summarizing QA outcome. |
-| `decision` (optional extension) | `"approve" | "regenerate" | "escalate"`; recommended for clarity. |
+| `decision` (optional extension) | `"approve" | "regenerate" | "escalate" | "pending"`; recommended for clarity. |
+| `missing_audio_detected` | Shot-level flag used by gating predicates. |
+| `safety_violation` | Shot-level flag used by gating predicates. |
+| `finger_issue_ratio` | Optional ratio (0-1) reported per shot; runner also derives run-level ratios. |
 
 Per-shot entries should also include any measurements referenced by the policy
 (e.g., `missing_audio_detected`, `hands_detected`).
@@ -296,17 +300,27 @@ Per-shot entries should also include any measurements referenced by the policy
 | Decision | Trigger | Runner response |
 | --- | --- | --- |
 | `approve` | All `approve_if` predicates satisfied. | Orchestrator marks run complete; outputs remain on disk. |
-| `regenerate` | Any `regenerate_if` predicate matches. | Runner may requeue specific stages (e.g., images/videos) or leave a TODO for operators. |
+| `regenerate` | Any `regenerate_if` predicate matches. | Runner may requeue specific stages (e.g., images/videos) when `auto_regenerate_on_qa_fail` / `--auto-qa-regenerate` is enabled, or leave a TODO for operators. |
 | `escalate` | Any `escalate_if` predicate matches. | Runner halts and notifies humans; no automatic retries. |
 
 ### Integration contract
 
-1. `qa_adapter.run_qa(movie_plan, asset_refs, run_dir)` loads the policy,
-   evaluates every shot, and writes `qa_report.json` plus a checkpoint.
+1. `qa_adapter.run_qa(movie_plan, asset_refs, run_dir)` evaluates every shot,
+  and writes `qa_report.json` plus a checkpoint.
 2. The checkpoint metadata should include `{"qa_report": "qa_report.json", "decision": "approve"}`.
-3. The runner reads the QA decision to decide whether to rerun stages or exit.
-4. Future dashboards can read both the policy and report to render per-shot
-   findings.
+3. After a successful QA stage the runner loads `configs/qa_policy.yaml`,
+  validates it against `configs/qa_policy.schema.json`, validates the QA
+  report against `schemas/QAReport.schema.json`, and evaluates policy
+  predicates to compute an action (approve/regenerate/escalate).
+4. The resulting gating plan is persisted to `qa_actions.json`, registered via
+  `ArtifactService`, and mirrored into `memory_log.json` as
+  `qa_gating_decision` events (plus `qa_regenerate_required` or
+  `qa_escalated` when relevant).
+5. Operators can either rely on the `--auto-qa-regenerate` CLI flag (or
+  `auto_regenerate_on_qa_fail=True` when instantiating `Runner`) to rehearse the
+  recommended stages automatically, or call
+  `Runner.resume_from_stage(..., stage=<first regenerate stage>)` manually to
+  apply the fix and review the recorded reasons.
 
 5) Error handling and retries
 ------------------------------
