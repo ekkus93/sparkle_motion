@@ -261,14 +261,47 @@ recovered on retry:
 - Extensibility: add new metadata keys freely, but do not remove core fields
   without updating `RunManifest` and this document.
 
-4) QA policy & thresholds
+4) Schema artifact catalog
+--------------------------
+
+Schema and policy artifacts are versioned once and consumed everywhere via
+`configs/schema_artifacts.yaml`. The helper module
+`sparkle_motion.schema_registry` reads that file and exposes utility methods:
+
+- `list_schema_names()` — enumerate MoviePlan/AssetRefs/QAReport/StageEvent/Checkpoint.
+- `get_schema_uri(name)` — return the canonical
+  `artifact://sparkle-motion/schemas/<name>/v1` URI for embedding in
+  WorkflowAgent YAML or PromptTemplates.
+- `get_schema_path(name)` — resolve the local fallback JSON Schema path
+  (e.g., for Colab smoke tests without ArtifactService connectivity).
+- `get_qa_policy_bundle()` — provide the QA policy bundle URI plus the local
+  tarball + manifest paths created by `scripts/package_qa_policy.py`.
+
+ScriptAgent prompts should call `get_schema_uri("movie_plan")` when populating
+the `json_schema` parameter in ADK PromptTemplates, while WorkflowAgent tooling
+injects the same URIs into stage validators. This keeps every environment on
+the same schema versions without copying JSON inline.
+
+Use `sparkle_motion.prompt_templates.build_script_agent_prompt_template()` to
+assemble the prompt metadata in-process, or run
+`PYTHONPATH=src python scripts/render_script_agent_prompt.py` to emit a JSON
+payload suitable for `adk llm-prompts push`. Both paths look up
+`artifact://sparkle-motion/schemas/movie_plan/v1` via the registry so the
+WorkflowAgent and ScriptAgent stay in sync regardless of runtime.
+
+5) QA policy & thresholds
 -------------------------
 
 The QA stage consumes a declarative policy to determine whether a run is
 approved, needs regeneration, or must be escalated. The canonical policy lives
-at `configs/qa_policy.yaml` and is versioned with the repo. A JSON Schema export
-(`configs/qa_policy.schema.json`) documents the structure and can be used for
-validation in tooling.
+at `configs/qa_policy.yaml`, is mirrored into versioned bundles under
+`artifacts/qa_policy/<version>/`, and is uploaded to ADK as
+`artifact://sparkle-motion/qa_policy/<version>`. Run
+`PYTHONPATH=src python scripts/package_qa_policy.py --version v1` to refresh the
+bundle before publishing. The tarball produced by that script is what you pass
+to `adk artifacts upload`. A JSON Schema export
+(`configs/qa_policy.schema.json`, included in the bundle) documents the
+structure and can be used for validation in tooling.
 
 ### Policy structure
 

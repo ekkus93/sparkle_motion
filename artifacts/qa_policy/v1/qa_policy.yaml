@@ -1,0 +1,29 @@
+# Sparkle Motion QA policy v1
+version: 1
+thresholds:
+  prompt_match_min: 0.78            # cosine similarity (0-1)
+  max_finger_issue_ratio: 0.10      # fraction of frames with finger issues
+  allow_missing_audio: false        # escalate if any dialogue clip is silent
+  rerun_on_artifact_notes: true     # trigger regenerate on artifact notes
+  min_audio_peak_db: -25            # acceptable peak level for dialogue audio
+actions:
+  approve_if:
+    - prompt_match >= threshold(prompt_match_min)
+    - finger_issues <= threshold(max_finger_issue_ratio)
+    - artifact_notes == []
+  regenerate_if:
+    - prompt_match < threshold(prompt_match_min)
+    - artifact_notes != []
+    - rerun_on_artifact_notes == true
+  escalate_if:
+    - missing_audio_detected == true
+    - safety_violation == true
+regenerate_stages:
+  - images
+  - videos
+metadata:
+  owner: qa-oncall
+  updated: "2025-11-24"
+  notes: |
+    Initial policy tuned for smoke tests. Adjust thresholds once real metrics
+    are available.
