@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "QAReportPerShot": {
+      "properties": {
+        "shot_id": {
+          "title": "Shot Id",
+          "type": "string"
+        },
+        "prompt_match": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Prompt Match",
+          "type": "number"
+        },
+        "finger_issues": {
+          "default": false,
+          "title": "Finger Issues",
+          "type": "boolean"
+        },
+        "finger_issue_ratio": {
+          "anyOf": [
+            {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finger Issue Ratio"
+        },
+        "artifact_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifact Notes",
+          "type": "array"
+        },
+        "missing_audio_detected": {
+          "default": false,
+          "title": "Missing Audio Detected",
+          "type": "boolean"
+        },
+        "safety_violation": {
+          "default": false,
+          "title": "Safety Violation",
+          "type": "boolean"
+        },
+        "audio_peak_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Audio Peak Db"
+        }
+      },
+      "required": [
+        "shot_id",
+        "prompt_match"
+      ],
+      "title": "QAReportPerShot",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "movie_title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Movie Title"
+    },
+    "per_shot": {
+      "items": {
+        "$ref": "#/$defs/QAReportPerShot"
+      },
+      "title": "Per Shot",
+      "type": "array"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summary"
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "enum": [
+            "approve",
+            "regenerate",
+            "escalate",
+            "pending"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision"
+    },
+    "issues_found": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Issues Found"
+    },
+    "aggregate_prompt_match": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Aggregate Prompt Match"
+    }
+  },
+  "title": "QAReport",
+  "type": "object"
+}

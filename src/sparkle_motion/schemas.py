@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -51,15 +51,22 @@ class AssetRefs(BaseModel):
 
 class QAReportPerShot(BaseModel):
     shot_id: str
-    prompt_match: str
+    prompt_match: float = Field(..., ge=0.0, le=1.0)
     finger_issues: bool = False
+    finger_issue_ratio: Optional[float] = Field(None, ge=0.0, le=1.0)
     artifact_notes: List[str] = Field(default_factory=list)
+    missing_audio_detected: bool = False
+    safety_violation: bool = False
+    audio_peak_db: Optional[float] = None
 
 
 class QAReport(BaseModel):
     movie_title: Optional[str] = None
     per_shot: List[QAReportPerShot] = Field(default_factory=list)
     summary: Optional[str] = None
+    decision: Optional[Literal["approve", "regenerate", "escalate", "pending"]] = None
+    issues_found: Optional[int] = None
+    aggregate_prompt_match: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class MoviePlan(BaseModel):

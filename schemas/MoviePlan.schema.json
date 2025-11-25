@@ -1,128 +1,207 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "MoviePlan",
-  "type": "object",
-  "required": ["title", "shots"],
-  "properties": {
-    "title": {
-      "type": "string",
-      "description": "Movie title"
-    },
-    "characters": {
-      "type": "array",
-      "description": "List of character specs",
-      "items": {"$ref": "#/definitions/CharacterSpec"},
-      "default": []
-    },
-    "shots": {
-      "type": "array",
-      "description": "Ordered list of shots",
-      "items": {"$ref": "#/definitions/ShotSpec"},
-      "minItems": 1
-    },
-    "metadata": {
-      "type": "object",
-      "description": "Optional metadata (seed, model refs)",
-      "additionalProperties": {"type": "string"},
-      "default": {}
-    }
-  },
-  "definitions": {
+  "$defs": {
     "CharacterSpec": {
-      "type": "object",
-      "required": ["id", "name"],
+      "description": "Description of a character used in the movie.",
       "properties": {
-        "id": {"type": "string"},
-        "name": {"type": "string"},
-        "description": {"type": ["string", "null"]},
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
         "voice_profile": {
-          "type": "object",
-          "additionalProperties": {"type": "string"},
-          "default": {}
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Voice Profile",
+          "type": "object"
         }
-      }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "CharacterSpec",
+      "type": "object"
     },
     "DialogueLine": {
-      "type": "object",
-      "required": ["character_id", "text"],
       "properties": {
-        "character_id": {"type": "string"},
-        "text": {"type": "string"},
-        "start_time_sec": {"type": ["number", "null"], "minimum": 0}
-      }
+        "character_id": {
+          "title": "Character Id",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "start_time_sec": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Time Sec"
+        }
+      },
+      "required": [
+        "character_id",
+        "text"
+      ],
+      "title": "DialogueLine",
+      "type": "object"
     },
     "ShotSpec": {
-      "type": "object",
-      "required": ["id", "duration_sec", "visual_description", "start_frame_prompt", "end_frame_prompt"],
+      "description": "A single shot specification used by the pipeline.",
       "properties": {
-        "id": {"type": "string"},
-        "duration_sec": {"type": "number", "exclusiveMinimum": 0},
-        "setting": {"type": ["string", "null"]},
-        "visual_description": {"type": "string"},
-        "start_frame_prompt": {"type": "string"},
-        "end_frame_prompt": {"type": "string"},
-        "motion_prompt": {"type": ["string", "null"]},
-        "is_talking_closeup": {"type": "boolean", "default": false},
-        "dialogue": {"type": "array", "items": {"$ref": "#/definitions/DialogueLine"}, "default": []}
-      }
-    },
-    "AssetRefsShot": {
-      "type": "object",
-      "properties": {
-        "start_frame": {"type": ["string", "null"]},
-        "end_frame": {"type": ["string", "null"]},
-        "raw_clip": {"type": ["string", "null"]},
-        "dialogue_audio": {"type": "array", "items": {"type": "string"}, "default": []},
-        "final_video_clip": {"type": ["string", "null"]}
-      }
-    },
-    "AssetRefs": {
-      "type": "object",
-      "properties": {
-        "shots": {
-          "type": "object",
-          "additionalProperties": {"$ref": "#/definitions/AssetRefsShot"},
-          "default": {}
+        "id": {
+          "title": "Id",
+          "type": "string"
         },
-        "extras": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}}
-      }
-    },
-    "QAReportPerShot": {
-      "type": "object",
-      "required": ["shot_id", "prompt_match"],
-      "properties": {
-        "shot_id": {"type": "string"},
-        "prompt_match": {"type": "string"},
-        "finger_issues": {"type": "boolean", "default": false},
-        "artifact_notes": {"type": "array", "items": {"type": "string"}, "default": []}
-      }
-    },
-    "QAReport": {
-      "type": "object",
-      "properties": {
-        "movie_title": {"type": ["string", "null"]},
-        "per_shot": {"type": "array", "items": {"$ref": "#/definitions/QAReportPerShot"}, "default": []},
-        "summary": {"type": ["string", "null"]}
-      }
+        "duration_sec": {
+          "exclusiveMinimum": 0,
+          "title": "Duration Sec",
+          "type": "number"
+        },
+        "setting": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Setting"
+        },
+        "visual_description": {
+          "title": "Visual Description",
+          "type": "string"
+        },
+        "start_frame_prompt": {
+          "title": "Start Frame Prompt",
+          "type": "string"
+        },
+        "end_frame_prompt": {
+          "title": "End Frame Prompt",
+          "type": "string"
+        },
+        "motion_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Motion Prompt"
+        },
+        "is_talking_closeup": {
+          "default": false,
+          "title": "Is Talking Closeup",
+          "type": "boolean"
+        },
+        "dialogue": {
+          "items": {
+            "$ref": "#/$defs/DialogueLine"
+          },
+          "title": "Dialogue",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "duration_sec",
+        "visual_description",
+        "start_frame_prompt",
+        "end_frame_prompt"
+      ],
+      "title": "ShotSpec",
+      "type": "object"
     }
   },
+  "description": "Top-level production plan the ScriptAgent emits.\n\nRequired fields for an orchestrator run:\n  - title\n  - shots: each shot must have id, duration_sec, visual_description,\n    start_frame_prompt and end_frame_prompt.",
   "examples": [
     {
-      "title": "Night Rooftop Confession",
-      "characters": [{"id": "c1", "name": "Ava"}],
-      "shots": [
+      "characters": [
         {
-          "id": "shot_001",
-          "duration_sec": 8,
-          "visual_description": "Wide shot with neon signs",
-          "start_frame_prompt": "A neon-lit rooftop, rain...",
-          "end_frame_prompt": "Same rooftop, Ava closeup...",
-          "motion_prompt": "A slow dolly from wide to close",
-          "is_talking_closeup": true,
-          "dialogue": [{"character_id": "c1", "text": "I always loved you."}]
+          "id": "c1",
+          "name": "Ava"
         }
       ],
-      "metadata": {"seed": "12345"}
+      "metadata": {
+        "seed": "12345"
+      },
+      "shots": [
+        {
+          "dialogue": [
+            {
+              "character_id": "c1",
+              "text": "I always loved you."
+            }
+          ],
+          "duration_sec": 8,
+          "end_frame_prompt": "Same rooftop, Ava closeup...",
+          "id": "shot_001",
+          "is_talking_closeup": true,
+          "motion_prompt": "A slow dolly from wide to close",
+          "start_frame_prompt": "A neon-lit rooftop, rain...",
+          "visual_description": "Wide shot with neon signs"
+        }
+      ],
+      "title": "Night Rooftop Confession"
     }
-  ]
+  ],
+  "properties": {
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "characters": {
+      "items": {
+        "$ref": "#/$defs/CharacterSpec"
+      },
+      "title": "Characters",
+      "type": "array"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/ShotSpec"
+      },
+      "title": "Shots",
+      "type": "array"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "title"
+  ],
+  "title": "MoviePlan",
+  "type": "object"
 }
