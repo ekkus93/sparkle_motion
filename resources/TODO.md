@@ -184,6 +184,10 @@ Recent activity (2025-11-26)
 - Implemented `--backup` and `--confirm` flags in `scripts/publish_schemas.py` and added tests under `tests/test_publish_schemas_backup.py` to verify backup creation and abort-on-no-confirm behavior.
 - Ran the new tests locally (they passed), then discovered some unit tests expected canonical `artifact://` URIs; I restored `configs/schema_artifacts.yaml` from the timestamped backup so tests would pass and re-ran the full test suite (all tests passed).
 - Staged, committed, and pushed the new feature and tests to `origin/master` (commit: `feat(publish): add --backup/--confirm flags; add tests for backup behavior`).
+ - Implemented robust `adk` CLI parsing in `scripts/publish_schemas.py` to extract returned `artifact://...` URIs from CLI stdout/stderr (regex + JSON fallback).
+ - Added unit tests that mock `subprocess.run` to validate CLI parsing behavior: `tests/test_publish_cli_parsing.py` (plain-text URI, JSON-with-uri, stderr-only URI, fallback construction).
+ - Added a negative test asserting that a non-zero `adk` return code causes `publish_with_cli` to return `None` (`test_nonzero_returncode_returns_none`).
+ - Ran the test suite locally (all passing) and committed + pushed the parsing implementation and tests to `origin/master` (commits: parsing feature + tests).
 
 Next recommended steps
 
@@ -193,3 +197,9 @@ Next recommended steps
 
 - Optionally remove or untrack the test artifact `artifacts/schemas/test_repo_relative.schema.json` and modify the unit test to clean up its generated artifact (recommended if you prefer a clean repo against commits from test runs).
 - Implement an explicit `--backup`/`--confirm` flag in `scripts/publish_schemas.py` so overwrites of `configs/schema_artifacts.yaml` require an explicit confirmation or create an automatic backup (I can implement this change now if you want).
+
+Next recommended steps
+
+- Add unit tests that mock `subprocess.run` with additional `adk` output variants (e.g., different quoting or prefix formats) to harden the regex.
+- Add a small integration test that runs `scripts/publish_schemas.py` in a temporary directory using a fake `adk` shim script to exercise end-to-end CLI parsing and config update behavior without contacting a real ADK control plane.
+- Optionally update tests and CI (if enabled) to run `PYTHONPATH=.:src pytest` so script-level imports resolve uniformly in automated runs.

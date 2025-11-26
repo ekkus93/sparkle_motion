@@ -1,0 +1,31 @@
+version: v1
+schemas:
+  movie_plan:
+    uri: artifact://sparkle-motion/schemas/movie_plan/v1
+    local_path: artifacts/schemas/MoviePlan.schema.json
+  asset_refs:
+    uri: artifact://sparkle-motion/schemas/asset_refs/v1
+    local_path: artifacts/schemas/AssetRefs.schema.json
+  qa_report:
+    uri: artifact://sparkle-motion/schemas/qa_report/v1
+    local_path: artifacts/schemas/QAReport.schema.json
+  stage_event:
+    uri: artifact://sparkle-motion/schemas/stage_event/v1
+    local_path: artifacts/schemas/StageEvent.schema.json
+  checkpoint:
+    uri: artifact://sparkle-motion/schemas/checkpoint/v1
+    local_path: artifacts/schemas/Checkpoint.schema.json
+  AssetRefs:
+    uri: artifact://AssetRefs/schemas/AssetRefs/v1
+  Checkpoint:
+    uri: artifact://Checkpoint/schemas/Checkpoint/v1
+  MoviePlan:
+    uri: artifact://MoviePlan/schemas/MoviePlan/v1
+  QAReport:
+    uri: artifact://QAReport/schemas/QAReport/v1
+  StageEvent:
+    uri: artifact://StageEvent/schemas/StageEvent/v1
+qa_policy:
+  uri: artifact://sparkle-motion/qa_policy/v1
+  bundle_path: artifacts/qa_policy/qa_policy_v1.tar.gz
+  manifest_path: artifacts/qa_policy/v1/manifest.json

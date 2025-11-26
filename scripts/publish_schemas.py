@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
+import asyncio
+import getpass
 import shutil
 import time
 import re
@@ -52,7 +54,85 @@ def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     return adk, None
 
 
-def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry_run: bool) -> Optional[str]:
+def _publish_with_sdk_service(adk_module, file_path: str, artifact_name: str, dry_run: bool, project: Optional[str] = None) -> Optional[str]:
+    """Publish a file using ADK artifact service classes (best-effort).
+
+    This attempts to instantiate an available artifact service (GCS or
+    filesystem-backed) and call its async `save_artifact` method with a
+    `Part` constructed from the local file URI. Returns a constructed
+    artifact:// URI on success, or None on failure.
+    """
+    try:
+        # Prefer GCS service if a bucket is configured via env
+        bucket = os.environ.get("ADK_ARTIFACTS_GCS_BUCKET")
+        if bucket:
+            from google.adk.artifacts.gcs_artifact_service import GcsArtifactService as _Gcs
+
+            svc = _Gcs(bucket)
+        else:
+            from google.adk.artifacts.file_artifact_service import FileArtifactService as _FileSvc
+
+            root = os.environ.get("ADK_ARTIFACTS_ROOT", "artifacts/adk")
+            svc = _FileSvc(root)
+
+        # construct a Part referencing the file URI; the service will
+        # associate the file if needed
+        try:
+            from google.genai.types import Part
+        except Exception:
+            # fallback: try to find types via the artifacts package
+            types_mod = getattr(adk_module, "artifacts", None)
+            Part = None
+            if types_mod is not None:
+                try:
+                    from google.genai.types import Part  # try once more
+                except Exception:
+                    Part = None
+
+        if dry_run:
+            print(f"[dry-run] SDK would save artifact via {svc.__class__.__name__}: file={file_path}, name={artifact_name}")
+            return f"artifact://{project or artifact_name}/schemas/{artifact_name}/v1"
+
+        if Part is None:
+            print("Unable to locate Part type for SDK publish", file=sys.stderr)
+            return None
+
+        file_uri = str(Path(file_path).resolve())
+        # Build a Part containing the file bytes (some artifact services
+        # require inline data or text). Prefer from_bytes for full
+        # compatibility; fall back to from_uri if that fails.
+        try:
+            import mimetypes
+
+            mime_type, _ = mimetypes.guess_type(file_uri)
+            mime_type = mime_type or "application/octet-stream"
+            with open(file_path, "rb") as _fh:
+                data = _fh.read()
+            part = Part.from_bytes(data=data, mime_type=mime_type)
+        except Exception:
+            try:
+                part = Part.from_uri(file_uri=file_uri)
+            except Exception:
+                raise
+
+        app_name = project or os.environ.get("ADK_PROJECT") or Path.cwd().name
+        user_id = getpass.getuser() or "user"
+
+        # save_artifact is async; call it with asyncio.run
+        try:
+            rev = asyncio.run(svc.save_artifact(app_name=app_name, user_id=user_id, filename=artifact_name, artifact=part))
+        except TypeError:
+            # some implementations expect filename as positional/other args
+            rev = asyncio.run(svc.save_artifact(app_name=app_name, user_id=user_id, filename=artifact_name, artifact=part))
+
+        # rev is an integer revision id; craft a canonical artifact URI
+        return f"artifact://{app_name}/schemas/{artifact_name}/v{rev}"
+    except Exception as e:
+        print(f"SDK artifact-service publish failed: {e}", file=sys.stderr)
+        return None
+
+
+def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry_run: bool, project: Optional[str] = None) -> Optional[str]:
     """Best-effort attempts to publish using discovered SDK objects.
 
     This function tries a small set of common method names used by SDKs.
@@ -97,6 +177,14 @@ def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry
         except Exception as e:
             print(f"SDK publish attempt using {getattr(fn, '__qualname__', fn)} failed: {e}", file=sys.stderr)
             continue
+
+    # If we couldn't find a publish helper, try using the artifact service
+    try:
+        svc_uri = _publish_with_sdk_service(adk_module, file_path, artifact_name, dry_run, project)
+        if svc_uri:
+            return svc_uri
+    except Exception as e:
+        print(f"artifact-service publish attempt failed: {e}", file=sys.stderr)
 
     print("No usable SDK publish method discovered; falling back to CLI.", file=sys.stderr)
     return None
@@ -260,8 +348,6 @@ def main() -> int:
                 continue
 
             # copy the file
-            import shutil
-
             shutil.copy2(fpath, dest)
 
             # derive schema key (movie_plan, asset_refs, etc.) from filename stem
@@ -318,7 +404,7 @@ def main() -> int:
         if sdk_probe is not None:
             adk_module, client = sdk_probe
             try:
-                artifact_uri = publish_with_sdk(adk_module, client, fpath, artifact_name, args.dry_run)
+                artifact_uri = publish_with_sdk(adk_module, client, fpath, artifact_name, args.dry_run, args.project)
             except Exception as e:
                 print(f"SDK path raised during publish of {fpath}: {e}", file=sys.stderr)
                 artifact_uri = None
