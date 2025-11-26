@@ -16,7 +16,8 @@ def test_invoke_endpoint_deterministic(tmp_path):
     # Ensure deterministic artifact path for stable assertions
     os.environ["DETERMINISTIC"] = "1"
     client = TestClient(app)
-    payload = {"title": "Test Movie", "shots": []}
+    # Provide a minimal non-empty shots list to satisfy validation
+    payload = {"title": "Test Movie", "shots": [{"id": "s1", "desc": "single shot"}]}
     r = client.post("/invoke", json=payload)
     assert r.status_code == 200
     data = r.json()

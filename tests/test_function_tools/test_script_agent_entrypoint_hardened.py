@@ -19,7 +19,8 @@ def test_ready_and_invoke(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.json().get("ready") is True
 
-    payload = {"title": "Hardened Test", "shots": []}
+    # Provide a minimal non-empty shots list to satisfy validation
+    payload = {"title": "Hardened Test", "shots": [{"id": "s1", "desc": "minimal shot"}]}
     r = client.post("/invoke", json=payload)
     assert r.status_code == 200
     data = r.json()
