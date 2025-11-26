@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+import argparse
 
 LOG = logging.getLogger("register_tools")
 
@@ -209,6 +210,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 
 from sparkle_motion.tool_registry import load_tool_registry
 
@@ -219,6 +221,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="Do not register; only print what would be done")
     p.add_argument("--use-cli", action="store_true", help="Force use of the 'adk' CLI instead of SDK")
     p.add_argument("--force", action="store_true", help="Force re-registration where applicable")
+    p.add_argument("--metadata-dir", type=Path, help="Optional directory to read per-tool metadata files from (overrides function_tools/*)")
+    p.add_argument("--strict", action="store_true", help="Fail if per-tool metadata is present but invalid")
     return p.parse_args()
 
 
@@ -297,6 +301,56 @@ def normalize_meta(tool_id: str, raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def validate_metadata(raw: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Validate a per-tool metadata.json minimally.
+
+    Returns (is_valid, errors).
+    The validation is intentionally conservative: metadata must include an
+    identifier (`id` or `name`) and an endpoint (one of `endpoint` or
+    `endpoints`). It should also include either `schemas` or
+    `response_json_schema` to be useful for registration payloads.
+    """
+    errs: List[str] = []
+    if not isinstance(raw, dict):
+        return False, ["metadata is not a JSON object"]
+
+    # identity
+    if not (raw.get("id") or raw.get("name")):
+        errs.append("missing 'id' or 'name'")
+
+    # package / distribution info
+    if not (raw.get("package_name") or raw.get("package")):
+        errs.append("missing 'package_name' or 'package'")
+
+    # version must be present and a non-empty string
+    ver = raw.get("version")
+    if not ver or not isinstance(ver, str) or not ver.strip():
+        errs.append("missing or invalid 'version' (non-empty string required)")
+
+    # endpoint(s): accept a single 'endpoint' or an 'endpoints' mapping
+    if raw.get("endpoint"):
+        if not isinstance(raw.get("endpoint"), str) or not raw.get("endpoint").strip():
+            errs.append("'endpoint' must be a non-empty string")
+    elif raw.get("endpoints"):
+        eps = raw.get("endpoints")
+        if not isinstance(eps, dict) or not eps:
+            errs.append("'endpoints' must be a non-empty mapping")
+    else:
+        errs.append("missing 'endpoint' or 'endpoints'")
+
+    # schemas or response_json_schema must be present and non-empty dict
+    if raw.get("schemas"):
+        if not isinstance(raw.get("schemas"), dict) or not raw.get("schemas"):
+            errs.append("'schemas' must be a non-empty mapping if present")
+    elif raw.get("response_json_schema"):
+        if not isinstance(raw.get("response_json_schema"), dict) or not raw.get("response_json_schema"):
+            errs.append("'response_json_schema' must be a non-empty mapping if present")
+    else:
+        errs.append("missing 'schemas' or 'response_json_schema'")
+
+    return (len(errs) == 0), errs
+
+
 def main() -> int:
     args = parse_args()
     path = args.path
@@ -313,7 +367,49 @@ def main() -> int:
 
     summary = []
     for tid, raw in tools.items():
-        meta = normalize_meta(tid, raw)
+        # Prefer per-tool generated metadata when present. Where the caller
+        # supplied `--metadata-dir` use that first; otherwise look under
+        # function_tools/<tid>/metadata.json. If a metadata file is present,
+        # validate it and either use it or (optionally) fail depending on
+        # `--strict`.
+        meta = None
+        candidate_paths: List[Path] = []
+        try:
+            if args.metadata_dir:
+                candidate_paths.append(Path(args.metadata_dir) / tid / "metadata.json")
+            candidate_paths.append(Path(__file__).resolve().parents[1] / "function_tools" / tid / "metadata.json")
+
+            for ft_meta_path in candidate_paths:
+                if not ft_meta_path.exists():
+                    continue
+                try:
+                    raw_meta = json.loads(ft_meta_path.read_text(encoding="utf-8"))
+                except Exception as e:
+                    print(f"Warning: failed to load {ft_meta_path}: {e}", file=sys.stderr)
+                    raw_meta = None
+
+                if raw_meta is None:
+                    continue
+
+                ok, errors = validate_metadata(raw_meta)
+                if not ok:
+                    msg = f"Invalid metadata at {ft_meta_path}: {errors}"
+                    if args.strict:
+                        print(msg, file=sys.stderr)
+                        return 5
+                    else:
+                        print("Warning:", msg, file=sys.stderr)
+                        # ignore invalid metadata and fall back
+                        continue
+
+                meta = raw_meta
+                break
+        except Exception:
+            meta = None
+
+        if meta is None:
+            meta = normalize_meta(tid, raw)
+
         summary.append((tid, meta))
 
     if args.dry_run:
