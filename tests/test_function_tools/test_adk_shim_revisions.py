@@ -8,7 +8,7 @@ def _load_local_file_artifact_service():
     # installed `google` packages in the environment. Walk upward from the
     # test file to find the repository root that contains `src/google/...`.
     p = Path(__file__).resolve()
-    target_rel = Path("src") / "google" / "adk" / "artifacts" / "file_artifact_service.py"
+    target_rel = Path("tests") / "fixtures" / "google" / "adk" / "artifacts" / "file_artifact_service.py"
     mod_path = None
     for parent in p.parents:
         candidate = parent / target_rel

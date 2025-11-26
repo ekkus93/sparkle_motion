@@ -1,10 +1,8 @@
-"""Artifact service shim implementations for local testing.
+"""Placeholder for ADK artifact package.
 
-Exports `FileArtifactService` and `GcsArtifactService` that implement a
-minimal async `save_artifact` method returning a numeric revision id.
+The real implementations used for tests live under `tests/fixtures/...`.
+This file intentionally avoids importing local test shims so it won't
+shadow an installed `google` package when running in developer environments.
 """
 
-from .file_artifact_service import FileArtifactService
-from .gcs_artifact_service import GcsArtifactService
-
-__all__ = ["FileArtifactService", "GcsArtifactService"]
+__all__ = []

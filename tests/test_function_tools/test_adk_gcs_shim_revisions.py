@@ -6,7 +6,7 @@ from pathlib import Path
 def _load_local_gcs_artifact_service():
     # Locate the local shim under src/google/adk/artifacts
     p = Path(__file__).resolve()
-    target_rel = Path("src") / "google" / "adk" / "artifacts" / "gcs_artifact_service.py"
+    target_rel = Path("tests") / "fixtures" / "google" / "adk" / "artifacts" / "gcs_artifact_service.py"
     mod_path = None
     for parent in p.parents:
         candidate = parent / target_rel

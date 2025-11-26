@@ -5,7 +5,7 @@ from pathlib import Path
 
 def _load_local_service(module_name: str, filename: str):
     p = Path(__file__).resolve()
-    target_rel = Path("src") / "google" / "adk" / "artifacts" / filename
+    target_rel = Path("tests") / "fixtures" / "google" / "adk" / "artifacts" / filename
     mod_path = None
     for parent in p.parents:
         candidate = parent / target_rel

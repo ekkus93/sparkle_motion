@@ -10,7 +10,7 @@ class FileArtifactService:
 
     save_artifact(...) will write the artifact bytes or copy the referenced
     file under a root directory organized by app_name and filename, and
-    return a numeric revision id (always 1 for this shim).
+    return a numeric revision id.
     """
 
     def __init__(self, root: str | Path):

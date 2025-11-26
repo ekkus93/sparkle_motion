@@ -1,9 +1,11 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Optional
 import os
 import json
 import logging
 import asyncio
+import uuid
+import time
 from threading import Lock
 from contextlib import asynccontextmanager
 
@@ -134,6 +136,7 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: loading model, delay=%s", delay)
             await asyncio.sleep(delay)
+        app.state._start_time = time.time()
         app.state.ready = True
         LOG.info("ScriptAgent ready")
 
@@ -159,15 +162,28 @@ def make_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
+        # Health reports shutting_down when the app is refusing new work
+        if getattr(app.state, "shutting_down", False):
+            return {"status": "shutting_down"}
         return {"status": "ok"}
 
     @app.get("/ready")
     def ready() -> dict[str, Any]:
-        return {"ready": bool(getattr(app.state, "ready", False))}
+        return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.get("/metrics")
     def metrics() -> dict[str, Any]:
-        return {"inflight": getattr(app.state, "inflight", 0), "ready": bool(getattr(app.state, "ready", False))}
+        uptime = None
+        try:
+            uptime = time.time() - getattr(app.state, "_start_time", time.time())
+        except Exception:
+            uptime = None
+        return {
+            "inflight": getattr(app.state, "inflight", 0),
+            "ready": bool(getattr(app.state, "ready", False)),
+            "uptime_seconds": uptime,
+            "pid": os.getpid(),
+        }
 
     @app.get("/metadata")
     def metadata() -> dict[str, Any]:
@@ -192,23 +208,54 @@ def make_app() -> FastAPI:
         if getattr(app.state, "shutting_down", False):
             raise HTTPException(status_code=503, detail="shutting down")
 
+        request_id = uuid.uuid4().hex
+        LOG.info("invoke.received", extra={"request_id": request_id, "title": getattr(plan, "title", None)})
+
         # Track inflight work
         with app.state.lock:
             app.state.inflight += 1
         try:
             if not plan.title:
                 raise HTTPException(status_code=400, detail="title is required")
+            if not isinstance(plan.shots, list) or len(plan.shots) == 0:
+                # require at least one shot for a valid MoviePlan
+                raise HTTPException(status_code=400, detail="shots must be a non-empty list")
 
             deterministic = os.environ.get("DETERMINISTIC", "0") == "1"
             artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
             os.makedirs(artifacts_dir, exist_ok=True)
-            filename = f"{plan.title.replace(' ', '_')}.json" if deterministic else f"{plan.title.replace(' ', '_')}_{os.getpid()}.json"
+            safe_title = plan.title.replace(" ", "_")
+            filename = f"{safe_title}.json" if deterministic else f"{safe_title}_{os.getpid()}_{request_id}.json"
             local_path = os.path.join(artifacts_dir, filename)
 
-            artifact_uri = publish_artifact(local_path)
+            # Persist the plan payload to disk before publishing so fallback behaviors
+            # always have a deterministic artifact to reference.
+            try:
+                with open(local_path, "w", encoding="utf-8") as fh:
+                    fh.write(plan.json())
+            except Exception as e:
+                LOG.exception("failed to write local artifact file", extra={"request_id": request_id, "path": local_path, "error": str(e)})
+                raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            LOG.info("Invocation success", extra={"artifact_uri": artifact_uri, "title": plan.title})
-            return {"status": "success", "artifact_uri": artifact_uri}
+            # Attempt to publish using ADK-backed artifact service; fallbacks handled
+            # inside publish_artifact(). Capture and surface errors in a structured way.
+            try:
+                artifact_uri = publish_artifact(local_path)
+            except Exception as e:
+                LOG.exception("publish_artifact failed", extra={"request_id": request_id})
+                raise HTTPException(status_code=500, detail="artifact publish failed")
+
+            # Optional telemetry: append a JSON line to telemetry log if enabled
+            try:
+                if os.environ.get("TELEMETRY_ENABLED", "0") == "1":
+                    telemetry_path = os.path.join(artifacts_dir, "telemetry.log")
+                    with open(telemetry_path, "a", encoding="utf-8") as tf:
+                        tf.write(json.dumps({"time": time.time(), "request_id": request_id, "artifact_uri": artifact_uri, "title": plan.title}) + "\n")
+            except Exception:
+                LOG.debug("failed to write telemetry", exc_info=True)
+
+            LOG.info("invoke.success", extra={"request_id": request_id, "artifact_uri": artifact_uri, "title": plan.title})
+            return {"status": "success", "artifact_uri": artifact_uri, "request_id": request_id}
         finally:
             with app.state.lock:
                 app.state.inflight = max(0, app.state.inflight - 1)
