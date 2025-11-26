@@ -1,4 +1,6 @@
 import os
+import sys
+import importlib
 import pytest
 from pathlib import Path
 
@@ -16,6 +18,19 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_publish_artifact_returns_artifact_uri(tmp_path: Path):
+    # If ADK integration is enabled for this run, we by default prefer the
+    # test fixture shim so we don't accidentally import an installed
+    # `google` SDK. To explicitly run against a real ADK SDK (if installed
+    # and authenticated), set `ADK_USE_FIXTURE=0` in the environment.
+    if os.environ.get("ADK_PUBLISH_INTEGRATION") == "1":
+        use_fixture = os.environ.get("ADK_USE_FIXTURE", "1") != "0"
+        if use_fixture:
+            repo_root = Path(__file__).resolve().parents[2]
+            fixtures_dir = str(repo_root / "tests" / "fixtures")
+            if fixtures_dir not in sys.path:
+                sys.path.insert(0, fixtures_dir)
+                importlib.invalidate_caches()
+
     # Import the publish helper directly from the entrypoint module
     from sparkle_motion.function_tools.script_agent.entrypoint import publish_artifact
 
