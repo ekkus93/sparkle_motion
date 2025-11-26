@@ -1,19 +1,19 @@
 version: v1
 schemas:
   movie_plan:
-    uri: file:///home/phil/work/sparkle_motion/artifacts/schemas/MoviePlan.schema.json
+    uri: artifact://sparkle-motion/schemas/movie_plan/v1
     local_path: artifacts/schemas/MoviePlan.schema.json
   asset_refs:
-    uri: file:///home/phil/work/sparkle_motion/artifacts/schemas/AssetRefs.schema.json
+    uri: artifact://sparkle-motion/schemas/asset_refs/v1
     local_path: artifacts/schemas/AssetRefs.schema.json
   qa_report:
-    uri: file:///home/phil/work/sparkle_motion/artifacts/schemas/QAReport.schema.json
+    uri: artifact://sparkle-motion/schemas/qa_report/v1
     local_path: artifacts/schemas/QAReport.schema.json
   stage_event:
-    uri: file:///home/phil/work/sparkle_motion/artifacts/schemas/StageEvent.schema.json
+    uri: artifact://sparkle-motion/schemas/stage_event/v1
     local_path: artifacts/schemas/StageEvent.schema.json
   checkpoint:
-    uri: file:///home/phil/work/sparkle_motion/artifacts/schemas/Checkpoint.schema.json
+    uri: artifact://sparkle-motion/schemas/checkpoint/v1
     local_path: artifacts/schemas/Checkpoint.schema.json
 qa_policy:
   uri: artifact://sparkle-motion/qa_policy/v1
