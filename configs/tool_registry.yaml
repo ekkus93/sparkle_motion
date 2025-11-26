@@ -1,0 +1,106 @@
+# ToolRegistry metadata for Sparkle Motion FunctionTools
+# This file lists deployment endpoints and metadata per tool.
+# The `local-colab` section provides explicit endpoints for the local-colab profile
+# where tools are run in-process inside a Colab or notebook session (no Docker).
+
+version: 1
+tools:
+  script_agent:
+    description: "Script planning (emits MoviePlan artifacts)"
+    ports:
+      default: 5001
+    schemas:
+      input: "artifact://sparkle-motion/schemas/ScriptAgentInput/v1"
+      output: "artifact://sparkle-motion/schemas/MoviePlan/v1"
+    retry_hints:
+      attempts: 3
+      backoff_s: 2
+    endpoints:
+      local-colab: "http://127.0.0.1:5001/invoke"
+
+  images_sdxl:
+    description: "Image generation (SDXL)"
+    ports:
+      default: 5002
+    schemas:
+      input: "artifact://sparkle-motion/schemas/ImageRequest/v1"
+      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    retry_hints:
+      attempts: 3
+      backoff_s: 2
+    endpoints:
+      local-colab: "http://127.0.0.1:5002/invoke"
+
+  videos_wan:
+    description: "Video synthesis (Wan FLF2V)"
+    ports:
+      default: 5003
+    schemas:
+      input: "artifact://sparkle-motion/schemas/VideoRequest/v1"
+      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    retry_hints:
+      attempts: 2
+      backoff_s: 4
+    endpoints:
+      local-colab: "http://127.0.0.1:5003/invoke"
+
+  tts_chatterbox:
+    description: "Dialogue audio (TTS)"
+    ports:
+      default: 5004
+    schemas:
+      input: "artifact://sparkle-motion/schemas/TTSRequest/v1"
+      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    retry_hints:
+      attempts: 3
+      backoff_s: 1
+    endpoints:
+      local-colab: "http://127.0.0.1:5004/invoke"
+
+  lipsync_wav2lip:
+    description: "Lipsync (Wav2Lip)"
+    ports:
+      default: 5005
+    schemas:
+      input: "artifact://sparkle-motion/schemas/LipSyncRequest/v1"
+      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    retry_hints:
+      attempts: 2
+      backoff_s: 2
+    endpoints:
+      local-colab: "http://127.0.0.1:5005/invoke"
+
+  assemble_ffmpeg:
+    description: "Final assembly (ffmpeg)"
+    ports:
+      default: 5006
+    schemas:
+      input: "artifact://sparkle-motion/schemas/AssembleRequest/v1"
+      output: "artifact://sparkle-motion/schemas/MovieFinal/v1"
+    retry_hints:
+      attempts: 1
+      backoff_s: 0
+    endpoints:
+      local-colab: "http://127.0.0.1:5006/invoke"
+
+  qa_qwen2vl:
+    description: "QA/Policy (Qwen2VL)"
+    ports:
+      default: 5007
+    schemas:
+      input: "artifact://sparkle-motion/schemas/QARequest/v1"
+      output: "artifact://sparkle-motion/schemas/QAReport/v1"
+    retry_hints:
+      attempts: 3
+      backoff_s: 2
+    endpoints:
+      local-colab: "http://127.0.0.1:5007/invoke"
+
+# Example usage notes:
+# - For the local-colab profile start the tool in-process and point ToolRegistry
+#   to the `local-colab` endpoint above. Example runner command:
+#
+#   PYTHONPATH=src python scripts/run_function_tool.py --tool script_agent --port 5001
+#
+# - When migrating to hosted runtimes, replace the `local-colab` endpoint with
+#   the hosted ingress URL and adjust retry hints and auth fields accordingly.

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Publish JSON Schema files to ADK artifact registry.
+
+Behavior:
+- SDK-first: attempts a guarded import of `google.adk` and probes for an
+  artifacts client or top-level publish helpers. If a known SDK surface is
+  detected, it will attempt a best-effort push.
+- CLI-fallback: if the SDK is not available or the SDK push attempt fails,
+  the script calls the `adk` CLI (must be on PATH and authenticated).
+
+This script is intentionally conservative: where the SDK surface cannot be
+automatically discovered it falls back to the CLI path.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
+
+try:
+    import yaml
+except Exception:
+    yaml = None
+
+
+def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
+    """Try to import google.adk and discover an artifacts client.
+
+    Returns (adk_module, client_candidate) or None when SDK import fails.
+    The client_candidate may be None when the module exists but no obvious
+    artifacts helper is present.
+    """
+    try:
+        import google.adk as adk  # type: ignore
+    except Exception:
+        return None
+
+    for cand in ("artifacts", "ArtifactService", "artifacts_client", "artifact_client"):
+        client = getattr(adk, cand, None)
+        if client is not None:
+            return adk, client
+
+    # no obvious client found, return the module so callers can probe further
+    return adk, None
+
+
+def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry_run: bool) -> bool:
+    """Best-effort attempts to publish using discovered SDK objects.
+
+    This function tries a small set of common method names used by SDKs.
+    It purposefully traps exceptions and returns False on any failure so the
+    caller can fall back to CLI.
+    """
+    candidates = []
+    if client is not None:
+        candidates.extend([getattr(client, n, None) for n in ("push", "publish", "upload", "create")])
+    # check top-level module helper names too
+    candidates.extend([getattr(adk_module, n, None) for n in ("push_schema", "publish_schema", "push_artifact", "publish_artifact")])
+
+    for fn in [c for c in candidates if callable(c)]:
+        try:
+            if dry_run:
+                print(f"[dry-run] SDK would call: {fn.__qualname__}({file_path!r}, name={artifact_name!r})")
+                return True
+
+            # try a few calling conventions
+            try:
+                res = fn(file_path)
+            except TypeError:
+                try:
+                    res = fn(path=file_path)
+                except TypeError:
+                    # last resort: pass a file object
+                    with open(file_path, "rb") as fh:
+                        res = fn(fh)
+
+            print(f"Published {file_path} via SDK using {fn.__qualname__}")
+            return True
+        except Exception as e:
+            print(f"SDK publish attempt using {getattr(fn, '__qualname__', fn)} failed: {e}", file=sys.stderr)
+            continue
+
+    print("No usable SDK publish method discovered; falling back to CLI.", file=sys.stderr)
+    return False
+
+
+def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str], dry_run: bool) -> bool:
+    """Call the `adk` CLI to push a single file as an artifact.
+
+    Command structure (best-effort):
+      adk artifacts push --file <file> --name <artifact_name> [--project <project>]
+
+    The exact CLI flags may vary by ADK version; this script uses a conservative
+    and commonly available form. Check your local `adk --help` for exact flags.
+    """
+    cmd = ["adk", "artifacts", "push", "--file", file_path]
+    if artifact_name:
+        cmd += ["--name", artifact_name]
+    if project:
+        cmd += ["--project", project]
+
+    if dry_run:
+        print("[dry-run] CLI would run:", " ".join(cmd))
+        return True
+
+    print("Running CLI:", " ".join(cmd))
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.stdout:
+        print(proc.stdout)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        return False
+    return True
+
+
+def load_artifact_map(config_path: Optional[str]) -> dict:
+    if not config_path:
+        return {}
+    if yaml is None:
+        raise RuntimeError("PyYAML is required to read artifact mapping; install PyYAML in the env")
+    p = Path(config_path)
+    if not p.exists():
+        raise FileNotFoundError(f"Artifact mapping file not found: {config_path}")
+    with p.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def find_schema_files(schema_dir: str) -> list:
+    p = Path(schema_dir)
+    if not p.exists():
+        raise FileNotFoundError(f"Schemas directory not found: {schema_dir}")
+    # match *.schema.json recursively
+    return sorted(str(pf) for pf in p.rglob("*.schema.json"))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Publish JSON Schemas to ADK (SDK-first, CLI-fallback)")
+    parser.add_argument("--schemas-dir", default="schemas", help="Directory containing .schema.json files (default: schemas)")
+    parser.add_argument("--artifacts-config", default=None, help="Optional YAML mapping file: schema filename -> artifact name")
+    parser.add_argument("--project", default=None, help="ADK project name to pass to CLI (optional)")
+    parser.add_argument("--use-cli", action="store_true", help="Force CLI fallback even if SDK is available")
+    parser.add_argument("--dry-run", action="store_true", help="Don't publish; just print what would be done")
+    args = parser.parse_args()
+
+    try:
+        artifact_map = load_artifact_map(args.artifacts_config)
+    except Exception as e:
+        print(f"Failed loading artifacts mapping: {e}", file=sys.stderr)
+        artifact_map = {}
+
+    try:
+        files = find_schema_files(args.schemas_dir)
+    except Exception as e:
+        print(f"No schema files found: {e}", file=sys.stderr)
+        return 2
+
+    sdk_probe = None
+    if not args.use_cli:
+        sdk_probe = probe_sdk()
+
+    failures = []
+    for fpath in files:
+        fname = os.path.basename(fpath)
+        # derive artifact name from mapping or filename without suffix
+        artifact_name = artifact_map.get(fname) or Path(fpath).stem.replace('.schema','')
+
+        published = False
+        if sdk_probe is not None:
+            adk_module, client = sdk_probe
+            try:
+                published = publish_with_sdk(adk_module, client, fpath, artifact_name, args.dry_run)
+            except Exception as e:
+                print(f"SDK path raised during publish of {fpath}: {e}", file=sys.stderr)
+                published = False
+
+        if not published:
+            ok = publish_with_cli(fpath, artifact_name, args.project, args.dry_run)
+            if not ok:
+                failures.append(fpath)
+
+    if failures:
+        print("Failed to publish the following schema files:")
+        for f in failures:
+            print(" -", f)
+        return 3
+
+    print("All schema artifacts processed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
