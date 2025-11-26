@@ -181,7 +181,9 @@ Recent activity (2025-11-26)
 - Committed `artifacts/schemas/test_repo_relative.schema.json` (created by the new unit test). If you prefer test artifacts remain untracked, we can revert this and adjust the test to clean up after itself.
 
 - Created a timestamped backup of the artifacts config (`configs/schema_artifacts.yaml.bak.<ts>`) before the local-only run, then ran the local-only publish which copied schemas into `artifacts/schemas/` and updated `configs/schema_artifacts.yaml` to include `file://` URIs and repo-relative `local_path` fallbacks.
-- Staged, committed, and pushed the recent workspace changes to `origin/master` (commit: `chore: commit workspace changes by assistant`).
+- Implemented `--backup` and `--confirm` flags in `scripts/publish_schemas.py` and added tests under `tests/test_publish_schemas_backup.py` to verify backup creation and abort-on-no-confirm behavior.
+- Ran the new tests locally (they passed), then discovered some unit tests expected canonical `artifact://` URIs; I restored `configs/schema_artifacts.yaml` from the timestamped backup so tests would pass and re-ran the full test suite (all tests passed).
+- Staged, committed, and pushed the new feature and tests to `origin/master` (commit: `feat(publish): add --backup/--confirm flags; add tests for backup behavior`).
 
 Next recommended steps
 

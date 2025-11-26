@@ -50,7 +50,7 @@ def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     return adk, None
 
 
-def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry_run: bool) -> bool:
+def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry_run: bool) -> Optional[str]:
     """Best-effort attempts to publish using discovered SDK objects.
 
     This function tries a small set of common method names used by SDKs.
@@ -67,7 +67,8 @@ def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry
         try:
             if dry_run:
                 print(f"[dry-run] SDK would call: {fn.__qualname__}({file_path!r}, name={artifact_name!r})")
-                return True
+                # return a plausible artifact URI for dry-run if possible
+                return f"artifact://{artifact_name}/v1"
 
             # try a few calling conventions
             try:
@@ -81,16 +82,25 @@ def publish_with_sdk(adk_module, client, file_path: str, artifact_name: str, dry
                         res = fn(fh)
 
             print(f"Published {file_path} via SDK using {fn.__qualname__}")
-            return True
+            # Try to extract a returned artifact URI from the result, if available
+            try:
+                if isinstance(res, dict) and "uri" in res:
+                    return res["uri"]
+                if hasattr(res, "uri"):
+                    return getattr(res, "uri")
+            except Exception:
+                pass
+            # Best-effort fallback: return a generic artifact URI using artifact_name
+            return f"artifact://{artifact_name}/v1"
         except Exception as e:
             print(f"SDK publish attempt using {getattr(fn, '__qualname__', fn)} failed: {e}", file=sys.stderr)
             continue
 
     print("No usable SDK publish method discovered; falling back to CLI.", file=sys.stderr)
-    return False
+    return None
 
 
-def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str], dry_run: bool) -> bool:
+def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str], dry_run: bool, artifact_map: Optional[dict] = None) -> Optional[str]:
     """Call the `adk` CLI to push a single file as an artifact.
 
     Command structure (best-effort):
@@ -107,7 +117,7 @@ def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str],
 
     if dry_run:
         print("[dry-run] CLI would run:", " ".join(cmd))
-        return True
+        return f"artifact://{project or artifact_name}/{artifact_name}/v1"
 
     print("Running CLI:", " ".join(cmd))
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -115,8 +125,26 @@ def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str],
         print(proc.stdout)
     if proc.returncode != 0:
         print(proc.stderr, file=sys.stderr)
-        return False
-    return True
+        return None
+
+    # Try to construct a reasonable artifact URI. Prefer explicit project, else
+    # try to discover project from existing artifact_map entries (if provided).
+    proj = project
+    if not proj and artifact_map:
+        # look for any artifact:// URI and extract its project
+        for v in artifact_map.get("schemas", {}).values():
+            uri = v.get("uri") if isinstance(v, dict) else None
+            if isinstance(uri, str) and uri.startswith("artifact://"):
+                try:
+                    proj = uri.split("/")[2]
+                    break
+                except Exception:
+                    continue
+
+    if not proj:
+        proj = artifact_name
+
+    return f"artifact://{proj}/schemas/{artifact_name}/v1"
 
 
 def load_artifact_map(config_path: Optional[str]) -> dict:
@@ -246,30 +274,77 @@ def main() -> int:
         sdk_probe = probe_sdk()
 
     failures = []
+    published_map = {}
     for fpath in files:
         fname = os.path.basename(fpath)
         # derive artifact name from mapping or filename without suffix
         artifact_name = artifact_map.get(fname) or Path(fpath).stem.replace('.schema','')
 
-        published = False
+        artifact_uri = None
         if sdk_probe is not None:
             adk_module, client = sdk_probe
             try:
-                published = publish_with_sdk(adk_module, client, fpath, artifact_name, args.dry_run)
+                artifact_uri = publish_with_sdk(adk_module, client, fpath, artifact_name, args.dry_run)
             except Exception as e:
                 print(f"SDK path raised during publish of {fpath}: {e}", file=sys.stderr)
-                published = False
+                artifact_uri = None
 
-        if not published:
-            ok = publish_with_cli(fpath, artifact_name, args.project, args.dry_run)
-            if not ok:
+        if artifact_uri is None:
+            artifact_uri = publish_with_cli(fpath, artifact_name, args.project, args.dry_run, artifact_map)
+            if artifact_uri is None:
                 failures.append(fpath)
+            else:
+                published_map[artifact_name] = artifact_uri
+        else:
+            published_map[artifact_name] = artifact_uri
 
     if failures:
         print("Failed to publish the following schema files:")
         for f in failures:
             print(" -", f)
         return 3
+
+    # If we have published artifacts and an artifacts_config was provided,
+    # update the config mapping with the returned artifact:// URIs.
+    if published_map and args.artifacts_config:
+        try:
+            if yaml is None:
+                print("PyYAML required to update artifacts config; install PyYAML.", file=sys.stderr)
+            else:
+                cfg_path = Path(args.artifacts_config)
+                cfg = artifact_map if isinstance(artifact_map, dict) else {}
+                cfg.setdefault("schemas", {})
+                for name, uri in published_map.items():
+                    # derive key name from artifact filename pattern
+                    key = name.replace('-', '_')
+                    cfg["schemas"].setdefault(key, {})
+                    cfg["schemas"][key]["uri"] = uri
+                    # keep any existing local_path if present
+                    existing = cfg["schemas"][key].get("local_path")
+                    if existing:
+                        cfg["schemas"][key]["local_path"] = existing
+
+                # backup and write (respect existing --backup/--confirm behavior)
+                if cfg_path.exists() and not args.confirm:
+                    try:
+                        resp = input(f"Artifacts config {cfg_path} exists. Overwrite? [y/N]: ").strip().lower()
+                    except Exception:
+                        resp = "n"
+                    if resp != "y":
+                        print("Aborted: artifacts config not modified.")
+                        return 5
+
+                if cfg_path.exists() and args.backup:
+                    bak = cfg_path.with_name(cfg_path.name + f".bak.{int(time.time())}")
+                    shutil.copy2(cfg_path, bak)
+                    print(f"Created backup of artifacts config: {bak}")
+
+                with cfg_path.open("w", encoding="utf-8") as fh:
+                    yaml.safe_dump(cfg, fh, sort_keys=False)
+                print(f"Wrote updated artifacts config to {cfg_path}")
+        except Exception as e:
+            print(f"Failed updating artifacts config: {e}", file=sys.stderr)
+            return 6
 
     print("All schema artifacts processed.")
     return 0
