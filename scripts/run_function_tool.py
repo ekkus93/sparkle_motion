@@ -19,6 +19,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request
 import uvicorn
+from sparkle_motion.tool_entrypoint import create_app
 
 from sparkle_motion.tool_registry import get_local_endpoint
 
@@ -59,20 +60,15 @@ def resolve_host_port(tool: str, port: Optional[int], host: Optional[str], profi
 
 
 def make_app(tool_id: str) -> FastAPI:
-    app = FastAPI(title=f"FunctionTool: {tool_id}")
+    """Create an app using the shared `create_app` helper.
 
-    @app.get("/healthz")
-    async def healthz():
-        return {"status": "ok", "tool": tool_id}
+    This preserves the minimal echo behavior used by the runner: the
+    invoke handler returns the received body under `received`.
+    """
+    def invoke_fn(body: dict):
+        return {"received": body}
 
-    @app.post("/invoke")
-    async def invoke(req: Request):
-        body = await req.json()
-        # Minimal behavior: echo request and include tool_id. Real adapters
-        # should replace this with actual model calls.
-        return {"tool": tool_id, "received": body}
-
-    return app
+    return create_app(tool_id, invoke_fn)
 
 
 def main() -> None:
