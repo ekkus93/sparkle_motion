@@ -13,9 +13,6 @@ Behavior:
 This script is conservative: it supports `--dry-run` to preview actions and
 `--confirm` to proceed when not in dry-run.
 """
-from __future__ import annotations
-
-import argparse
 import json
 import logging
 import subprocess
@@ -198,12 +195,11 @@ Usage:
   PYTHONPATH=src python scripts/register_tools.py --path configs/tool_registry.yaml --dry-run
 
 Notes:
-  - The ADK SDK surface may differ across versions; the SDK helper probes a
-    few plausible entrypoints and methods and attempts a best-effort call.
-  - The CLI fallback writes a temporary JSON metadata file and calls
-    `adk tools register --file <tmpfile>`; adjust if your ADK CLI differs.
+    - The ADK SDK surface may differ across versions; the SDK helper probes a
+        few plausible entrypoints and methods and attempts a best-effort call.
+    - The CLI fallback writes a temporary JSON metadata file and calls
+        `adk tools register --file <tmpfile>`; adjust if your ADK CLI differs.
 """
-from __future__ import annotations
 
 import argparse
 import json
