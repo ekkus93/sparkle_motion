@@ -1,5 +1,4 @@
 import asyncio
-import fcntl
 import os
 from pathlib import Path
 from typing import Any
@@ -46,8 +45,9 @@ class GcsArtifactService:
         rev_file = app_dir / ".rev"
         try:
             with open(rev_file, "a+", encoding="utf-8") as f:
-                try:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                from .portable_lock import exclusive_lock
+
+                with exclusive_lock(f):
                     f.seek(0)
                     raw = f.read().strip()
                     try:
@@ -61,11 +61,6 @@ class GcsArtifactService:
                     f.flush()
                     try:
                         os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                finally:
-                    try:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                     except Exception:
                         pass
         except Exception:

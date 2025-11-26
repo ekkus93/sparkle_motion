@@ -1,0 +1,20 @@
+{
+  "description": "Script planning (emits MoviePlan artifacts)",
+  "endpoints": {
+    "local-colab": "http://127.0.0.1:5001/invoke"
+  },
+  "health_path": "/health",
+  "invoke_path": "/invoke",
+  "name": "script_agent",
+  "package_name": "sparkle_motion.script_agent",
+  "response_json_schema": "artifact://sparkle-motion/schemas/MoviePlan/v1",
+  "retry_hints": {
+    "attempts": 3,
+    "backoff_s": 2
+  },
+  "schemas": {
+    "input": "artifact://sparkle-motion/schemas/ScriptAgentInput/v1",
+    "output": "artifact://sparkle-motion/schemas/MoviePlan/v1"
+  },
+  "version": "0.1.0"
+}

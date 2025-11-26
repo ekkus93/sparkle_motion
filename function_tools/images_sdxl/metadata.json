@@ -1,0 +1,20 @@
+{
+  "description": "Image generation (SDXL)",
+  "endpoints": {
+    "local-colab": "http://127.0.0.1:5002/invoke"
+  },
+  "health_path": "/health",
+  "invoke_path": "/invoke",
+  "name": "images_sdxl",
+  "package_name": "sparkle_motion.images_sdxl",
+  "response_json_schema": "artifact://sparkle-motion/schemas/AssetRefs/v1",
+  "retry_hints": {
+    "attempts": 3,
+    "backoff_s": 2
+  },
+  "schemas": {
+    "input": "artifact://sparkle-motion/schemas/ImageRequest/v1",
+    "output": "artifact://sparkle-motion/schemas/AssetRefs/v1"
+  },
+  "version": "0.1.0"
+}

@@ -65,3 +65,11 @@ Notes
 - The fixtures are intentionally minimal and synchronous-friendly for
   test simplicity. They are not intended to be production replacements
   for the real ADK SDK.
+
+- Platform note: the fixture shims use POSIX advisory file locks (via
+  `fcntl`) for atomic `.rev` updates and have been tested on Linux and
+  macOS. If you expect contributors or CI to run on Windows, consider
+  using a cross-platform library such as `portalocker` or switch the
+  shims to a maintained portable implementation. The project currently
+  defaults to the POSIX implementation to avoid adding a runtime
+  dependency for test fixtures.
