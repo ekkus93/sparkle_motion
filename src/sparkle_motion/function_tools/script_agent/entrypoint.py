@@ -1,5 +1,7 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal
+import re
+import subprocess
 from pathlib import Path
 import os
 import json
@@ -17,12 +19,54 @@ LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
+def publish_artifact(local_path: str) -> str:
+    """Publish an artifact using the available integration path.
+
+    Behavior:
+    - If `ADK_USE_FIXTURE` != "0" (default), return a `file://` URI for local tests.
+    - Otherwise, attempt to call `adk artifacts publish --file <local_path>` and parse
+      an `artifact://...` URI from stdout/stderr. If the CLI is missing or parsing
+      fails, fall back to `file://`.
+    """
+    # If tests or local runs prefer fixture mode, keep local file URI
+    if os.environ.get("ADK_USE_FIXTURE", "1") != "0":
+        return f"file://{os.path.abspath(local_path)}"
+
+    # attempt to use 'adk' CLI as a best-effort integration path
+    try:
+        proc = subprocess.run(["adk", "artifacts", "publish", "--file", local_path], capture_output=True, text=True, check=False)
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        import re as _re
+        m = _re.search(r"(artifact://[\w\-\./]+)", out)
+        if m:
+            return m.group(1)
+        if proc.returncode == 0:
+            # no artifact URI found, but command succeeded — return file fallback
+            return f"file://{os.path.abspath(local_path)}"
+    except FileNotFoundError:
+        LOG.debug("adk CLI not found; falling back to file URI")
+    except Exception:
+        LOG.exception("adk publish attempt failed")
+
+    return f"file://{os.path.abspath(local_path)}"
+
+
 class RequestModel(BaseModel):
-    # Minimal, permissive request model for smoke tests and scaffolding.
-    # Real tools should tighten this schema per-tool.
+    """Request schema for ScriptAgent.
+
+    This is intentionally conservative for scaffolding but validates the
+    common fields used by smoke tests. Per-tool entrypoints should tighten
+    this model to match the tool's contract.
+    """
     title: str | None = None
     shots: list[dict] | None = None
     prompt: str | None = None
+
+
+class ResponseModel(BaseModel):
+    status: Literal["success", "error"]
+    artifact_uri: str | None
+    request_id: str
 
 
 def make_app() -> FastAPI:
@@ -68,7 +112,7 @@ def make_app() -> FastAPI:
         return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.post("/invoke")
-    def invoke(req: RequestModel) -> dict[str, Any]:
+    def invoke(req: RequestModel) -> ResponseModel:
         if not getattr(app.state, "ready", False):
             try:
                 delay = float(os.environ.get("MODEL_LOAD_DELAY", "0"))
@@ -93,31 +137,44 @@ def make_app() -> FastAPI:
             if not (has_prompt or has_title or has_shots):
                 raise HTTPException(status_code=400, detail="empty request: provide prompt, title, or shots")
 
+            # prepare artifact persistence
             deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
             artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
             os.makedirs(artifacts_dir, exist_ok=True)
+
+            # sanitize filename
             content_for_name = getattr(req, "prompt", None) or getattr(req, "title", None) or "artifact"
-            safe_name = (str(content_for_name)[:80]).replace(" ", "_")
+            def _slugify(s: str) -> str:
+                s = s.strip()
+                s = re.sub(r"\s+", "_", s)
+                s = re.sub(r"[^A-Za-z0-9._-]", "", s)
+                return s[:80] or "artifact"
+
+            safe_name = _slugify(str(content_for_name))
             filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
             local_path = os.path.join(artifacts_dir, filename)
+
+            try:
+                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
+            except Exception:
+                # last-resort: serialize minimal dict
+                try:
+                    payload = json.dumps(req.dict(), ensure_ascii=False)
+                except Exception as e:
+                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
+                    raise HTTPException(status_code=500, detail="failed to serialize request")
+
             try:
                 with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(req.model_dump_json() if hasattr(req, "model_dump_json") else req.json())
+                    fh.write(payload)
             except Exception as e:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            # best-effort publish: reuse script_agent.publish_artifact if available
-            try:
-                from sparkle_motion.function_tools.script_agent.entrypoint import publish_artifact
-                try:
-                    artifact_uri = publish_artifact(local_path)
-                except Exception:
-                    artifact_uri = f"file://{os.path.abspath(local_path)}"
-            except Exception:
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
+            # publish: use module-level helper (fixture-mode by default)
+            artifact_uri = publish_artifact(local_path)
 
-            return {"status": "success", "artifact_uri": artifact_uri, "request_id": request_id}
+            return ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
         finally:
             with app.state.lock:
                 app.state.inflight = max(0, app.state.inflight - 1)

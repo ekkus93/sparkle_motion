@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Literal
+import re
 from pathlib import Path
 import os
 import json
@@ -20,6 +21,12 @@ LOG.setLevel(logging.INFO)
 class RequestModel(BaseModel):
     # TODO: adjust fields for real schema
     prompt: str
+
+
+class ResponseModel(BaseModel):
+    status: Literal["success", "error"]
+    artifact_uri: str | None
+    request_id: str
 
 
 def make_app() -> FastAPI:
@@ -90,17 +97,33 @@ def make_app() -> FastAPI:
             deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
             artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
             os.makedirs(artifacts_dir, exist_ok=True)
-            safe_name = (getattr(req, "prompt", "artifact")[:80]).replace(" ", "_")
+
+            def _slugify(s: str) -> str:
+                s = s.strip()
+                s = re.sub(r"\s+", "_", s)
+                s = re.sub(r"[^A-Za-z0-9._-]", "", s)
+                return s[:80] or "artifact"
+
+            safe_name = _slugify(getattr(req, "prompt", "artifact"))
             filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
             local_path = os.path.join(artifacts_dir, filename)
             try:
+                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
+            except Exception:
+                try:
+                    payload = json.dumps(req.dict(), ensure_ascii=False)
+                except Exception as e:
+                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
+                    raise HTTPException(status_code=500, detail="failed to serialize request")
+
+            try:
                 with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(req.model_dump_json() if hasattr(req, "model_dump_json") else req.json())
+                    fh.write(payload)
             except Exception as e:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            # best-effort publish: reuse script_agent.publish_artifact if available
+            # publish using the shared helper when available
             try:
                 from sparkle_motion.function_tools.script_agent.entrypoint import publish_artifact
                 try:
@@ -110,7 +133,8 @@ def make_app() -> FastAPI:
             except Exception:
                 artifact_uri = f"file://{os.path.abspath(local_path)}"
 
-            return {"status": "success", "artifact_uri": artifact_uri, "request_id": request_id}
+            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
                 app.state.inflight = max(0, app.state.inflight - 1)
