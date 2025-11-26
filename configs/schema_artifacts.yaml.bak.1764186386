@@ -15,7 +15,16 @@ schemas:
   checkpoint:
     uri: artifact://sparkle-motion/schemas/checkpoint/v1
     local_path: artifacts/schemas/Checkpoint.schema.json
-  # Duplicate capitalized entries removed; canonical snake_case entries preserved.
+  AssetRefs:
+    uri: artifact://AssetRefs/schemas/AssetRefs/v1
+  Checkpoint:
+    uri: artifact://Checkpoint/schemas/Checkpoint/v1
+  MoviePlan:
+    uri: artifact://MoviePlan/schemas/MoviePlan/v1
+  QAReport:
+    uri: artifact://QAReport/schemas/QAReport/v1
+  StageEvent:
+    uri: artifact://StageEvent/schemas/StageEvent/v1
 qa_policy:
   uri: artifact://sparkle-motion/qa_policy/v1
   bundle_path: artifacts/qa_policy/qa_policy_v1.tar.gz
