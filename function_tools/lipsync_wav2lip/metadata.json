@@ -1,0 +1,20 @@
+{
+  "description": "Lipsync (Wav2Lip)",
+  "endpoints": {
+    "local-colab": "http://127.0.0.1:5005/invoke"
+  },
+  "health_path": "/health",
+  "invoke_path": "/invoke",
+  "name": "lipsync_wav2lip",
+  "package_name": "sparkle_motion.lipsync_wav2lip",
+  "response_json_schema": "artifact://sparkle-motion/schemas/AssetRefs/v1",
+  "retry_hints": {
+    "attempts": 2,
+    "backoff_s": 2
+  },
+  "schemas": {
+    "input": "artifact://sparkle-motion/schemas/LipSyncRequest/v1",
+    "output": "artifact://sparkle-motion/schemas/AssetRefs/v1"
+  },
+  "version": "0.1.0"
+}

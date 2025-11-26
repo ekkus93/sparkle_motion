@@ -13,16 +13,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-LOG = logging.getLogger("script_agent.entrypoint")
+LOG = logging.getLogger("assemble_ffmpeg.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
 class RequestModel(BaseModel):
-    # Minimal, permissive request model for smoke tests and scaffolding.
-    # Real tools should tighten this schema per-tool.
-    title: str | None = None
-    shots: list[dict] | None = None
-    prompt: str | None = None
+    # TODO: adjust fields for real schema
+    prompt: str
 
 
 def make_app() -> FastAPI:
@@ -42,7 +39,7 @@ def make_app() -> FastAPI:
             await asyncio.sleep(delay)
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("script_agent ready")
+        LOG.info("assemble_ffmpeg ready")
         try:
             yield
         finally:
@@ -51,7 +48,7 @@ def make_app() -> FastAPI:
             while app.state.inflight > 0 and (asyncio.get_event_loop().time() - start) < 2.0:
                 await asyncio.sleep(0.05)
 
-    app = FastAPI(title="script_agent Entrypoint (scaffold)", lifespan=lifespan)
+    app = FastAPI(title="assemble_ffmpeg Entrypoint (scaffold)", lifespan=lifespan)
     app.state.lock = Lock()
     app.state.ready = False
     app.state.shutting_down = False
@@ -86,18 +83,14 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
-            # minimal validation: accept prompt OR title OR non-empty shots
-            has_prompt = bool(getattr(req, "prompt", None))
-            has_title = bool(getattr(req, "title", None))
-            has_shots = bool(getattr(req, "shots", None))
-            if not (has_prompt or has_title or has_shots):
-                raise HTTPException(status_code=400, detail="empty request: provide prompt, title, or shots")
+            # minimal validation
+            if not getattr(req, "prompt", None):
+                raise HTTPException(status_code=400, detail="prompt required")
 
             deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
             artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
             os.makedirs(artifacts_dir, exist_ok=True)
-            content_for_name = getattr(req, "prompt", None) or getattr(req, "title", None) or "artifact"
-            safe_name = (str(content_for_name)[:80]).replace(" ", "_")
+            safe_name = (getattr(req, "prompt", "artifact")[:80]).replace(" ", "_")
             filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
             local_path = os.path.join(artifacts_dir, filename)
             try:

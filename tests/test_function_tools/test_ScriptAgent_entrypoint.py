@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 import os
 
-from sparkle_motion.function_tools.script_agent.entrypoint import app
+from sparkle_motion.function_tools.ScriptAgent.entrypoint import app
 
 
 def test_health_endpoint():
