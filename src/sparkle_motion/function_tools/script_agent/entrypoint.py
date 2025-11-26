@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 
 LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -88,6 +89,10 @@ def make_app() -> FastAPI:
         app.state.ready = True
         LOG.info("script_agent ready")
         try:
+            send_telemetry("tool.ready", {"tool": "script_agent"})
+        except Exception:
+            pass
+        try:
             yield
         finally:
             app.state.shutting_down = True
@@ -127,6 +132,10 @@ def make_app() -> FastAPI:
 
         request_id = uuid.uuid4().hex
         LOG.info("invoke.received", extra={"request_id": request_id})
+        try:
+            send_telemetry("invoke.received", {"tool": "script_agent", "request_id": request_id})
+        except Exception:
+            pass
         with app.state.lock:
             app.state.inflight += 1
         try:
@@ -173,6 +182,10 @@ def make_app() -> FastAPI:
 
             # publish: use module-level helper (fixture-mode by default)
             artifact_uri = publish_artifact(local_path)
+            try:
+                send_telemetry("invoke.completed", {"tool": "script_agent", "request_id": request_id, "artifact_uri": artifact_uri})
+            except Exception:
+                pass
 
             return ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
         finally:
