@@ -33,6 +33,16 @@ class PromptTemplateSpec:
 
     def to_payload(self) -> Dict[str, Any]:
         """Return a dict ready for `adk llm-prompts push` JSON serialization."""
+        return self.to_payload(portable=True)
+
+    def to_payload(self, portable: bool = True) -> Dict[str, Any]:
+        """Return a dict ready for `adk llm-prompts push` JSON serialization.
+
+        If `portable` is True the `local_fallback_path` will be repo-relative
+        when possible; otherwise an absolute path will be returned.
+        """
+
+        local_path = _portable_path(self.response_schema_path) if portable else str(self.response_schema_path)
 
         return {
             "id": self.template_id,
@@ -45,7 +55,7 @@ class PromptTemplateSpec:
             ],
             "response_json_schema": {
                 "artifact_uri": self.response_schema_uri,
-                "local_fallback_path": _portable_path(self.response_schema_path),
+                "local_fallback_path": local_path,
             },
         }
 
@@ -108,6 +118,7 @@ def build_script_agent_prompt_template(
 
 def render_script_agent_prompt_template(
     output_path: Path | None = None,
+    use_repo_relative_local_fallback: bool = True,
     **build_kwargs: Any,
 ) -> Path:
     """Render the ScriptAgent PromptTemplate JSON to disk. Returns the path."""
@@ -116,7 +127,8 @@ def render_script_agent_prompt_template(
     target_path = output_path or (DEFAULT_PROMPT_DIR / f"{spec.template_id}.json")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(
-        json.dumps(spec.to_payload(), indent=2, ensure_ascii=False) + "\n",
+        json.dumps(spec.to_payload(portable=use_repo_relative_local_fallback), indent=2, ensure_ascii=False)
+        + "\n",
         encoding="utf-8",
     )
     return target_path
