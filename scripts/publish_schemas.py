@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 import shutil
 import time
+import re
+import json
 
 try:
     import yaml
@@ -121,14 +123,46 @@ def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str],
 
     print("Running CLI:", " ".join(cmd))
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if proc.stdout:
-        print(proc.stdout)
+    out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    if out.strip():
+        print(out)
     if proc.returncode != 0:
         print(proc.stderr, file=sys.stderr)
         return None
 
     # Try to construct a reasonable artifact URI. Prefer explicit project, else
     # try to discover project from existing artifact_map entries (if provided).
+    # First, try to extract an artifact:// URI from the CLI output (stdout/stderr)
+    m = re.search(r"artifact://[^\s'\"]+", out)
+    if m:
+        return m.group(0)
+
+    # If stdout looks like JSON, try parsing and finding a 'uri' field
+    try:
+        j = json.loads(proc.stdout) if proc.stdout and (proc.stdout.strip().startswith("{") or proc.stdout.strip().startswith("[")) else None
+        if j:
+            # search for 'uri' keys in the JSON structure
+            def find_uri(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if k.lower() == "uri" and isinstance(v, str) and v.startswith("artifact://"):
+                            return v
+                        res = find_uri(v)
+                        if res:
+                            return res
+                elif isinstance(obj, list):
+                    for item in obj:
+                        res = find_uri(item)
+                        if res:
+                            return res
+                return None
+
+            uri = find_uri(j)
+            if uri:
+                return uri
+    except Exception:
+        pass
+
     proj = project
     if not proj and artifact_map:
         # look for any artifact:// URI and extract its project
