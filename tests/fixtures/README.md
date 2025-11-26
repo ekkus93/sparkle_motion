@@ -33,6 +33,25 @@ CI guidance
   fixtures to shadow the real SDK. Only tests that intentionally use the
   shim should modify `sys.path` locally.
 
+ADK_USE_FIXTURE
+---------------
+- The ADK integration test in `tests/test_function_tools/test_script_agent_entrypoint_adk_integration.py`
+  prefers the fixture shim by default for safety. If you want to run the
+  integration test against a real installed `google.adk` SDK, set
+  `ADK_USE_FIXTURE=0` in the environment when running the test. Example:
+
+```bash
+# Run the integration test against the real ADK SDK (requires installed SDK and credentials)
+PYTHONPATH=.:src ADK_PUBLISH_INTEGRATION=1 ADK_PROJECT=<your-project> ADK_USE_FIXTURE=0 \
+  pytest -q tests/test_function_tools/test_script_agent_entrypoint_adk_integration.py::test_publish_artifact_returns_artifact_uri
+```
+
+Note: when running with `ADK_USE_FIXTURE=0` ensure you do NOT have
+`tests/fixtures` earlier on `sys.path` (the test inserts the fixtures
+by default). Also ensure your environment is authenticated and the real
+ADK SDK is available; the integration test will attempt to publish an
+artifact and assert an `artifact://`-style URI is returned.
+
 Local runs
 ----------
 - To run the ADK integration test against the fixture shim locally:
