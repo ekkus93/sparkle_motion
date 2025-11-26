@@ -48,21 +48,25 @@ Google Drive for artifacts, filesystem `.env` secrets, telemetry disabled.
     cells so Colab operators can run the bootstrap flow end-to-end.
 Update configs/tool_registry.yaml to include an explicit local-colab endpoint
 
-## 2) Schema + config publishing — STATUS: in-progress
+## 2) Schema + config publishing — STATUS: in-progress (local-only flow implemented)
 
 - Deliverable: canonical MoviePlan, AssetRefs, QAReport, and Checkpoint schemas
   plus QA policy bundles published as ADK artifacts.
-- Current state: schema export helpers and some schema artifacts exist in
+- Current state: schema export helpers and JSON Schema artifacts exist in
   `schemas/` (see `scripts/export_schemas.py`). `configs/qa_policy.yaml` and
-  `scripts/package_qa_policy.py` were added to build QA bundles. Remaining work
-  is to publish these artifacts to ADK (`adk artifacts push` or SDK) and pin
-  artifact URIs in `configs/schema_artifacts.yaml`.
+  `scripts/package_qa_policy.py` were added to build QA bundles. A guarded
+  publisher script `scripts/publish_schemas.py` was implemented (SDK-first,
+  CLI-fallback) and a `--local-only` mode was added that copies schemas into
+  `artifacts/schemas/` and writes local fallbacks into `configs/schema_artifacts.yaml`.
+  The artifacts config preserves canonical `artifact://` URIs and adds
+  `local_path` fallbacks so isolated servers can operate without ADK
+  credentials. A local-only run populated `artifacts/schemas/` during tests.
 - Subtasks:
   - [x] Add schema export helper (`scripts/export_schemas.py`) and generate local JSON Schema files.
   - [x] Author a QA policy and packaging script (`configs/qa_policy.yaml`, `scripts/package_qa_policy.py`).
   - [ ] Publish schemas to ADK artifact registry and record artifact URIs in `configs/schema_artifacts.yaml`.
-  - [ ] Add a small `scripts/publish_schemas.py` helper (CLI + guarded SDK/CLI support).
-  - [ ] Add a local-only publish option: copy `schemas/*.schema.json` into `artifacts/schemas/` and pin `file://` (or repo-relative) URIs in `configs/schema_artifacts.yaml` for isolated servers without ADK credentials. Note: local-only artifacts are developer caches and not published to the ADK control plane.
+  - [x] Add a small `scripts/publish_schemas.py` helper (CLI + guarded SDK/CLI support).
+  - [x] Add a local-only publish option: copy `schemas/*.schema.json` into `artifacts/schemas/` and provide `local_path` fallbacks in `configs/schema_artifacts.yaml` for isolated servers without ADK credentials. Note: local-only artifacts are developer caches and not published to the ADK control plane.
 
 - Deliverable: canonical MoviePlan, AssetRefs, QAReport, and Checkpoint schemas
   plus QA policy bundles published as ADK artifacts.
@@ -83,6 +87,7 @@ Update configs/tool_registry.yaml to include an explicit local-colab endpoint
   contexts (dev-only), `scripts/run_function_tool.py` (Colab runner), and
   `configs/tool_registry.yaml` with `local-colab` endpoints and ports. A small
   `src/sparkle_motion/tool_registry.py` helper was added to load these configs.
+  - Recent additions: prompt template helpers in `src/sparkle_motion/prompt_templates.py` now emit `response_json_schema` with both `artifact_uri` and a `local_fallback_path`. A `portable` option was added to `to_payload()` so repo-relative fallbacks are emitted by default. Unit tests for prompt templates were added and passing.
 - Subtasks (actionable):
   - [x] Add per-tool scaffolding & README (`function_tools/*`).
   - [x] Provide a Colab-friendly runner `scripts/run_function_tool.py` that resolves host/port from `configs/tool_registry.yaml`.
@@ -122,6 +127,7 @@ future hosted runtimes and are optional for local development.
 - Deliverable: CLI + Colab notebook that authenticate against ADK, launch
   workflow runs, stream status, and download artifacts — no local orchestration.
 - Current state: `notebooks/sparkle_motion.ipynb` contains basic Drive mount and dotenv helper cells; `scripts/push_prompt_template.py` exists for prompt publishing.
+  - Recent additions: `scripts/publish_schemas.py` (guarded publisher), `scripts/render_script_agent_prompt.py` / prompt rendering helpers and prompt template changes that produce portable payloads. Unit tests added for prompt templates and schema registry; test suite passes locally.
 - Subtasks:
   - [ ] Implement CLI wrapper `sparkle-motion` that uses ADK SDK/CLI to run workflows and tail timelines.
   - [x] Ensure Colab notebook mounts Drive, loads secrets, and can call local runners; upgrade it to call `adk workflows run` when credentials are available.
@@ -164,3 +170,18 @@ Tracking expectations
 - Mirror task status in the workspace tracker so automation stays accurate.
 - When a section is completed, summarize the proof (deployments, test IDs,
   doc links) before flipping the status.
+
+---
+
+Recent activity (2025-11-26)
+
+- Implemented `scripts/publish_schemas.py` with SDK-first, CLI-fallback behavior and `--local-only` mode that writes local fallbacks into `configs/schema_artifacts.yaml` and copies schemas to `artifacts/schemas/`.
+- Updated `src/sparkle_motion/prompt_templates.py` to add `to_payload(portable=True)` which emits repo-relative `local_fallback_path` when possible.
+- Added `tests/test_prompt_templates.py` coverage for repo-relative fallback and updated schema registry tests; ran full test suite locally — all tests passed.
+- Committed `artifacts/schemas/test_repo_relative.schema.json` (created by the new unit test). If you prefer test artifacts remain untracked, we can revert this and adjust the test to clean up after itself.
+
+Next recommended steps
+
+- Publish schemas to ADK control plane when credentials are available (the publisher supports `--dry-run`).
+- Add a backup/confirm step before `configs/schema_artifacts.yaml` is overwritten by local-only runs.
+- Consider updating CI to run the full test suite with `PYTHONPATH=.:src` so `scripts/` imports resolve in CI.
