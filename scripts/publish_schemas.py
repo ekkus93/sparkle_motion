@@ -144,6 +144,7 @@ def main() -> int:
     parser.add_argument("--project", default=None, help="ADK project name to pass to CLI (optional)")
     parser.add_argument("--use-cli", action="store_true", help="Force CLI fallback even if SDK is available")
     parser.add_argument("--dry-run", action="store_true", help="Don't publish; just print what would be done")
+    parser.add_argument("--local-only", action="store_true", help="Do a local-only publish: copy schemas to artifacts/schemas and write file:// URIs into the artifacts config")
     args = parser.parse_args()
 
     try:
@@ -157,6 +158,67 @@ def main() -> int:
     except Exception as e:
         print(f"No schema files found: {e}", file=sys.stderr)
         return 2
+
+    # Local-only publish: copy schema files to artifacts/schemas/ and update
+    # the artifacts config with file:// URIs. This is intended for isolated
+    # servers where ADK credentials are not available.
+    if args.local_only:
+        if yaml is None:
+            print("PyYAML is required for local-only publish; install PyYAML.", file=sys.stderr)
+            return 4
+
+        out_dir = Path("artifacts/schemas")
+        if not args.dry_run:
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+        # load or initialize the artifacts config structure
+        cfg = artifact_map if isinstance(artifact_map, dict) else {}
+        if "schemas" not in cfg:
+            cfg.setdefault("schemas", {})
+
+        def to_snake(name: str) -> str:
+            # Simple PascalCase/CamelCase -> snake_case converter
+            import re
+
+            s1 = re.sub('(.)([A-Z][a-z]+)', r"\1_\2", name)
+            s2 = re.sub('([a-z0-9])([A-Z])', r"\1_\2", s1)
+            return s2.replace('-', '_').lower()
+
+        for fpath in files:
+            fname = os.path.basename(fpath)
+            dest = out_dir / fname
+            abs_dest = dest.resolve()
+            if args.dry_run:
+                print(f"[dry-run] Would copy {fpath} -> {dest}")
+                print(f"[dry-run] Would set artifact uri for {fname} -> file://{abs_dest}")
+                continue
+
+            # copy the file
+            import shutil
+
+            shutil.copy2(fpath, dest)
+
+            # derive schema key (movie_plan, asset_refs, etc.) from filename stem
+            stem = Path(fpath).stem.replace('.schema', '')
+            key = to_snake(stem)
+
+            cfg.setdefault("schemas", {})
+            cfg["schemas"][key] = {
+                "uri": f"file://{abs_dest}",
+                "local_path": str(dest)
+            }
+
+        # write back the artifacts config
+        if args.artifacts_config:
+            cfg_path = Path(args.artifacts_config)
+            with cfg_path.open("w", encoding="utf-8") as fh:
+                yaml.safe_dump(cfg, fh, sort_keys=False)
+            print(f"Wrote local-only artifacts config to {cfg_path}")
+        else:
+            print("Local-only publish complete; no artifacts config path provided, so changes were not recorded.")
+
+        print("All schema artifacts processed (local-only).")
+        return 0
 
     sdk_probe = None
     if not args.use_cli:
