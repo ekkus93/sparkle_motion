@@ -57,3 +57,16 @@ def test_no_uri_constructs_best_effort(monkeypatch, tmp_path):
 
     uri = publish_with_cli(str(tmp_path / "f.json"), "checkpoint", project="sparkle-motion", dry_run=False, artifact_map=None)
     assert uri == "artifact://sparkle-motion/schemas/checkpoint/v1"
+
+
+def test_nonzero_returncode_returns_none(monkeypatch, tmp_path):
+    # Simulate adk CLI failing (non-zero return code); publish_with_cli should return None
+    proc = make_proc(stdout="", stderr="Fatal: auth error", returncode=2)
+
+    def fake_run(cmd, stdout, stderr, text):
+        return proc
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    uri = publish_with_cli(str(tmp_path / "f.json"), "movie_plan", project="sparkle-motion", dry_run=False, artifact_map=None)
+    assert uri is None
