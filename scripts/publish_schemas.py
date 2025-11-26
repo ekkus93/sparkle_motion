@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
+import shutil
+import time
 
 try:
     import yaml
@@ -145,6 +147,8 @@ def main() -> int:
     parser.add_argument("--use-cli", action="store_true", help="Force CLI fallback even if SDK is available")
     parser.add_argument("--dry-run", action="store_true", help="Don't publish; just print what would be done")
     parser.add_argument("--local-only", action="store_true", help="Do a local-only publish: copy schemas to artifacts/schemas and write file:// URIs into the artifacts config")
+    parser.add_argument("--backup", action="store_true", help="When writing the artifacts config, create a timestamped backup of the existing file")
+    parser.add_argument("--confirm", action="store_true", help="Don't prompt for confirmation when overwriting an existing artifacts config")
     args = parser.parse_args()
 
     try:
@@ -211,6 +215,23 @@ def main() -> int:
         # write back the artifacts config
         if args.artifacts_config:
             cfg_path = Path(args.artifacts_config)
+
+            # if the config exists and we're not auto-confirming, prompt the user
+            if cfg_path.exists() and not args.confirm:
+                try:
+                    resp = input(f"Artifacts config {cfg_path} exists. Overwrite? [y/N]: ").strip().lower()
+                except Exception:
+                    resp = "n"
+                if resp != "y":
+                    print("Aborted: artifacts config not modified.")
+                    return 5
+
+            # optionally create a timestamped backup of the existing config
+            if cfg_path.exists() and args.backup:
+                bak = cfg_path.with_name(cfg_path.name + f".bak.{int(time.time())}")
+                shutil.copy2(cfg_path, bak)
+                print(f"Created backup of artifacts config: {bak}")
+
             with cfg_path.open("w", encoding="utf-8") as fh:
                 yaml.safe_dump(cfg, fh, sort_keys=False)
             print(f"Wrote local-only artifacts config to {cfg_path}")

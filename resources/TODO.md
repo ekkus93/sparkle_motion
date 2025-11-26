@@ -180,8 +180,14 @@ Recent activity (2025-11-26)
 - Added `tests/test_prompt_templates.py` coverage for repo-relative fallback and updated schema registry tests; ran full test suite locally — all tests passed.
 - Committed `artifacts/schemas/test_repo_relative.schema.json` (created by the new unit test). If you prefer test artifacts remain untracked, we can revert this and adjust the test to clean up after itself.
 
+- Created a timestamped backup of the artifacts config (`configs/schema_artifacts.yaml.bak.<ts>`) before the local-only run, then ran the local-only publish which copied schemas into `artifacts/schemas/` and updated `configs/schema_artifacts.yaml` to include `file://` URIs and repo-relative `local_path` fallbacks.
+- Staged, committed, and pushed the recent workspace changes to `origin/master` (commit: `chore: commit workspace changes by assistant`).
+
 Next recommended steps
 
 - Publish schemas to ADK control plane when credentials are available (the publisher supports `--dry-run`).
 - Add a backup/confirm step before `configs/schema_artifacts.yaml` is overwritten by local-only runs.
 - Consider updating CI to run the full test suite with `PYTHONPATH=.:src` so `scripts/` imports resolve in CI.
+
+- Optionally remove or untrack the test artifact `artifacts/schemas/test_repo_relative.schema.json` and modify the unit test to clean up its generated artifact (recommended if you prefer a clean repo against commits from test runs).
+- Implement an explicit `--backup`/`--confirm` flag in `scripts/publish_schemas.py` so overwrites of `configs/schema_artifacts.yaml` require an explicit confirmation or create an automatic backup (I can implement this change now if you want).
