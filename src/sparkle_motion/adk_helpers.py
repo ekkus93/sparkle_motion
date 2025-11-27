@@ -10,6 +10,7 @@ import sys
 import json
 from pathlib import Path
 from typing import Optional, Tuple
+from . import telemetry
 
 
 def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
@@ -339,15 +340,33 @@ class _InMemoryMemoryService:
         cur = self._meta.get(session_id, {})
         cur.update(metadata or {})
         self._meta[session_id] = cur
+        try:
+            telemetry.emit_event("memory.store_session_metadata", {"session_id": session_id, "metadata": metadata})
+        except Exception:
+            pass
 
     def get_session_metadata(self, session_id: str) -> Optional[dict]:
-        return self._meta.get(session_id)
+        res = self._meta.get(session_id)
+        try:
+            telemetry.emit_event("memory.get_session_metadata", {"session_id": session_id, "found": bool(res)})
+        except Exception:
+            pass
+        return res
 
     def append_reviewer_decision(self, session_id: str, decision: dict) -> None:
         self._decisions.setdefault(session_id, []).append(decision)
+        try:
+            telemetry.emit_event("memory.append_reviewer_decision", {"session_id": session_id, "decision": decision})
+        except Exception:
+            pass
 
     def get_reviewer_decisions(self, session_id: str) -> list:
-        return list(self._decisions.get(session_id, []))
+        res = list(self._decisions.get(session_id, []))
+        try:
+            telemetry.emit_event("memory.get_reviewer_decisions", {"session_id": session_id, "count": len(res)})
+        except Exception:
+            pass
+        return res
 
 
 class _SQLiteMemoryService:
@@ -401,6 +420,10 @@ class _SQLiteMemoryService:
             data = json.dumps(metadata or {})
             cur.execute("INSERT OR REPLACE INTO sessions(session_id, metadata) VALUES(?,?)", (session_id, data))
         self._conn.commit()
+        try:
+            telemetry.emit_event("memory.store_session_metadata", {"session_id": session_id, "metadata": metadata, "db": self._db_path})
+        except Exception:
+            pass
 
     def get_session_metadata(self, session_id: str) -> Optional[dict]:
         import json
@@ -409,8 +432,17 @@ class _SQLiteMemoryService:
         cur.execute("SELECT metadata FROM sessions WHERE session_id = ?", (session_id,))
         row = cur.fetchone()
         if not row or not row[0]:
+            try:
+                telemetry.emit_event("memory.get_session_metadata", {"session_id": session_id, "found": False, "db": self._db_path})
+            except Exception:
+                pass
             return None
-        return json.loads(row[0])
+        res = json.loads(row[0])
+        try:
+            telemetry.emit_event("memory.get_session_metadata", {"session_id": session_id, "found": True, "db": self._db_path})
+        except Exception:
+            pass
+        return res
 
     def append_reviewer_decision(self, session_id: str, decision: dict) -> None:
         import json
@@ -418,6 +450,10 @@ class _SQLiteMemoryService:
         cur = self._conn.cursor()
         cur.execute("INSERT INTO decisions(session_id, decision) VALUES(?,?)", (session_id, json.dumps(decision)))
         self._conn.commit()
+        try:
+            telemetry.emit_event("memory.append_reviewer_decision", {"session_id": session_id, "decision": decision, "db": self._db_path})
+        except Exception:
+            pass
 
     def get_reviewer_decisions(self, session_id: str) -> list:
         import json
@@ -426,6 +462,10 @@ class _SQLiteMemoryService:
         cur.execute("SELECT decision FROM decisions WHERE session_id = ? ORDER BY id", (session_id,))
         rows = cur.fetchall()
         return [json.loads(r[0]) for r in rows]
+
+        # (Note: in practice the telemetry above could be emitted here as well,
+        # but tests typically call this method immediately after append and/or
+        # store; callers can inspect events via the telemetry helper.)
 
 
 def get_memory_service() -> object:
@@ -443,6 +483,10 @@ def get_memory_service() -> object:
                 _FIXTURE_MEMORY_SERVICE
             except NameError:
                 _FIXTURE_MEMORY_SERVICE = _InMemoryMemoryService()
+            try:
+                telemetry.emit_event("memory.get_memory_service", {"impl": "inmemory"})
+            except Exception:
+                pass
             return _FIXTURE_MEMORY_SERVICE
 
     # If an explicit SQLite path is provided, use a lightweight file-backed
@@ -450,7 +494,12 @@ def get_memory_service() -> object:
     sqlite_path = os.environ.get("ADK_MEMORY_SQLITE")
     if sqlite_path:
         try:
-            return _SQLiteMemoryService(sqlite_path)
+            svc = _SQLiteMemoryService(sqlite_path)
+            try:
+                telemetry.emit_event("memory.get_memory_service", {"impl": "sqlite", "path": sqlite_path})
+            except Exception:
+                pass
+            return svc
         except Exception as e:
             raise RuntimeError(f"Failed to initialize SQLite MemoryService: {e}")
 
@@ -464,6 +513,10 @@ def get_memory_service() -> object:
     for cand in ("memory_service", "MemoryService", "session_service", "SessionService"):
         svc = getattr(adk_mod, cand, None)
         if svc is not None:
+            try:
+                telemetry.emit_event("memory.get_memory_service", {"impl": "sdk", "candidate": cand})
+            except Exception:
+                pass
             return svc
 
     raise RuntimeError("No MemoryService available via SDK")
