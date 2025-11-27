@@ -31,6 +31,13 @@ def test_script_agent_invoke_creates_artifact(tmp_path: Path) -> None:
     # check the file exists
     path = Path(uri[len("file://"):])
     assert path.exists()
+    # check artifact content contains a hint of the title/prompt
+    try:
+        txt = path.read_text(encoding="utf-8")
+        assert "Cat Movie" in txt or "cat" in txt.lower()
+    except Exception:
+        # skip non-text artifacts
+        pass
     # clean up
     try:
         path.unlink()

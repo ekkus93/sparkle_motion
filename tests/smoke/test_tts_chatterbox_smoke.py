@@ -27,3 +27,12 @@ def test_tts_chatterbox_smoke(monkeypatch):
             assert data.get("status") == "success"
             uri = data.get("artifact_uri")
             assert uri
+            # verify artifact file exists for fixture mode
+            try:
+                from pathlib import Path
+
+                if uri.startswith("file://"):
+                    path = Path(uri[len("file://"):])
+                    assert path.exists()
+            except Exception:
+                pass

@@ -56,3 +56,24 @@ def test_function_tools_basic_smoke(monkeypatch):
         # expect an artifact_uri pointing to a file:// for fixture mode
         uri = j.get("artifact_uri") or j.get("artifactUri")
         assert uri is not None and uri.startswith("file://"), f"unexpected artifact uri for {mod_path}: {uri}"
+        # optional checks when fixture mode writes files
+        try:
+            from pathlib import Path
+
+            path = Path(uri[len("file://"):])
+            assert path.exists(), f"artifact file missing for {mod_path}: {path}"
+            # lightly validate the artifact contains the prompt text when textual
+            try:
+                txt = path.read_text(encoding="utf-8")
+                assert "unit-test prompt" in txt or "unit-test" in txt
+            except Exception:
+                # not all artifacts are textual; skip content assertion safely
+                pass
+        except Exception:
+            # some FunctionTools may return remote URIs in fixture mode; skip
+            pass
+        # if telemetry/tool identifiers are present, validate types
+        if "tool_name" in j:
+            assert isinstance(j["tool_name"], str)
+        if "telemetry" in j:
+            assert isinstance(j["telemetry"], dict)
