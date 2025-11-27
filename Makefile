@@ -5,7 +5,9 @@
 #   make test TEST=tests/test_stub_adapter.py
 
 TEST ?= tests
-PYPATH := $(abspath src)
+# Ensure both repo root and `src` are on PYTHONPATH so tests that import
+# top-level scripts and the package both resolve during pytest collection.
+PYPATH := $(abspath .):$(abspath src)
 
 .PHONY: test
 test:
