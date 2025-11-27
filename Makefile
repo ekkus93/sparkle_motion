@@ -20,3 +20,8 @@ lint:
 	python scripts/check_no_legacy.py
 	@echo "Running ruff against '.'"
 	ruff check .
+
+.PHONY: smoke
+smoke:
+	@echo "Running smoke tests (tests/smoke) with PYTHONPATH=$(PYPATH)"
+	PYTHONPATH=$(PYPATH) pytest -q tests/smoke
