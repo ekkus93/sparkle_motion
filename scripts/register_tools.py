@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+from sparkle_motion.adk_helpers import probe_sdk, register_entity_with_sdk, register_entity_with_cli
 import argparse
 
 LOG = logging.getLogger("register_tools")
@@ -33,59 +34,27 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 
 def try_register_with_sdk(tool: Dict[str, Any], dry_run: bool) -> Optional[str]:
-    """Attempt to register a tool using the google.adk SDK.
+    """Attempt to register a tool using the `sparkle_motion.adk_helpers` SDK helper.
 
-    Returns a registration id or URI on success, or None on failure / not supported.
-    The SDK import is guarded so this function will not fail import-time when
-    `google.adk` is not installed.
+    Returns a registration id/uri on success or None.
     """
-    try:
-        import google.adk as adk  # guarded import
-    except Exception:  # pragma: no cover - guarded
+    adk_mod = probe_sdk()
+    if not adk_mod:
         LOG.debug("google.adk not available; skipping SDK path")
         return None
 
-    # Best-effort probes for common SDK surfaces. The concrete SDK in the
-    # environment may expose a different API; if so, this function should be
-    # adjusted to call the actual client.
     try:
-        # Try a common client name
-        client = None
-        if hasattr(adk, "ToolRegistry"):
-            client = adk.ToolRegistry()
-        elif hasattr(adk, "ToolRegistryClient"):
-            client = adk.ToolRegistryClient()
-
-        if client is None:
-            LOG.debug("ADK SDK present but no ToolRegistry client found; skipping SDK path")
-            return None
-
-        payload = dict(tool)  # copy; ensure JSON-serializable
-        if dry_run:
-            LOG.info("[dry-run] SDK would register tool: %s", payload.get("id") or payload.get("name"))
-            return "dry-run://sdk/" + (payload.get("id") or payload.get("name", "unnamed"))
-
-        # The exact method name may vary; try common names.
-        if hasattr(client, "register_tool"):
-            res = client.register_tool(payload)
-            # Try to extract an identifier
-            return getattr(res, "id", None) or getattr(res, "uri", None) or str(res)
-        elif hasattr(client, "create_tool"):
-            res = client.create_tool(payload)
-            return getattr(res, "id", None) or getattr(res, "uri", None) or str(res)
-        else:
-            LOG.debug("ToolRegistry client found but no register/create method available")
-            return None
-    except Exception as e:  # pragma: no cover - runtime environment differences
-        LOG.exception("SDK register attempt failed: %s", e)
+        return register_entity_with_sdk(adk_mod, tool, entity_kind="tool", name=tool.get("id") or tool.get("name"), dry_run=dry_run)
+    except Exception:
+        LOG.exception("SDK register attempt failed")
         return None
 
 
 def register_with_cli(tool: Dict[str, Any], dry_run: bool) -> Optional[str]:
-    """Register a tool using the `adk` CLI as a fallback.
+    """Register a tool via the `adk` CLI using the central helper.
 
-    This writes a temporary JSON file and calls `adk tools register --file <path>`.
-    Returns the CLI output-parsed id/uri on success, or None on failure.
+    Writes a temp file and delegates to `register_entity_with_cli` to run the
+    command and parse the result.
     """
     payload = json.dumps(tool, ensure_ascii=False, indent=2)
 
@@ -100,28 +69,7 @@ def register_with_cli(tool: Dict[str, Any], dry_run: bool) -> Optional[str]:
     try:
         cmd = ["adk", "tools", "register", "--file", str(tmp_path)]
         LOG.info("Running CLI: %s", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if proc.returncode != 0:
-            LOG.error("adk CLI returned %s: %s", proc.returncode, out)
-            return None
-
-        # Try to parse a returned URI or id from the output using JSON or simple heuristics
-        try:
-            j = json.loads(proc.stdout)
-            candidate = j.get("id") or j.get("uri") or j.get("artifact_uri")
-            if candidate:
-                return candidate
-        except Exception:
-            pass
-
-        # fallback: search for artifact:// or tool:// style tokens
-        for token in out.split():
-            if token.startswith("artifact://") or token.startswith("tool://") or token.startswith("https://"):
-                return token.strip()
-
-        # As a last resort return stdout trimmed
-        return proc.stdout.strip() or None
+        return register_entity_with_cli(cmd, dry_run=dry_run)
     finally:
         try:
             tmp_path.unlink()

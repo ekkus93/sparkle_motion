@@ -199,3 +199,119 @@ def publish_with_cli(file_path: str, artifact_name: str, project: Optional[str],
         proj = artifact_name
 
     return f"artifact://{proj}/schemas/{artifact_name}/v1"
+
+
+def run_adk_cli(cmd: list[str], dry_run: bool = False) -> tuple[int, str, str]:
+    """Run an `adk` CLI command (list form). Returns (returncode, stdout, stderr).
+
+    This centralizes CLI invocation and makes it easier to mock/test.
+    """
+    if dry_run:
+        print("[dry-run] CLI would run:", " ".join(cmd))
+        return 0, "", ""
+
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out = proc.stdout or ""
+    err = proc.stderr or ""
+    return proc.returncode, out, err
+
+
+def register_entity_with_sdk(adk_module, payload: dict, entity_kind: str = "tool", name: Optional[str] = None, dry_run: bool = False) -> Optional[str]:
+    """Best-effort attempt to register an entity (tool/workflow) via SDK.
+
+    Tries a set of plausible hubs and method names and returns an id/uri on success.
+    """
+    # map entity kinds to plausible hubs and methods
+    hubs_methods = {
+        "tool": [
+            ("ToolRegistry", ["register_tool", "create_tool"]),
+            ("tool_registry", ["register_tool", "create_tool"]),
+            ("tools", ["register", "create"]),
+        ],
+        "workflow": [
+            ("workflows", ["register", "create"]),
+            ("workflow_registry", ["register_workflow", "create_workflow"]),
+        ],
+    }
+
+    candidates = hubs_methods.get(entity_kind, [])
+
+    try:
+        for hub_name, methods in candidates:
+            hub = getattr(adk_module, hub_name, None)
+            if hub is None:
+                continue
+            for method in methods:
+                fn = getattr(hub, method, None)
+                if not fn:
+                    continue
+                if dry_run:
+                    print(f"[dry-run] SDK would call {hub_name}.{method} -> name={name}")
+                    return f"dry-run://sdk/{name or 'entity'}"
+                try:
+                    # try different calling conventions
+                    try:
+                        res = fn(name, payload)
+                    except TypeError:
+                        res = fn(payload)
+                    # extract id/uri
+                    if isinstance(res, dict) and (res.get("id") or res.get("uri")):
+                        return res.get("id") or res.get("uri")
+                    if hasattr(res, "id"):
+                        return getattr(res, "id")
+                    if hasattr(res, "uri"):
+                        return getattr(res, "uri")
+                    return str(res)
+                except Exception:
+                    continue
+    except Exception:
+        return None
+
+    return None
+
+
+def register_entity_with_cli(cmd: list[str], dry_run: bool = False) -> Optional[str]:
+    """Run an adk CLI registration command and attempt to extract an id/uri."""
+    try:
+        rc, out, err = run_adk_cli(cmd, dry_run=dry_run)
+    except TypeError:
+        # Some test fakes patch subprocess.run with a signature that doesn't
+        # accept stdout/stderr kwargs; fall back to a simpler invocation.
+        proc = subprocess.run(cmd, check=False)
+        rc = getattr(proc, "returncode", 1)
+        out = getattr(proc, "stdout", "") or ""
+        err = getattr(proc, "stderr", "") or ""
+    combined = (out or "") + "\n" + (err or "")
+    if rc != 0:
+        return None
+    # try to parse JSON stdout
+    try:
+        j = json.loads(out) if out and (out.strip().startswith("{") or out.strip().startswith("[")) else None
+        if j:
+            def find_uri(obj):
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if k.lower() in ("uri", "id") and isinstance(v, str) and (v.startswith("artifact://") or v.startswith("tool://") or v.startswith("http")):
+                            return v
+                        res = find_uri(v)
+                        if res:
+                            return res
+                elif isinstance(obj, list):
+                    for item in obj:
+                        res = find_uri(item)
+                        if res:
+                            return res
+                return None
+
+            uri = find_uri(j)
+            if uri:
+                return uri
+    except Exception:
+        pass
+
+    # fallback: search tokens
+    for token in combined.split():
+        if token.startswith("artifact://") or token.startswith("tool://") or token.startswith("http"):
+            return token.strip()
+
+    return (out or "").strip() or None

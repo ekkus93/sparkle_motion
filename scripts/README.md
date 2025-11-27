@@ -40,6 +40,34 @@ Notes:
 
 Scripts expose flags such as `--dry-run` and `--use-cli` to force behavior and allow safe operators to test without making changes.
 
+**ADK Helpers**
+
+- **Module**: `sparkle_motion.adk_helpers` centralizes ADK SDK probing and CLI fallback behavior used by the scripts.
+- **Key functions**:
+	- `probe_sdk()` — tries to import `google.adk` and returns a `(module, client_candidate)` tuple (or `None` when SDK missing).
+	- `run_adk_cli(cmd: list[str], dry_run: bool = False)` — runs an `adk` CLI command (list form) and returns `(returncode, stdout, stderr)`; supports a dry-run mode.
+	- `register_entity_with_sdk(adk_module, payload, entity_kind="tool", name=None, dry_run=False)` — best-effort SDK registration helper for tools/workflows.
+	- `register_entity_with_cli(cmd: list[str], dry_run: bool = False)` — runs a registration CLI command and attempts to parse an id/uri from JSON or token heuristics.
+	- `publish_with_sdk(...)` and `publish_with_cli(...)` — helpers used by `scripts/publish_schemas.py` to centralize schema publishing logic.
+
+- **Why this helps**: centralizing the probing/parsing and dry-run semantics makes the scripts easier to maintain, more testable (we patch `run_adk_cli` in unit tests), and reduces duplication across `register_*`, `push_prompt_template.py`, and `publish_schemas.py`.
+
+- **Small example (script pattern)**:
+
+```py
+from sparkle_motion.adk_helpers import probe_sdk, register_entity_with_sdk, register_entity_with_cli
+
+sdk = probe_sdk()
+if sdk:
+		# sdk is a tuple (module, client) — pass module to helper
+		uri = register_entity_with_sdk(sdk[0], payload, entity_kind="tool", name="my_tool", dry_run=False)
+else:
+		cmd = ["adk", "tools", "register", "--file", "/tmp/tool.json"]
+		uri = register_entity_with_cli(cmd, dry_run=False)
+```
+
+- **Tests**: see `tests/test_adk_helpers_unit.py` for concrete unit tests that exercise dry-run behavior, JSON stdout parsing, token fallbacks, and SDK return shapes.
+
 ---
 
 ## scripts/register_tools.py

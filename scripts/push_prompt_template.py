@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from sparkle_motion.prompt_templates import render_script_agent_prompt_template
+from sparkle_motion.adk_helpers import probe_sdk, run_adk_cli
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,8 +41,13 @@ def ensure_adk_cli_available() -> bool:
 def push_with_adk_cli(file_path: Path) -> int:
     cmd = ["adk", "llm-prompts", "push", "--file", str(file_path)]
     print("Running:", " ".join(cmd))
-    proc = subprocess.run(cmd)
-    return proc.returncode
+    # Use central runner to make tests easier to patch/match
+    rc, out, err = run_adk_cli(cmd, dry_run=False)
+    if out:
+        print(out)
+    if err:
+        print(err)
+    return rc
 
 
 def push_with_sdk(file_path: Path) -> tuple[bool, str]:
@@ -52,10 +58,10 @@ def push_with_sdk(file_path: Path) -> tuple[bool, str]:
     returns (success, message). It never raises import errors to keep callers
     able to fall back to the CLI.
     """
-    try:
-        import google.adk as adk  # type: ignore
-    except Exception as e:  # pragma: no cover - environment-dependent
-        return False, f"google.adk not importable: {e}"
+    sdk_probe = probe_sdk()
+    if not sdk_probe:
+        return False, "google.adk not importable"
+    adk = sdk_probe[0]
 
     # Try a small set of plausible client entrypoints and method names.
     candidates = ["llm_prompts", "prompts", "llm_prompts_client", "llm"]

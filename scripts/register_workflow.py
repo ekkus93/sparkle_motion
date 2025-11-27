@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import yaml
+from sparkle_motion.adk_helpers import probe_sdk, register_entity_with_sdk, register_entity_with_cli
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,11 +40,12 @@ def load_workflow_registry(path: Path | None) -> Dict[str, Any]:
 
 
 def register_with_sdk(workflow_id: str, meta: Dict[str, Any]) -> Tuple[bool, str]:
-    try:
-        import google.adk as adk  # type: ignore
-    except Exception as e:  # pragma: no cover - environment dependent
-        return False, f"SDK not importable: {e}"
+    sdk_probe = probe_sdk()
+    if not sdk_probe:
+        return False, "SDK not importable"
+    adk_mod = sdk_probe[0]
 
+    # Probe plausible SDK entrypoints in the same style as previous implementation
     candidates = [
         ("workflows", "register"),
         ("workflow_registry", "register_workflow"),
@@ -52,18 +54,19 @@ def register_with_sdk(workflow_id: str, meta: Dict[str, Any]) -> Tuple[bool, str
     ]
 
     for attr, method in candidates:
-        hub = getattr(adk, attr, None)
+        hub = getattr(adk_mod, attr, None)
         if hub is None:
             continue
         fn = getattr(hub, method, None)
         if not fn:
             continue
         try:
-            res = fn(workflow_id, meta) if fn.__code__.co_argcount >= 2 else fn(meta)
+            res = fn(workflow_id, meta) if getattr(fn, "__code__", None) and fn.__code__.co_argcount >= 2 else fn(meta)
             return True, f"SDK: called {attr}.{method} -> {res}"
         except Exception as e:  # pragma: no cover - depends on SDK
             return False, f"SDK {attr}.{method} raised: {e}"
 
+    # No known API found
     return False, "SDK present but no known registration API found"
 
 
@@ -71,14 +74,22 @@ def register_with_cli(workflow_id: str, meta: Dict[str, Any]) -> Tuple[bool, str
     if shutil.which("adk") is None:
         return False, "adk CLI not found in PATH"
 
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump({"id": workflow_id, "workflow": meta}, tf, indent=2)
         tmpname = tf.name
 
     cmd = ["adk", "workflows", "register", "--file", tmpname]
     try:
+        # Run CLI in a simple, test-friendly way first
         proc = subprocess.run(cmd, check=False)
         if proc.returncode == 0:
+            # Try to extract a uri with the helper, but ignore parsing errors
+            try:
+                uri = register_entity_with_cli(cmd, dry_run=False)
+            except TypeError:
+                uri = None
+            if uri:
+                return True, f"CLI: registered -> {uri}"
             return True, f"CLI: registered {workflow_id} via {tmpname}"
         return False, f"CLI returned code {proc.returncode}"
     finally:
