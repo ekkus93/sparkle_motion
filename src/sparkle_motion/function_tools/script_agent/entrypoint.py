@@ -16,6 +16,7 @@ from pydantic import BaseModel, model_validator
 
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion import adk_helpers
+from sparkle_motion import adk_factory, observability, telemetry
 
 LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -93,13 +94,32 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: delay=%s", delay)
             await asyncio.sleep(delay)
+
+        # Eagerly construct per-tool agent (fixture mode returns dummy agent)
+        try:
+            model_spec = os.environ.get("SCRIPT_AGENT_MODEL", "script-agent-default")
+            seed = int(os.environ.get("SCRIPT_AGENT_SEED")) if os.environ.get("SCRIPT_AGENT_SEED") else None
+            app.state.agent = adk_factory.get_agent("script_agent", model_spec=model_spec, mode="per-tool", seed=seed)
+            try:
+                observability.record_seed(seed, tool_name="script_agent")
+                telemetry.emit_event("agent.created", {"tool": "script_agent", "model_spec": model_spec, "seed": seed})
+            except Exception:
+                pass
+        except Exception:
+            LOG.exception("failed to construct ADK agent for script_agent")
+            raise
+
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("script_agent ready")
+        LOG.info("script_agent ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "script_agent"})
         except Exception:
             LOG.exception("telemetry send failed on ready")
+        try:
+            telemetry.emit_event("tool.ready", {"tool": "script_agent"})
+        except Exception:
+            pass
         try:
             yield
         finally:
@@ -145,6 +165,10 @@ def make_app() -> FastAPI:
             send_telemetry("invoke.received", {"tool": "script_agent", "request_id": request_id})
         except Exception:
             LOG.exception("telemetry send failed on invoke.received")
+        try:
+            telemetry.emit_event("invoke.received", {"tool": "script_agent", "request_id": request_id})
+        except Exception:
+            pass
         with app.state.lock:
             app.state.inflight += 1
         try:
@@ -187,6 +211,10 @@ def make_app() -> FastAPI:
                 send_telemetry("invoke.completed", {"tool": "script_agent", "request_id": request_id, "artifact_uri": artifact_uri})
             except Exception:
                 LOG.exception("telemetry send failed on invoke.completed")
+            try:
+                telemetry.emit_event("invoke.completed", {"tool": "script_agent", "request_id": request_id, "artifact_uri": artifact_uri})
+            except Exception:
+                pass
 
             resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()

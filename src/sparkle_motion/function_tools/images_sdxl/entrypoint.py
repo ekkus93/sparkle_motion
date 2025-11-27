@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
+from sparkle_motion import adk_factory, observability, telemetry
 
 LOG = logging.getLogger("images_sdxl.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -47,11 +48,29 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: delay=%s", delay)
             await asyncio.sleep(delay)
+        # Eagerly construct per-tool ADK agent (fixture mode returns dummy agent).
+        try:
+            model_spec = os.environ.get("IMAGES_SDXL_MODEL", "stable-diffusion-xl")
+            seed = int(os.environ.get("IMAGES_SDXL_SEED")) if os.environ.get("IMAGES_SDXL_SEED") else None
+            app.state.agent = adk_factory.get_agent("images_sdxl", model_spec=model_spec, mode="per-tool", seed=seed)
+            try:
+                observability.record_seed(seed, tool_name="images_sdxl")
+                telemetry.emit_event("agent.created", {"tool": "images_sdxl", "model_spec": model_spec, "seed": seed})
+            except Exception:
+                pass
+        except Exception:
+            LOG.exception("failed to construct ADK agent for images_sdxl")
+            raise
+
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("images_sdxl ready")
+        LOG.info("images_sdxl ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "images_sdxl"})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("tool.ready", {"tool": "images_sdxl"})
         except Exception:
             pass
         try:

@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
-from sparkle_motion import adk_factory, gpu_utils
+from sparkle_motion import adk_factory, gpu_utils, observability, telemetry
 
 LOG = logging.getLogger("videos_wan.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -55,7 +55,15 @@ def make_app() -> FastAPI:
         # factory returns a lightweight dummy agent.
         try:
             model_spec = os.environ.get("VIDEOS_WAN_MODEL", "Wan-AI/Wan2.1-I2V-14B-720P")
-            app.state.agent = adk_factory.get_agent("videos_wan", model_spec=model_spec, mode="per-tool")
+            # attach a seed if provided via env for deterministic tests
+            seed = int(os.environ.get("VIDEOS_WAN_SEED")) if os.environ.get("VIDEOS_WAN_SEED") else None
+            app.state.agent = adk_factory.get_agent("videos_wan", model_spec=model_spec, mode="per-tool", seed=seed)
+            # record seed & emit agent lifecycle event
+            try:
+                observability.record_seed(seed, tool_name="videos_wan")
+                telemetry.emit_event("agent.created", {"tool": "videos_wan", "model_spec": model_spec, "seed": seed})
+            except Exception:
+                pass
         except Exception as e:
             LOG.exception("failed to construct ADK agent for videos_wan: %s", e)
             # re-raise to prevent the app from starting silently
@@ -66,6 +74,10 @@ def make_app() -> FastAPI:
         LOG.info("videos_wan ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "videos_wan"})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("tool.ready", {"tool": "videos_wan"})
         except Exception:
             pass
         try:
@@ -118,6 +130,10 @@ def make_app() -> FastAPI:
         LOG.info("invoke.received", extra={"request_id": request_id})
         try:
             send_telemetry("invoke.received", {"tool": "videos_wan", "request_id": request_id})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("invoke.received", {"tool": "videos_wan", "request_id": request_id})
         except Exception:
             pass
         with app.state.lock:
@@ -223,6 +239,10 @@ def make_app() -> FastAPI:
 
             try:
                 send_telemetry("invoke.completed", {"tool": "videos_wan", "request_id": request_id, "artifact_uri": artifact_uri})
+            except Exception:
+                pass
+            try:
+                telemetry.emit_event("invoke.completed", {"tool": "videos_wan", "request_id": request_id, "artifact_uri": artifact_uri})
             except Exception:
                 pass
 

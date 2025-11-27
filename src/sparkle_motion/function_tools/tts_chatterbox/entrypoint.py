@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
+from sparkle_motion import adk_factory, observability, telemetry
 
 LOG = logging.getLogger("tts_chatterbox.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -47,11 +48,29 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: delay=%s", delay)
             await asyncio.sleep(delay)
+        # Eagerly construct per-tool ADK agent (fixture mode returns dummy agent)
+        try:
+            model_spec = os.environ.get("TTS_CHATTERBOX_MODEL", "tts-default")
+            seed = int(os.environ.get("TTS_CHATTERBOX_SEED")) if os.environ.get("TTS_CHATTERBOX_SEED") else None
+            app.state.agent = adk_factory.get_agent("tts_chatterbox", model_spec=model_spec, mode="per-tool", seed=seed)
+            try:
+                observability.record_seed(seed, tool_name="tts_chatterbox")
+                telemetry.emit_event("agent.created", {"tool": "tts_chatterbox", "model_spec": model_spec, "seed": seed})
+            except Exception:
+                pass
+        except Exception:
+            LOG.exception("failed to construct ADK agent for tts_chatterbox")
+            raise
+
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("tts_chatterbox ready")
+        LOG.info("tts_chatterbox ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "tts_chatterbox"})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("tool.ready", {"tool": "tts_chatterbox"})
         except Exception:
             pass
         try:
@@ -104,6 +123,10 @@ def make_app() -> FastAPI:
         LOG.info("invoke.received", extra={"request_id": request_id})
         try:
             send_telemetry("invoke.received", {"tool": "tts_chatterbox", "request_id": request_id})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("invoke.received", {"tool": "tts_chatterbox", "request_id": request_id})
         except Exception:
             pass
         with app.state.lock:
@@ -181,6 +204,10 @@ def make_app() -> FastAPI:
 
             try:
                 send_telemetry("invoke.completed", {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri})
+            except Exception:
+                pass
+            try:
+                telemetry.emit_event("invoke.completed", {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri})
             except Exception:
                 pass
 

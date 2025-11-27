@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
+from sparkle_motion import adk_factory, observability, telemetry
 
 LOG = logging.getLogger("assemble_ffmpeg.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -47,11 +48,29 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: delay=%s", delay)
             await asyncio.sleep(delay)
+        # Eagerly construct per-tool ADK agent
+        try:
+            model_spec = os.environ.get("ASSEMBLE_FFMPEG_MODEL", "ffmpeg-assembler")
+            seed = int(os.environ.get("ASSEMBLE_FFMPEG_SEED")) if os.environ.get("ASSEMBLE_FFMPEG_SEED") else None
+            app.state.agent = adk_factory.get_agent("assemble_ffmpeg", model_spec=model_spec, mode="per-tool", seed=seed)
+            try:
+                observability.record_seed(seed, tool_name="assemble_ffmpeg")
+                telemetry.emit_event("agent.created", {"tool": "assemble_ffmpeg", "model_spec": model_spec, "seed": seed})
+            except Exception:
+                pass
+        except Exception:
+            LOG.exception("failed to construct ADK agent for assemble_ffmpeg")
+            raise
+
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("assemble_ffmpeg ready")
+        LOG.info("assemble_ffmpeg ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "assemble_ffmpeg"})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("tool.ready", {"tool": "assemble_ffmpeg"})
         except Exception:
             pass
         try:
@@ -104,6 +123,10 @@ def make_app() -> FastAPI:
         LOG.info("invoke.received", extra={"request_id": request_id})
         try:
             send_telemetry("invoke.received", {"tool": "assemble_ffmpeg", "request_id": request_id})
+        except Exception:
+            pass
+        try:
+            telemetry.emit_event("invoke.received", {"tool": "assemble_ffmpeg", "request_id": request_id})
         except Exception:
             pass
         with app.state.lock:
@@ -181,6 +204,10 @@ def make_app() -> FastAPI:
 
             try:
                 send_telemetry("invoke.completed", {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri})
+            except Exception:
+                pass
+            try:
+                telemetry.emit_event("invoke.completed", {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri})
             except Exception:
                 pass
 
