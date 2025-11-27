@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT"
+export REPO_ROOT
 
 PROFILE="local-colab"
 
@@ -42,7 +43,7 @@ import os
 import sys
 import pathlib
 
-repo_root = pathlib.Path(__file__).resolve().parents[1]
+repo_root = pathlib.Path(os.environ.get("REPO_ROOT", pathlib.Path(__file__).resolve().parents[1]))
 manifest_path = repo_root / "resources" / "adk_projects.json"
 profile_name = os.environ["BOOTSTRAP_PROFILE"]
 
@@ -65,6 +66,11 @@ artifact_path = pathlib.Path(artifact_config.get("path", ""))
 requires_mount = artifact_config.get("requires_mount", False)
 if requires_mount and not pathlib.Path("/content/drive").exists():
     print("[WARN] /content/drive is missing. Mount Google Drive before running the bootstrap script.")
+    # Fall back to a repo-local artifacts directory when not running in Colab
+    fallback_root = repo_root / "artifacts"
+    if not artifact_path or str(artifact_path).startswith("/content"):
+        artifact_path = fallback_root
+        summary.append(f"Using local fallback artifact root at {artifact_path}")
 
 session_config = profile.get("session_service", {})
 memory_config = profile.get("memory_service", {})
@@ -81,7 +87,15 @@ for config, label in sqlite_targets:
     if not path_value:
         continue
     path = pathlib.Path(path_value)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # Fall back to repo-local data directory if parent isn't writable (not Colab)
+        fb_root = repo_root / "data"
+        rel = pathlib.Path(str(path).lstrip(path.anchor))
+        path = fb_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        summary.append(f"Parent path not writable; using fallback for {label} at {path}")
     if not path.exists():
         path.touch()
         summary.append(f"Created {label} SQLite database at {path}")
@@ -95,7 +109,14 @@ if artifact_path:
 secrets_path_value = secrets_config.get("path")
 if secrets_path_value:
     secrets_path = pathlib.Path(secrets_path_value)
-    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        fb_root = repo_root / "data"
+        rel = pathlib.Path(str(secrets_path).lstrip(secrets_path.anchor))
+        secrets_path = fb_root / rel
+        secrets_path.parent.mkdir(parents=True, exist_ok=True)
+        summary.append(f"Parent path not writable; using fallback secrets path at {secrets_path}")
     if not secrets_path.exists():
         env_lines = [
             "# Sparkle Motion local-colab secrets",
