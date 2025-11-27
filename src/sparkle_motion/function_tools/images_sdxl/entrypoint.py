@@ -11,7 +11,9 @@ import asyncio
 from threading import Lock
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 
@@ -65,6 +67,15 @@ def make_app() -> FastAPI:
     app.state.ready = False
     app.state.shutting_down = False
     app.state.inflight = 0
+
+    # Map Pydantic/FastAPI validation errors to HTTP 400 to keep contract stable
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        try:
+            LOG.debug("validation error", exc_info=exc)
+        except Exception:
+            pass
+        return JSONResponse(status_code=400, content={"detail": exc.errors()})
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -132,14 +143,38 @@ def make_app() -> FastAPI:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            # publish using the shared helper if available
+            # publish using the shared ADK helpers if available, with safe fallbacks
+            artifact_uri = None
+            artifact_name = Path(local_path).name
             try:
-                from sparkle_motion.function_tools.script_agent.entrypoint import publish_artifact
-                try:
-                    artifact_uri = publish_artifact(local_path)
-                except Exception:
-                    artifact_uri = f"file://{os.path.abspath(local_path)}"
+                import sparkle_motion.adk_helpers as ah
             except Exception:
+                ah = None
+
+            if ah is not None:
+                try:
+                    # probe_sdk may raise SystemExit if SDK not present; handle that gracefully
+                    try:
+                        sdk_res = ah.probe_sdk()
+                    except SystemExit:
+                        sdk_res = None
+
+                    if sdk_res:
+                        adk_module, client = sdk_res
+                        try:
+                            artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
+                        except Exception:
+                            artifact_uri = None
+
+                    if not artifact_uri:
+                        try:
+                            artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
+                        except Exception:
+                            artifact_uri = None
+                except Exception:
+                    artifact_uri = None
+
+            if not artifact_uri:
                 artifact_uri = f"file://{os.path.abspath(local_path)}"
 
             try:
