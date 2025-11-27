@@ -212,3 +212,6 @@ resources/
 memory.md
 tmp*/
 *.code-workspace
+
+# Generated test artifacts
+artifacts/
