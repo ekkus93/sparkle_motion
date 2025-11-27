@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
+from sparkle_motion import adk_factory, gpu_utils
 
 LOG = logging.getLogger("videos_wan.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -47,9 +48,22 @@ def make_app() -> FastAPI:
         if delay > 0:
             LOG.info("Warmup: delay=%s", delay)
             await asyncio.sleep(delay)
+
+        # Eagerly construct the per-tool ADK agent. This follows the project's
+        # fail‑loud semantics: if the SDK or credentials are missing, startup
+        # should fail rather than silently falling back. In fixture mode the
+        # factory returns a lightweight dummy agent.
+        try:
+            model_spec = os.environ.get("VIDEOS_WAN_MODEL", "Wan-AI/Wan2.1-I2V-14B-720P")
+            app.state.agent = adk_factory.get_agent("videos_wan", model_spec=model_spec, mode="per-tool")
+        except Exception as e:
+            LOG.exception("failed to construct ADK agent for videos_wan: %s", e)
+            # re-raise to prevent the app from starting silently
+            raise
+
         app.state._start_time = time.time()
         app.state.ready = True
-        LOG.info("videos_wan ready")
+        LOG.info("videos_wan ready (agent attached)")
         try:
             send_telemetry("tool.ready", {"tool": "videos_wan"})
         except Exception:
@@ -142,35 +156,63 @@ def make_app() -> FastAPI:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            # publish using the shared ADK helpers if available, with safe fallbacks
+            # Use gpu_utils.model_context to ensure any heavy model resources
+            # are loaded and deterministically released. The loader attempts to
+            # call an agent-provided load method if available, otherwise the
+            # agent itself is used as the handle. In fixture mode load/teardown
+            # are no-ops so unit tests remain fast.
+            def _loader():
+                agent = getattr(app.state, "agent", None)
+                if agent is None:
+                    return None
+                load_fn = getattr(agent, "load_model", None)
+                if callable(load_fn):
+                    return load_fn()
+                return agent
+
             artifact_uri = None
             artifact_name = Path(local_path).name
             try:
-                import sparkle_motion.adk_helpers as ah
-            except Exception:
-                ah = None
-
-            if ah is not None:
-                try:
+                with gpu_utils.model_context(_loader, name="videos_wan") as model_handle:
+                    # model_handle may be agent or a model object; prefer
+                    # calling .info() when present so warmup happens.
                     try:
-                        sdk_res = ah.probe_sdk()
-                    except SystemExit:
-                        sdk_res = None
+                        if model_handle is not None and hasattr(model_handle, "info"):
+                            _ = model_handle.info()
+                    except Exception:
+                        pass
 
-                    if sdk_res:
-                        adk_module, client = sdk_res
+                    # publish using the shared ADK helpers if available, with safe fallbacks
+                    try:
+                        import sparkle_motion.adk_helpers as ah
+                    except Exception:
+                        ah = None
+
+                    if ah is not None:
                         try:
-                            artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
+                            try:
+                                sdk_res = ah.probe_sdk()
+                            except SystemExit:
+                                sdk_res = None
+
+                            if sdk_res:
+                                adk_module, client = sdk_res
+                                try:
+                                    artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
+                                except Exception:
+                                    artifact_uri = None
+
+                            if not artifact_uri:
+                                try:
+                                    artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
+                                except Exception:
+                                    artifact_uri = None
                         except Exception:
                             artifact_uri = None
 
-                    if not artifact_uri:
-                        try:
-                            artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
-                        except Exception:
-                            artifact_uri = None
-                except Exception:
-                    artifact_uri = None
+            except Exception as e:
+                LOG.exception("model load/invoke failed: %s", e)
+                raise HTTPException(status_code=500, detail="model load failed")
 
             # In fixture/test mode prefer a local file:// URI so tests can assert on files
             if artifact_uri and os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
