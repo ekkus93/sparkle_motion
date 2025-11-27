@@ -319,3 +319,151 @@ def register_entity_with_cli(cmd: list[str], dry_run: bool = False) -> Optional[
             return token.strip()
 
     return (out or "").strip() or None
+
+
+class _InMemoryMemoryService:
+    """A tiny in-memory MemoryService used for deterministic fixture tests.
+
+    This implements a minimal subset of the MemoryService API used by tests:
+    - store_session_metadata(session_id, metadata: dict)
+    - get_session_metadata(session_id) -> dict
+    - append_reviewer_decision(session_id, decision: dict)
+    - get_reviewer_decisions(session_id) -> list[dict]
+    """
+
+    def __init__(self) -> None:
+        self._meta: dict[str, dict] = {}
+        self._decisions: dict[str, list] = {}
+
+    def store_session_metadata(self, session_id: str, metadata: dict) -> None:
+        cur = self._meta.get(session_id, {})
+        cur.update(metadata or {})
+        self._meta[session_id] = cur
+
+    def get_session_metadata(self, session_id: str) -> Optional[dict]:
+        return self._meta.get(session_id)
+
+    def append_reviewer_decision(self, session_id: str, decision: dict) -> None:
+        self._decisions.setdefault(session_id, []).append(decision)
+
+    def get_reviewer_decisions(self, session_id: str) -> list:
+        return list(self._decisions.get(session_id, []))
+
+
+class _SQLiteMemoryService:
+    """Simple SQLite-backed MemoryService implementation for tests.
+
+    Implements the small API used by tests and runner: store/get session
+    metadata and append/list reviewer decisions.
+    """
+
+    def __init__(self, db_path: str | Path) -> None:
+        import sqlite3
+
+        self._db_path = str(db_path)
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._ensure_schema()
+
+    def _ensure_schema(self) -> None:
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                metadata TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                decision TEXT
+            )
+            """
+        )
+        self._conn.commit()
+
+    def store_session_metadata(self, session_id: str, metadata: dict) -> None:
+        import json
+
+        cur = self._conn.cursor()
+        cur.execute("SELECT metadata FROM sessions WHERE session_id = ?", (session_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            cur_meta = json.loads(row[0])
+            cur_meta.update(metadata or {})
+            data = json.dumps(cur_meta)
+            cur.execute("UPDATE sessions SET metadata = ? WHERE session_id = ?", (data, session_id))
+        else:
+            data = json.dumps(metadata or {})
+            cur.execute("INSERT OR REPLACE INTO sessions(session_id, metadata) VALUES(?,?)", (session_id, data))
+        self._conn.commit()
+
+    def get_session_metadata(self, session_id: str) -> Optional[dict]:
+        import json
+
+        cur = self._conn.cursor()
+        cur.execute("SELECT metadata FROM sessions WHERE session_id = ?", (session_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return None
+        return json.loads(row[0])
+
+    def append_reviewer_decision(self, session_id: str, decision: dict) -> None:
+        import json
+
+        cur = self._conn.cursor()
+        cur.execute("INSERT INTO decisions(session_id, decision) VALUES(?,?)", (session_id, json.dumps(decision)))
+        self._conn.commit()
+
+    def get_reviewer_decisions(self, session_id: str) -> list:
+        import json
+
+        cur = self._conn.cursor()
+        cur.execute("SELECT decision FROM decisions WHERE session_id = ? ORDER BY id", (session_id,))
+        rows = cur.fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+
+def get_memory_service() -> object:
+    """Return a usable MemoryService implementation.
+
+    In fixture mode (when `ADK_USE_FIXTURE=1`) this returns an in-memory
+    service suitable for unit tests. In non-fixture environments we attempt
+    to locate an SDK-backed MemoryService and otherwise raise RuntimeError.
+    """
+    if os.environ.get("ADK_USE_FIXTURE") == "1":
+            # reuse a single in-memory instance so multiple tools in the same
+            # process share session state during fixture-mode tests
+            global _FIXTURE_MEMORY_SERVICE
+            try:
+                _FIXTURE_MEMORY_SERVICE
+            except NameError:
+                _FIXTURE_MEMORY_SERVICE = _InMemoryMemoryService()
+            return _FIXTURE_MEMORY_SERVICE
+
+    # If an explicit SQLite path is provided, use a lightweight file-backed
+    # MemoryService for persistence tests or local deployments.
+    sqlite_path = os.environ.get("ADK_MEMORY_SQLITE")
+    if sqlite_path:
+        try:
+            return _SQLiteMemoryService(sqlite_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize SQLite MemoryService: {e}")
+
+    # Attempt to locate a MemoryService via the ADK SDK if present.
+    try:
+        adk_mod, _ = probe_sdk()
+    except SystemExit:
+        raise RuntimeError("ADK SDK not available to provide MemoryService")
+
+    # Common SDK naming conventions for memory/session services
+    for cand in ("memory_service", "MemoryService", "session_service", "SessionService"):
+        svc = getattr(adk_mod, cand, None)
+        if svc is not None:
+            return svc
+
+    raise RuntimeError("No MemoryService available via SDK")
