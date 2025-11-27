@@ -1,0 +1,47 @@
+*** Begin Proposed pyproject.toml diff (for review only)
+*** Update File: pyproject.toml
+@@
+ [project]
+ # (other project metadata omitted)
+ 
+ [project.optional-dependencies]
+ adk = [
+   "google-adk>=1.0.0",              # ADK Python SDK (exact version TBD)
+ ]
+ 
+ [project.optional-dependencies]
+ adk-runtime = [
+   # Core ML infra
+   "torch>=2.2.0",                   # PyTorch (choose CUDA build appropriate for host)
+   "accelerate>=0.20.0",             # Hugging Face accelerate for multi-GPU/FP16
+   "diffusers>=0.20.0",              # SDXL pipelines
+   "transformers>=4.35.0",           # text + multimodal model tooling
+   "safetensors>=0.3.0",             # safe weight format
+   "bitsandbytes>=0.40.0",           # optional 8-bit optimizer support (if used)
+   "xformers>=0.0.20",               # optional memory-efficient attention (if desired)
+   
+   # Vision & video helpers
+   "opencv-python>=4.7.0",
+   "ffmpeg-python>=0.2.0",
+
+   # Wan-specific: recommend installing from source or HF repo; list as an advisory
+   # Example: "wan-video @ git+https://github.com/Wan-Video/Wan2.1.git"  # WAN2.1 I2V pipeline (review license)
+
+   # Audio / TTS
+   "TTS>=0.13.0",                     # Coqui TTS (optional local fallback)
+   "soundfile>=0.12.1",
+   "librosa>=0.10.0",
+
+   # Utils
+   "accelerate>=0.20.0",
+   "huggingface-hub>=0.17.0",
+   "python-multipart>=0.0.5",
+ ]
+
+ # Notes / install guidance:
+ # - Do NOT apply these changes to `pyproject.toml` until you approve this proposal.
+ # - Platform-specific wheels (torch) must be chosen per CI/host (cpu vs cuda). Recommend documenting exact CUDA toolkit compat (e.g., cu118/cu120) in the final proposal.
+ # - Wan2.1 currently distributes via a community repo; we recommend installing it from the Wan-Video GitHub repo as an editable dependency or packaging a thin adapter that pins a tested commit.
+ # - Consider adding an extras group `adk-runtime-gpu` that pins CUDA-specific wheels for reproducible developer installs.
+
+*** End Proposed pyproject.toml diff

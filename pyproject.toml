@@ -18,6 +18,33 @@ adk = [
   "google-adk==1.19.0"
 ]
 
+# Optional extra grouping for heavy ADK runtime/model packages (GPU/CPU variants)
+adk-runtime = [
+  # Core ML infra (select CUDA wheel appropriate for host)
+  "torch>=2.2.0",                   # PyTorch (choose CUDA build appropriate for host)
+  "accelerate>=0.20.0",             # Hugging Face accelerate for multi-GPU/FP16
+  "diffusers>=0.20.0",              # SDXL pipelines
+  "transformers>=4.35.0",           # text + multimodal model tooling
+  "safetensors>=0.3.0",             # safe weight format
+  "bitsandbytes>=0.40.0",           # optional 8-bit optimizer support (if used)
+  "xformers>=0.0.20",               # optional memory-efficient attention
+
+  # Vision & video helpers
+  "opencv-python>=4.7.0",
+  "ffmpeg-python>=0.2.0",
+
+  # Wan-specific: recommend installing from source or HF repo; list as an advisory
+  # Example: "wan-video @ git+https://github.com/Wan-Video/Wan2.1.git"  # WAN2.1 I2V pipeline (review license)
+
+  # Audio / TTS
+  "TTS>=0.13.0",                     # Coqui TTS (optional local fallback)
+  "soundfile>=0.12.1",
+  "librosa>=0.10.0",
+
+  # Utilities
+  "huggingface-hub>=0.17.0",
+]
+
 [project.urls]
 "Homepage" = "https://github.com/ekkus93/sparkle_motion"
 
