@@ -1,0 +1,85 @@
+# Canonical WorkflowAgent definition (draft)
+# Stages: script -> images -> videos -> tts -> lipsync -> assemble -> qa
+# This file is a draft and intended for local dry-run validation.
+
+name: sparkle-motion/workflow/movie_pipeline
+version: 0.1.0
+description: >-
+  Canonical WorkflowAgent encoding the stage graph for the Sparkle Motion
+  movie pipeline. Use `scripts/register_workflow.py --dry-run` to validate
+  locally against `configs/tool_registry.yaml` and `configs/schema_artifacts.yaml`.
+
+stages:
+  - id: script
+    tool_id: script_agent:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/MoviePlan
+    output_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
+    retry:
+      attempts: 3
+      backoff_seconds: 2
+      max_backoff_seconds: 30
+      jitter: true
+
+  - id: images
+    tool_id: images_sdxl:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
+    output_schema: configs/schema_artifacts.yaml#/schemas/ImageAssets
+    retry:
+      attempts: 2
+      backoff_seconds: 1
+      max_backoff_seconds: 20
+      jitter: true
+
+  - id: videos
+    tool_id: videos_wan:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/ImageAssets
+    output_schema: configs/schema_artifacts.yaml#/schemas/VideoAssets
+    retry:
+      attempts: 2
+      backoff_seconds: 2
+      max_backoff_seconds: 40
+      jitter: true
+
+  - id: tts
+    tool_id: tts_chatterbox:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
+    output_schema: configs/schema_artifacts.yaml#/schemas/AudioAssets
+    retry:
+      attempts: 3
+      backoff_seconds: 1
+      max_backoff_seconds: 30
+      jitter: true
+
+  - id: lipsync
+    tool_id: lipsync_wav2lip:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/VideoAssets
+    output_schema: configs/schema_artifacts.yaml#/schemas/LipsyncAssets
+    retry:
+      attempts: 2
+      backoff_seconds: 1
+      max_backoff_seconds: 20
+      jitter: true
+
+  - id: assemble
+    tool_id: assemble_ffmpeg:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/AssembleInput
+    output_schema: configs/schema_artifacts.yaml#/schemas/MovieAsset
+    retry:
+      attempts: 1
+      backoff_seconds: 1
+      max_backoff_seconds: 10
+      jitter: false
+
+  - id: qa
+    tool_id: qa_qwen2vl:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/MovieAsset
+    output_schema: configs/schema_artifacts.yaml#/schemas/QAReport
+    retry:
+      attempts: 1
+      backoff_seconds: 1
+      max_backoff_seconds: 10
+      jitter: false
+
+defaults:
+  timeout_seconds: 600
+  max_concurrent_stages: 2
