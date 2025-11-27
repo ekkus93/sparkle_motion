@@ -48,11 +48,21 @@ def get_agent(tool_name: str, model_spec: Optional[str] = None, mode: str = "per
             pass
         return agent
 
-    # Probe SDK (adk_helpers.probe_sdk raises SystemExit when SDK import fails)
+    # Probe SDK (non-fatal probe). Fail loudly here because agents are
+    # runtime-critical — higher-level entrypoints expect a RuntimeError
+    # when the SDK is missing. Protect against probe functions that may call
+    # sys.exit()/SystemExit (convert to a RuntimeError) so tests or misbehaving
+    # probe implementations cannot abort the process.
     try:
-        adk_mod, client = adk_helpers.probe_sdk()
-    except SystemExit as e:
-        raise RuntimeError("google.adk SDK not available or import failed") from e
+        res = adk_helpers.probe_sdk()
+    except SystemExit:
+        res = None
+    except Exception:
+        res = None
+
+    if not res:
+        raise RuntimeError("google.adk SDK not available or import failed")
+    adk_mod, client = res
 
     # Try common SDK agent constructors in a best-effort order
     candidates = [
