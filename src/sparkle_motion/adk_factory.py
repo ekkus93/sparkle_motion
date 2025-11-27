@@ -4,6 +4,7 @@ import os
 from typing import Any, Optional
 
 from . import adk_helpers
+from . import observability
 
 
 class _DummyAgent:
@@ -23,7 +24,7 @@ def _fixture_agent(tool_name: str, model_spec: Optional[str] = None) -> _DummyAg
     return _DummyAgent(tool_name, model_spec=model_spec)
 
 
-def get_agent(tool_name: str, model_spec: Optional[str] = None, mode: str = "per-tool") -> Any:
+def get_agent(tool_name: str, model_spec: Optional[str] = None, mode: str = "per-tool", seed: Optional[int] = None) -> Any:
     """Return an agent for the given tool.
 
     Behavior:
@@ -33,7 +34,19 @@ def get_agent(tool_name: str, model_spec: Optional[str] = None, mode: str = "per
     """
     # Fixture/test mode — no real SDK required
     if os.environ.get("ADK_USE_FIXTURE") == "1":
-        return _fixture_agent(tool_name, model_spec=model_spec)
+        agent = _fixture_agent(tool_name, model_spec=model_spec)
+        # record seed and emit a telemetry event for tests
+        try:
+            observability.record_seed(seed, tool_name=tool_name)
+            observability.emit_agent_event("agent.created", {"tool": tool_name, "model_spec": model_spec, "fixture": True, "seed": seed})
+        except Exception:
+            pass
+        # attach seed to the agent object for test introspection
+        try:
+            setattr(agent, "seed", seed)
+        except Exception:
+            pass
+        return agent
 
     # Probe SDK (adk_helpers.probe_sdk raises SystemExit when SDK import fails)
     try:
@@ -74,10 +87,23 @@ def get_agent(tool_name: str, model_spec: Optional[str] = None, mode: str = "per
         client_ctor = getattr(client, "create", None) or getattr(client, "open", None)
     if client_ctor and callable(client_ctor):
         try:
-            return client_ctor(tool_name, model_spec)
+            agent = client_ctor(tool_name, model_spec)
+            try:
+                # record seed and emit telemetry for created agent
+                observability.record_seed(seed, tool_name=tool_name)
+                observability.emit_agent_event("agent.created", {"tool": tool_name, "model_spec": model_spec, "fixture": False, "seed": seed})
+            except Exception:
+                pass
+            try:
+                setattr(agent, "seed", seed)
+            except Exception:
+                pass
+            return agent
         except Exception:
             pass
 
+    # If we reached here, we may still have constructed an agent via the
+    # earlier candidate loops; otherwise fail loudly.
     raise RuntimeError("Unable to construct an ADK agent: no known constructor discovered in google.adk")
 
 
