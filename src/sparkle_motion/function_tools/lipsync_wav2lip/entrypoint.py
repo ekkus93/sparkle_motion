@@ -172,6 +172,10 @@ def make_app() -> FastAPI:
                 except Exception:
                     artifact_uri = None
 
+            # In fixture/test mode prefer a local file:// URI so tests can assert on files
+            if artifact_uri and os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
+                artifact_uri = f"file://{os.path.abspath(local_path)}"
+
             if not artifact_uri:
                 artifact_uri = f"file://{os.path.abspath(local_path)}"
 
