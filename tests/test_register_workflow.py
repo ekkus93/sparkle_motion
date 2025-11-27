@@ -43,9 +43,8 @@ def test_register_with_sdk_import_error(reload_module, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     try:
-        ok, msg = rw.register_with_sdk("x", {})
-        assert not ok
-        assert "SDK not importable" in msg
+        with pytest.raises(SystemExit):
+            rw.register_with_sdk("x", {})
     finally:
         monkeypatch.setattr(builtins, "__import__", orig_import)
 
@@ -123,11 +122,7 @@ def test_main_falls_back_to_cli_when_sdk_missing(monkeypatch, reload_module, cap
     monkeypatch.setattr(subprocess, "run", lambda cmd, check=False: FakeProc(0))
     monkeypatch.setattr(sys, "argv", ["register_workflow.py", "--path", "dummy"])
     try:
-        rc = rw.main()
+        with pytest.raises(SystemExit):
+            rw.main()
     finally:
         monkeypatch.setattr(builtins, "__import__", orig_import)
-
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "CLI attempt" in out
-    assert "registered" in out

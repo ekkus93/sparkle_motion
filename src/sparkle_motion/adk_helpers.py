@@ -21,8 +21,12 @@ def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     """
     try:
         import google.adk as adk  # type: ignore
-    except Exception:
-        return None
+    except Exception as e:
+        # ADK Python SDK is required for all tooling in this repository.
+        # Fail fast and provide a clear error so callers don't silently
+        # fall back to alternate code paths.
+        print("ERROR: google.adk SDK not importable: {}".format(e), file=sys.stderr)
+        raise SystemExit(1)
 
     for cand in ("artifacts", "ArtifactService", "artifacts_client", "artifact_client"):
         client = getattr(adk, cand, None)
