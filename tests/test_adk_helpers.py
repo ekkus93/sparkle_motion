@@ -1,7 +1,5 @@
 import json
-from types import SimpleNamespace
 
-import pytest
 
 from sparkle_motion.adk_helpers import publish_with_cli
 

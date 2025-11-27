@@ -1,6 +1,5 @@
 from __future__ import annotations
 from fastapi.testclient import TestClient
-import os
 
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import app
 

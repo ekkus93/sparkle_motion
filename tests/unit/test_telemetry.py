@@ -1,4 +1,3 @@
-import pytest
 
 
 def test_memory_service_emits_telemetry(monkeypatch):

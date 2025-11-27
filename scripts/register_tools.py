@@ -38,10 +38,11 @@ def try_register_with_sdk(tool: Dict[str, Any], dry_run: bool) -> Optional[str]:
 
     Returns a registration id/uri on success or None.
     """
-    adk_mod = probe_sdk()
-    if not adk_mod:
+    res = probe_sdk()
+    if not res:
         LOG.debug("google.adk not available; skipping SDK path")
         return None
+    adk_mod, _ = res
 
     try:
         return register_entity_with_sdk(adk_mod, tool, entity_kind="tool", name=tool.get("id") or tool.get("name"), dry_run=dry_run)
@@ -150,15 +151,10 @@ Notes:
         `adk tools register --file <tmpfile>`; adjust if your ADK CLI differs.
 """
 
-import argparse
-import json
 import shutil
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from typing import Any, Dict, Tuple, List
+from typing import Any, Dict, List
 
 from sparkle_motion.tool_registry import load_tool_registry
 

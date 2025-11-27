@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.videos_wan.entrypoint import make_app

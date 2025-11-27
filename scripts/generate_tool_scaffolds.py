@@ -11,8 +11,6 @@ scaffolds. By default it inspects `configs/tool_registry.yaml` and
 """
 from __future__ import annotations
 import argparse
-import json
-import sys
 from pathlib import Path
 from typing import List
 

@@ -1,9 +1,6 @@
 from __future__ import annotations
 from fastapi.testclient import TestClient
-import os
 from pathlib import Path
-import json
-import tempfile
 
 from sparkle_motion.function_tools.images_sdxl.entrypoint import app
 

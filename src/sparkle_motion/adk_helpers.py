@@ -16,18 +16,15 @@ from . import telemetry
 def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     """Try to import google.adk and discover an artifacts client.
 
-    Returns (adk_module, client_candidate) or None when SDK import fails.
-    The client_candidate may be None when the module exists but no obvious
-    artifacts helper is present.
+    Returns `(adk_module, client_candidate)` when the SDK is available or
+    `None` when the SDK import fails. This helper is intentionally
+    non-fatal so callers can choose whether to fail loudly or fall back
+    to CLI/local behaviour.
     """
     try:
         import google.adk as adk  # type: ignore
-    except Exception as e:
-        # ADK Python SDK is required for all tooling in this repository.
-        # Fail fast and provide a clear error so callers don't silently
-        # fall back to alternate code paths.
-        print("ERROR: google.adk SDK not importable: {}".format(e), file=sys.stderr)
-        raise SystemExit(1)
+    except Exception:
+        return None
 
     for cand in ("artifacts", "ArtifactService", "artifacts_client", "artifact_client"):
         client = getattr(adk, cand, None)
@@ -35,6 +32,20 @@ def probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
             return adk, client
 
     return adk, None
+
+
+def require_adk() -> Tuple[object, Optional[object]]:
+    """Require the ADK SDK and return (adk_module, client).
+
+    Raises SystemExit(1) with a clear message when the SDK is not present.
+    Callers that must fail-fast (e.g., runtime entrypoints) should use this
+    wrapper instead of directly calling `probe_sdk()`.
+    """
+    res = probe_sdk()
+    if not res:
+        print("ERROR: google.adk SDK not importable; see README for installation.", file=sys.stderr)
+        raise SystemExit(1)
+    return res
 
 
 def _publish_with_sdk_service(adk_module, file_path: str, artifact_name: str, dry_run: bool, project: Optional[str] = None) -> Optional[str]:
@@ -504,10 +515,10 @@ def get_memory_service() -> object:
             raise RuntimeError(f"Failed to initialize SQLite MemoryService: {e}")
 
     # Attempt to locate a MemoryService via the ADK SDK if present.
-    try:
-        adk_mod, _ = probe_sdk()
-    except SystemExit:
+    res = probe_sdk()
+    if not res:
         raise RuntimeError("ADK SDK not available to provide MemoryService")
+    adk_mod, _ = res
 
     # Common SDK naming conventions for memory/session services
     for cand in ("memory_service", "MemoryService", "session_service", "SessionService"):

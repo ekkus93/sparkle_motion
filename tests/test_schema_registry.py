@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 from sparkle_motion import schema_registry
 

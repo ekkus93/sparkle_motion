@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-import pytest
 
 from sparkle_motion.function_tools.tts_chatterbox.entrypoint import make_app
 

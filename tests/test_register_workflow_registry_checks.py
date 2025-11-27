@@ -1,7 +1,5 @@
 import importlib
 from pathlib import Path
-import sys
-import pytest
 
 
 mod = importlib.import_module("scripts.register_workflow_local")

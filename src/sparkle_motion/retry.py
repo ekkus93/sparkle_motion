@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import math
 import random
 import time
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 
 def exponential_backoff(base: float = 0.1, factor: float = 2.0, jitter: float = 0.1, max_backoff: float = 30.0) -> Callable[[int], float]:

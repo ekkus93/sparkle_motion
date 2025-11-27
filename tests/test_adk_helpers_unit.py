@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import sys
 import types
 
-import pytest
 
 from sparkle_motion.adk_helpers import (
     run_adk_cli,

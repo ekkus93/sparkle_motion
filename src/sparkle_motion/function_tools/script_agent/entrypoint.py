@@ -31,12 +31,12 @@ def publish_artifact(local_path: str) -> str:
         return f"file://{os.path.abspath(local_path)}"
 
     artifact_name = os.path.splitext(os.path.basename(local_path))[0]
-    try:
-        adk_mod, client = adk_helpers.probe_sdk()
-    except SystemExit:
-        # SDK missing and required by policy — surface fallback to file://
+    res = adk_helpers.probe_sdk()
+    if not res:
+        # SDK missing — fallback to file:// so runtime continues.
         LOG.error("ADK SDK not available; falling back to file:// for artifact publish")
         return f"file://{os.path.abspath(local_path)}"
+    adk_mod, client = res
 
     # try SDK publish
     try:

@@ -14,14 +14,12 @@ automatically discovered it falls back to the CLI path.
 from __future__ import annotations
 
 import argparse
-import glob
 import os
-import subprocess
 import sys
 import shutil
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 try:
     import yaml

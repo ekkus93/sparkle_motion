@@ -178,12 +178,7 @@ def make_app() -> FastAPI:
 
             if ah is not None:
                 try:
-                    # probe_sdk may raise SystemExit if SDK not present; handle that gracefully
-                    try:
-                        sdk_res = ah.probe_sdk()
-                    except SystemExit:
-                        sdk_res = None
-
+                    sdk_res = ah.probe_sdk()
                     if sdk_res:
                         adk_module, client = sdk_res
                         try:

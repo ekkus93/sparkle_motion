@@ -60,12 +60,10 @@ def emit_agent_event(name: str, payload: Optional[dict[str, Any]] = None) -> Non
         pass
 
     # Try to send to ADK timeline/events if SDK available
-    try:
-        adk_mod, _ = adk_helpers.probe_sdk()
-    except SystemExit:
+    res = adk_helpers.probe_sdk()
+    if not res:
         return
-    except Exception:
-        return
+    adk_mod, _ = res
 
     # common candidate APIs
     candidates = [

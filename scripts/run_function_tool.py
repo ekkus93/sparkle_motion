@@ -11,13 +11,12 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from urllib.parse import urlparse
 
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 import uvicorn
 from sparkle_motion.tool_entrypoint import create_app
 

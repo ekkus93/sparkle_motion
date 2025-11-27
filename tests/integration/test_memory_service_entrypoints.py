@@ -1,6 +1,4 @@
-from pathlib import Path
 
-import os
 import pytest
 
 from starlette.testclient import TestClient
