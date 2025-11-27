@@ -1,0 +1,38 @@
+[project]
+name = "sparkle_motion"
+version = "0.1.0"
+description = "Sparkle Motion — ADK-native agent tooling and tests (monorepo workspace root)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [ { name = "ekkus93" } ]
+
+# Runtime dependencies are intentionally minimal here; optional features are provided via
+# `project.optional-dependencies` so maintainers can opt-in to ADK runtime packages.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional dependencies for ADK runtime integration. Replace the package name/version
+# with the official ADK package you prefer. This is intentionally opt-in.
+adk = [
+  "google-adk>=0.1.0"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/ekkus93/sparkle_motion"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.pytest.ini_options]
+addopts = "-q -r a"
+
+# Notes:
+# - This file is a minimal, safe starting point for packaging the repository root.
+# - The `adk` optional-dependency is intentionally opt-in. Do not install the extra
+#   in environments where the ADK is not available or where you prefer the CLI fallback.
+# - I will not stage/commit/push this file unless you explicitly authorize `commit-push`.
