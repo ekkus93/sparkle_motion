@@ -40,4 +40,26 @@ Environment variables required for ADK integration tests / features:
 
 Set those in your environment when running ADK integration tests or using
 `google.adk`-powered features.
+
+Running tests (canonical commands)
+----------------------------------
+Use one of the commands below depending on the scope you want to run.
+
+- **Run unit tests (folder-based):** runs tests placed under `tests/unit`.
+
+```bash
+source /home/phil/mambaforge/bin/activate sparkle_motion
+PYTHONPATH=.:src pytest -q tests/unit
+```
+
+- **Run all tests (full repo run):** collects and runs every test under `tests/`.
+
+```bash
+source /home/phil/mambaforge/bin/activate sparkle_motion
+PYTHONPATH=.:src pytest -q
+```
+
+Notes:
+- We recommend keeping `PYTHONPATH=.:src` so both top-level scripts (e.g., `scripts/*`) and package code under `src/` import correctly during test collection.
+- If you prefer marker- or CI-driven selection, use pytest markers (e.g., `-m unit`) or targeted folders instead of the full run.
 # sparkle_motion
