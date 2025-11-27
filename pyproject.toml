@@ -15,7 +15,7 @@ dependencies = []
 # Optional dependencies for ADK runtime integration. Replace the package name/version
 # with the official ADK package you prefer. This is intentionally opt-in.
 adk = [
-  "google-adk>=0.1.0"
+  "google-adk==1.19.0"
 ]
 
 [project.urls]

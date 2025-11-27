@@ -23,4 +23,21 @@ PYTHONPATH=.:src ADK_PUBLISH_INTEGRATION=1 ADK_PROJECT=<your-project> ADK_USE_FI
 CI note: Do not add `tests/fixtures` to `PYTHONPATH` globally in CI
 jobs where the real ADK SDK is expected; the test inserts the fixtures
 by default and provides `ADK_USE_FIXTURE` to opt out when needed.
+
+Install & usage (ADK optional extra)
+----------------------------------
+To install the optional ADK runtime extras for this repository:
+
+```bash
+pip install .[adk]
+```
+
+Environment variables required for ADK integration tests / features:
+
+- `ADK_PUBLISH_INTEGRATION`
+- `ADK_PROJECT`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+
+Set those in your environment when running ADK integration tests or using
+`google.adk`-powered features.
 # sparkle_motion
