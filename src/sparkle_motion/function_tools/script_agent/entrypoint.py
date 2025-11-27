@@ -187,7 +187,9 @@ def make_app() -> FastAPI:
             except Exception:
                 pass
 
-            return ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            # Return JSON-serializable dict to avoid FastAPI response/model mismatches
+            return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
                 app.state.inflight = max(0, app.state.inflight - 1)
