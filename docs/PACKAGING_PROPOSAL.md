@@ -33,17 +33,18 @@ python = "^3.10"
 
 [tool.poetry.extras]
 # Add ADK as an opt-in extra for integration tests and runtime users who need ADK features
-adk = ["adk-sdk>=0.1.0"]
+adk = ["google-adk>=0.1.0"]
 ```
 
 Setuptools / PEP 621 (pyproject) example
 ---------------------------------------
 If the project uses `setuptools` with PEP 621 metadata, add an `extras_require` mapping in setup configuration (or update the project metadata accordingly). Example snippet for `setup.cfg` or `setup.py`:
 
+adk =
 ```ini
 [options.extras_require]
 adk =
-    adk-sdk>=0.1.0
+    google-adk>=0.1.0
 ```
 
 Open questions / choices
