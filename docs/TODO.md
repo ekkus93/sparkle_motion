@@ -268,6 +268,8 @@ P3 — Tests & proposals (review artifacts only)
   ### `images_agent` (decision layer)
   - [ ] Implement `src/sparkle_motion/images_agent.py` orchestration API `render(prompt, opts)`. [P0]
   - [ ] Implement batching/chunking logic (respect `max_images_per_call`). [P0]
+  - [x] Implement `src/sparkle_motion/images_agent.py` orchestration API `render(prompt, opts)`. [P0] (implemented)
+  - [x] Implement batching/chunking logic (respect `max_images_per_call`). [P0] (implemented)
   - [ ] Integrate a rate-limiter hook (pluggable implementation placed in `src/sparkle_motion/ratelimit.py`). [P1]
   - [ ] Wire pre-render QA via `qa_qwen2vl.inspect_frames()` (call stubbed in unit tests). [P1]
   - [ ] Add dedupe flag handling using `utils/dedupe.py` when enabled. [P2]
@@ -341,5 +343,40 @@ How to pick work & proceed
   3. For any dependency needs prepare `proposals/pyproject_adk.diff` and pause for your approval before applying.
 
 If you want me to begin, say which todo id or item to start (for example: `start 2` to begin `gpu_utils: core impl`).
+
+## Developer runbook & concrete checklist (adds required items for `images_agent`)
+
+- Config & env vars to set for local development:
+  - `export SPARKLE_DB_PATH="$(pwd)/artifacts/sparkle.db"`
+  - `export ADK_USE_FIXTURE=1` (optional: run adapters in fixture mode)
+  - `export IMAGES_MAX_PER_CALL_DEFAULT=8`
+
+- Files to create/verify (checklist):
+  - [ ] `db/schema/recent_index.sql` — contains RecentIndex and memory_events DDL.
+  - [ ] `src/sparkle_motion/db/sqlite.py` — `get_conn()` and `ensure_schema()` helpers.
+  - [ ] `src/sparkle_motion/utils/recent_index_sqlite.py` — RecentIndex API and tests in `tests/unit/test_recent_index_sqlite.py`.
+  - [ ] `src/sparkle_motion/images_agent.py` — implements `render(prompt, opts)` using the spec in `docs/THE_PLAN.md`.
+  - [ ] `function_tools/images_sdxl/entrypoint.py` — deterministic stub returning `{'data': bytes, 'metadata': {...}}`.
+  - [ ] `src/sparkle_motion/adk_helpers.py` — `publish_local(data, metadata) -> uri` and `write_memory_event()` helpers.
+
+- How to run the unit tests locally (copy/paste):
+
+```bash
+export PYTHONPATH="$(pwd):src"
+export SPARKLE_DB_PATH="$(pwd)/artifacts/sparkle.db"
+pytest tests/unit -q
+```
+
+- Quick DB init (one-time, idempotent):
+
+```bash
+python - <<'PY'
+from sparkle_motion.db import get_conn, ensure_schema
+ddl = open('db/schema/recent_index.sql').read()
+conn = get_conn('$SPARKLE_DB_PATH')
+ensure_schema(conn, ddl)
+print('DB initialized at', '$SPARKLE_DB_PATH')
+PY
+```
 
 

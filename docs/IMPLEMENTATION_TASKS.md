@@ -452,6 +452,81 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
   - Deterministic outputs based on `(prompt, seed, index)` — e.g., return a small 16x16 PNG derived from a seeded PRNG or a hash of prompt+seed.
   - Provide metadata fields (`seed`, `prompt`, `width`, `height`) and predictable pHash values to test duplicate detection.
 
+#### Concrete file & function signatures (copy into code)
+
+- Implement `src/sparkle_motion/images_agent.py` with public function:
+
+```py
+from typing import List
+from sparkle_motion.types import ImagesOpts
+
+def render(prompt: str, opts: ImagesOpts) -> List[dict]:
+  """Render images according to opts and return ordered ArtifactRef list."""
+
+```
+
+- Adapter stub expected at `function_tools/images_sdxl/entrypoint.py`:
+
+```py
+from typing import Optional, List
+
+def render_images(prompt: str, count: int, seed: Optional[int], opts: dict) -> List[dict]:
+  """Return list of dicts: {'data': bytes, 'metadata': {...}}"""
+
+```
+
+- QA stub: `function_tools/qa_qwen2vl/entrypoint.py`:
+
+```py
+def inspect_frames(frames: List[bytes], prompts: List[str]) -> dict:
+  return {'ok': True, 'reason': None, 'report': {}}
+
+```
+
+- DB helper: `src/sparkle_motion/db/sqlite.py` (small API):
+
+```py
+import sqlite3
+from pathlib import Path
+
+def get_conn(path: str) -> sqlite3.Connection:
+  p = Path(path)
+  p.parent.mkdir(parents=True, exist_ok=True)
+  conn = sqlite3.connect(str(p), timeout=5.0)
+  conn.row_factory = sqlite3.Row
+  return conn
+
+def ensure_schema(conn: sqlite3.Connection, ddl: str) -> None:
+  conn.executescript(ddl)
+  conn.commit()
+
+```
+
+- RecentIndex implementation task: `src/sparkle_motion/utils/recent_index_sqlite.py` providing:
+  - `get_canonical(phash: str) -> Optional[str]`
+  - `add_or_get(phash: str, uri: str) -> str`
+  - `prune(max_age_s: int, max_entries: int) -> None`
+
+#### Tests to add (exact file names)
+
+- `tests/unit/test_images_agent.py` — batching, ordering, within-plan dedupe, global dedupe (SQLite), QA rejection.
+- `tests/unit/test_recent_index_sqlite.py` — get/add/prune behavior.
+- `tests/unit/test_rate_limiter.py` — token bucket semantics.
+- `tests/unit/test_adk_helpers.py` — `publish_local()` deterministic URIs in fixture mode.
+
+#### Deterministic adapter stub guidance
+
+- Use this deterministic byte generator in the stub so tests can assert exact values:
+
+```py
+import hashlib
+
+def deterministic_bytes(prompt: str, seed: int, index: int) -> bytes:
+  key = f"{prompt}|{seed}|{index}".encode()
+  return hashlib.sha256(key).digest()[:256]  # truncated deterministic blob
+
+```
+
 - Tests to implement with stubbed pipeline:
   1. `test_batch_split_and_ordering`: request `num_images=20` with `max_images_per_call=8` and assert that the agent makes 3 adapter calls, preserves ordering, and returns 20 artifacts with proper `batch_index` and `item_index` metadata.
   2. `test_rate_limit_queueing`: configure token-bucket with 2 tokens and request 4 images in quick succession with `queue_allowed=True`; assert two are executed immediately and two are queued and eventually executed within TTL.
@@ -1330,137 +1405,5 @@ print(output_text)
 
 ------------------------------------------------------------
 
-
-If you want these created as issues in the repo, I can open PRs/Issues for each task (requires your confirmation to push branches). For now these are a documentation-level TODO reference.
-
-### Chatterbox upstream (Resemble AI)
-
-Reference: Resemble AI's open-source Chatterbox TTS repository and model distribution. Use these links as the canonical upstream source when implementing the `tts_chatterbox` FunctionTool adapter:
-
-- GitHub repo: `https://github.com/resemble-ai/chatterbox`
-- Hugging Face model: `https://huggingface.co/ResembleAI/chatterbox`
-- PyPI package: `https://pypi.org/project/chatterbox-tts/`
-- Demo/Gradio pages: `https://resemble-ai.github.io/chatterbox_demopage/` and HF Spaces linked from the repo
-
-Key install & quickstart notes (extracted from upstream README):
-
-- Supported / tested: Python 3.11 on Debian; dependencies pinned in upstream `pyproject.toml`.
-- Quick install (pip):
-
-  ```bash
-  pip install chatterbox-tts
-  ```
-
-- From-source (dev):
-
-  ```bash
-  conda create -yn chatterbox python=3.11
-  conda activate chatterbox
-  git clone https://github.com/resemble-ai/chatterbox.git
-  cd chatterbox
-  pip install -e .
-  ```
-
-Canonical usage examples (important for adapter wiring):
-
-- English (single-language) quick example:
-
-  ```python
-  import torchaudio as ta
-  from chatterbox.tts import ChatterboxTTS
-
-  model = ChatterboxTTS.from_pretrained(device="cuda")
-  text = "Hello world"
-  wav = model.generate(text)
-  ta.save("test-english.wav", wav, model.sr)
-  ```
-
-- Multilingual quick example (multilingual model):
-
-  ```python
-  import torchaudio as ta
-  from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-
-  model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
-  wav = model.generate("Bonjour tout le monde", language_id="fr")
-  ta.save("test-fr.wav", wav, model.sr)
-  ```
-
-- Voice/Reference audio prompt support (voice cloning / voice transfer):
-
-  ```python
-  AUDIO_PROMPT_PATH = "ref.wav"
-  wav = model.generate(text, audio_prompt_path=AUDIO_PROMPT_PATH)
-  ```
-
-Upstream behavioral / tuning notes relevant to implementation:
-
-- Model variants: Chatterbox (English-focused) and Chatterbox-Multilingual (23 languages). Both provide `.from_pretrained()` entrypoints.
-- Useful knobs: `cfg_weight` (guides adherence to reference), `exaggeration` (controls emotion/intensity). Typical defaults: `exaggeration=0.5`, `cfg_weight=0.5`.
-- If using reference clips from a different language, prefer `cfg_weight=0` to avoid accent carryover.
-- Outputs are watermarked via Resemble's Perth watermarking; include watermark-awareness in metadata and policy notes.
-- Upstream provides example scripts: `example_tts.py`, `example_vc.py`, `gradio_tts_app.py` — consult for runtime args and best-practice invocation patterns.
-
-Implementation notes for `tts_chatterbox` FunctionTool adapter (from gathered upstream docs):
-
-- Packaging & dependencies:
-  - Upstream targets Python 3.11 and pins versions in `pyproject.toml`. Any repo `pyproject.toml` changes must be proposed via `proposals/pyproject_adk.diff` and approved before editing.
-  - Consider offering a lightweight fixture-mode that imports `chatterbox-tts` only when `SMOKE_TTS=1` or in non-dev flows; otherwise use a local/fixture stub to avoid heavy install in CI.
-
-- Model lifecycle & memory:
-  - Use `model = ChatterboxTTS.from_pretrained(device=device)` to instantiate; support `device="cuda"` or `device="cpu"` and provide offload/quantization options where feasible.
-  - Expose `audio_prompt_path` and `language_id` via FunctionTool `opts`.
-
-- Reproducibility & tests:
-  - Upstream examples use direct `.generate()` calls; to support deterministic tests, seed RNGs where the upstream API supports it or wrap calls with `torch.manual_seed()` where possible.
-  - Create unit tests that stub the `generate()` return value and assert metadata fields (duration, sample_rate, voice_id, watermark flag).
-
-- Metadata & publishing:
-  - Publish fields: `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`/`voice_name`, `model_id`, `device`, `synth_time_s`, `watermarked: bool`.
-  - Upstream includes watermarking; include `watermarked` flag and provide optional extraction script references in docs.
-
-- Safety & policy:
-  - The upstream repo includes a disclaimer—do not use for harmful content. Ensure the agent decision layer (`tts_agent`) enforces policy checks (content moderation) and logs policy events.
-
-Where to look upstream for implementation details and examples:
-
-- `example_tts.py` and `example_vc.py` in the upstream repo — copy or adapt invocation patterns and CLI args.
-- `gradio_tts_app.py` — demonstrates server-style usage and runtime flags.
-- `pyproject.toml` — see pinned dependency versions and Python requirement (3.11).
-
-Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/chatterbox`) as the authoritative source for adapter wiring, and mirror these quickstart snippets into the `docs/IMPLEMENTATION_TASKS.md` as reference usage for implementers.
-
-## lipsync_wav2lip
-- Task: Implement `run_wav2lip(video_path, audio_path, out_path)`
-  - Prefer Python API; if not available, use a subprocess wrapper with a pinned Wav2Lip repo commit.
-  - Ensure ffmpeg/ OpenCV availability and robust temp-file handling.
-  - Tests: unit tests with short fixture clips; gated integration smoke.
-  - Estimate: 2–3 days
-
-
-
-## qa_qwen2vl
-- Task: Implement `inspect_frames(frames, prompts) -> QAReport`
-  - Adapter to Qwen-2-VL or ADK multimodal agent; produce structured `QAReport` artifact.
-  - Integrate `request_human_input` on policy escalation and write memory timeline events.
-  - Tests: unit tests for report shape; gated integration sampling for visual checks.
-  - Estimate: 2–4 days
-
-## assemble_ffmpeg
-- Task: Implement deterministic assembly pipeline using `ffmpeg`
-  - Provide helper `assemble_clips(movie_plan, clips, audio)` that performs concat, overlay, and audio mixing with reproducible options.
-  - Use a safe subprocess wrapper that validates exit codes and captures logs/metrics.
-  - Tests: end-to-end assembly unit test (short synthetic clips), artifact integrity checks.
-  - Estimate: 1–2 days
-
-------------------------------------------------------------
-
-## Cross-cutting tasks
-- `gpu_utils.model_context` — implement consistent context manager for model load/unload and CUDA cleanup (must be used by all heavy tools).
-- `adk_helpers.require_adk()` vs `adk_helpers.probe_sdk(non_fatal=True)` — audit callers and apply non-fatal probe in scripts and fail-fast in entrypoints.
-- Add gated smoke tests (`tests/smoke/<tool>_adk_integration.py`) that run only when `SMOKE_ADK=1` is set.
-- Document exact CUDA/toolkit choices for `torch` in a final `proposals/pyproject_adk.diff` (e.g., cu118 vs cu120) before applying manifest edits.
-
-------------------------------------------------------------
 
 If you want these created as issues in the repo, I can open PRs/Issues for each task (requires your confirmation to push branches). For now these are a documentation-level TODO reference.

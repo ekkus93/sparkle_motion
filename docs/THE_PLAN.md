@@ -174,6 +174,77 @@ Notes:
      (text moderation or `qa_qwen2vl` sample check), deterministic stub for
      unit tests, and `gpu_utils.model_context` for pipeline loads.
 
+   Concrete API & types (implementers)
+
+   - `ImagesOpts` (put in `src/sparkle_motion/types.py`):
+
+   ```python
+   from typing import Optional, Mapping, TypedDict, Literal
+
+   class ImagesOpts(TypedDict, total=False):
+      seed: Optional[int]
+      count: int
+      max_images_per_call: int
+      per_batch_timeout_s: int
+      dedupe: bool
+      qa: bool
+      priority: Literal['low','normal','high']
+      negative_prompt: Optional[str]
+      metadata: Mapping[str, str]
+   ```
+
+   - `ArtifactRef` (returned by `images_agent.render`) — minimal shape:
+   ```py
+   {
+    'uri': str,               # canonical URI (artifact:// or file://)
+    'metadata': dict,         # includes seed, prompt, width/height
+    'deduped': bool,          # True if resolved to existing canonical
+   }
+   ```
+
+   - `images_agent` signature (`src/sparkle_motion/images_agent.py`):
+   ```py
+   def render(prompt: str, opts: ImagesOpts) -> list[dict]:
+      """Render images and return ordered list of ArtifactRef dicts."""
+   ```
+
+   RateLimiter interface (`src/sparkle_motion/ratelimit.py`):
+   ```py
+   class RateLimiter:
+      def acquire(self, tokens: int = 1) -> None: ...
+      def release(self, tokens: int = 1) -> None: ...
+
+   class TokenBucketRateLimiter(RateLimiter):
+      def __init__(self, capacity: int, refill_rate_per_sec: float): ...
+   ```
+
+   QA contract (stub): `function_tools/qa_qwen2vl/entrypoint.py`:
+   ```py
+   def inspect_frames(frames: list[bytes], prompts: list[str]) -> dict:
+      # returns {'ok': bool, 'reason': Optional[str], 'report': dict}
+   ```
+
+   Deduplication flow (recommended):
+   1. Within-plan dedupe: before calling the adapter, compute deterministic
+     keys for each planned image (prompt+seed+index) and collapse identical
+     calls so adapters are not invoked redundantly.
+   2. Post-adapter dedupe: after receiving image bytes, compute pHash/sha256
+     and consult `RecentIndex` (SQLite). If a canonical exists, mark the
+     result `deduped=True` and return the canonical URI instead of a newly
+     published artifact.
+
+   Error classes to add under `src/sparkle_motion/errors.py`:
+   ```py
+   class PlanPolicyViolation(RuntimeError): ...
+   class PlanResourceError(RuntimeError): ...
+   class ModelOOMError(RuntimeError): ...
+   class AdapterError(RuntimeError): ...
+   ```
+
+   DB schema location: create `db/schema/recent_index.sql` (see `docs/ARCHITECTURE.md`)
+   and a DB helper `src/sparkle_motion/db/sqlite.py` exposing `get_conn(path)` and
+   `ensure_schema(conn)`.
+
 3. Videos (Wan FunctionTool)
    - Agent: `videos_agent` (orchestration); Adapter: `videos_wan` (Wan2.1)
    - Requirements: chunking/sharding/reassembly semantics, overlap defaults,
@@ -205,11 +276,13 @@ Notes:
 - Agents must be small, testable, and segregate policy decisions from heavy
   compute. Agents orchestrate adapters (FunctionTools); adapters are plain,
   testable callables that use `gpu_utils.model_context`.
-- Deterministic test harnesses: provide stubbed pipelines that produce
+ - Deterministic test harnesses: provide stubbed pipelines that produce
   deterministic artifacts (seed-based PNGs, predictable pHash values).
-- Duplicate detection: use perceptual hashing (pHash) and a simple LRU cache
-  (or Redis) to dedupe recent artifacts; `images_agent` should support
-  `dedupe=True` semantics.
+ - Duplicate detection: use perceptual hashing (pHash) and a simple LRU cache
+  or an SQLite-backed `RecentIndex` to dedupe recent artifacts; `images_agent`
+  should support `dedupe=True` semantics and persist recent-index state to
+  SQLite for the single-user workflow. Do not rely on Redis — this project is
+  explicitly single-user and uses SQLite as the canonical lightweight store.
 - OOM handling: adapters should normalize OOMs to `ModelOOMError` with
   structured metadata (stage, suggested_shrink_hint, memory_snapshots).
 

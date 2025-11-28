@@ -161,6 +161,51 @@ Canonical model reference:
 	are appended through ADK’s memory APIs backed by a SQLite file such as
 	`/content/sparkle_memory.db` so any agent (ScriptAgent, QA Agent, future
 	WorkflowAgent) can query histories without parsing filesystem logs.
+
+ - **Duplicate detection / RecentIndex** – duplicate detection for images and
+	short-lived artifacts uses perceptual hashing (pHash) and a small
+	`RecentIndex` persisted to SQLite for the single-user workflow. Persisting
+	canonical URIs and pHash values to a local SQLite table provides a
+	lightweight, durable store that fits the Colab / single-user topology; this
+	project does not use Redis for recent-index persistence.
+
+	SQLite schema (recommended, place in `db/schema/recent_index.sql`):
+
+	```sql
+	CREATE TABLE IF NOT EXISTS recent_index (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		phash TEXT NOT NULL UNIQUE,
+		canonical_uri TEXT NOT NULL,
+		last_seen INTEGER NOT NULL,
+		hit_count INTEGER NOT NULL DEFAULT 1
+	);
+	CREATE INDEX IF NOT EXISTS ix_recent_index_phash ON recent_index(phash);
+  
+	CREATE TABLE IF NOT EXISTS memory_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id TEXT,
+		timestamp INTEGER NOT NULL,
+		event_type TEXT NOT NULL,
+		payload TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS ix_memory_events_runid ON memory_events(run_id);
+	```
+
+	Recommended config / env var:
+	- `SPARKLE_DB_PATH` (env): path to SQLite DB. Default for dev: `./artifacts/sparkle.db`.
+
+	RecentIndex API (to implement under `src/sparkle_motion/utils/recent_index_sqlite.py`):
+	- `get_canonical(phash: str) -> Optional[str]`
+	- `add_or_get(phash: str, uri: str) -> str`  # returns canonical uri
+	- `touch(phash: str, uri: str) -> None`
+	- `prune(max_age_s: int, max_entries: int) -> None`
+
+	Persistence notes:
+	- Use `sqlite3.connect(SPARKLE_DB_PATH, timeout=5.0)` and set
+		`PRAGMA journal_mode=WAL` if concurrent readers/writers are expected in
+		development. For single-process Colab runs the default journal is fine.
+	- Store JSON payloads as TEXT in `memory_events` and use `int(time.time())`
+		for timestamps.
 - **Tool catalog** – FunctionTools are published to the ADK catalog with
 	metadata (capabilities, IAM scopes, cost hints). WorkflowAgent binds to
 	tool IDs rather than importing Python modules, which keeps deployments
