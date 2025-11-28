@@ -22,41 +22,6 @@ LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
-def publish_artifact(local_path: str) -> str:
-    """Publish an artifact using SDK when available, otherwise CLI or file fallback.
-
-    Respects `ADK_USE_FIXTURE=1` (default) to keep local test runs deterministic.
-    """
-    if os.environ.get("ADK_USE_FIXTURE", "1") != "0":
-        return f"file://{os.path.abspath(local_path)}"
-
-    artifact_name = os.path.splitext(os.path.basename(local_path))[0]
-    res = adk_helpers.probe_sdk()
-    if not res:
-        # SDK missing — fallback to file:// so runtime continues.
-        LOG.error("ADK SDK not available; falling back to file:// for artifact publish")
-        return f"file://{os.path.abspath(local_path)}"
-    adk_mod, client = res
-
-    # try SDK publish
-    try:
-        uri = adk_helpers.publish_with_sdk(adk_mod, client, local_path, artifact_name, dry_run=False)
-        if uri:
-            return uri
-    except Exception:
-        LOG.exception("publish_with_sdk failed; will try CLI fallback")
-
-    # CLI fallback
-    try:
-        uri = adk_helpers.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
-        if uri:
-            return uri
-    except Exception:
-        LOG.exception("publish_with_cli failed; falling back to local file URI")
-
-    return f"file://{os.path.abspath(local_path)}"
-
-
 class RequestModel(BaseModel):
     """Request schema for ScriptAgent with conservative validation.
 
@@ -205,8 +170,13 @@ def make_app() -> FastAPI:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
 
-            # publish via ADK helpers (SDK-first, CLI fallback). Tests default to fixture mode.
-            artifact_uri = publish_artifact(local_path)
+            # publish via ADK helpers façade (SDK-first, CLI fallback).
+            artifact_ref = adk_helpers.publish_artifact(
+                local_path=local_path,
+                artifact_type="script_agent_movie_plan",
+                metadata={"request_id": request_id, "tool": "script_agent"},
+            )
+            artifact_uri = artifact_ref["uri"]
             try:
                 send_telemetry("invoke.completed", {"tool": "script_agent", "request_id": request_id, "artifact_uri": artifact_uri})
             except Exception:
