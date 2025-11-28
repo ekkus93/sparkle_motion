@@ -28,6 +28,20 @@ Guidelines:
   - Tests: unit tests using a tiny pipeline stub; ADK-gated smoke for real pipeline.
   - Estimate: 3–4 days (model paging and memory checks included)
 
+  SDXL-specific guidance (from Hugging Face Diffusers docs):
+  - Use the official SDXL pipelines (e.g., `StableDiffusionXLPipeline` / `AutoPipelineForText2Image`).
+  - Load models with `torch_dtype=torch.float16`, `variant="fp16"` and `use_safetensors=True` when available, and move to CUDA: `pipeline = StableDiffusionXLPipeline.from_pretrained(..., torch_dtype=torch.float16, variant="fp16", use_safetensors=True).to("cuda")`.
+  - Support the two-stage base+refiner workflow: either run base→refiner as an ensemble (use `denoising_end` / `denoising_start`) or call the refiner on the base output to improve quality.
+  - Prefer `from_pipe` when composing pipelines (saves memory) and `from_single_file` for single-file checkpoints when appropriate.
+  - Provide `prompt_2` / `negative_prompt_2` support for the second text encoder to improve prompt adherence.
+  - Deterministic sampling: accept a `seed` parameter and use `torch.Generator(device).manual_seed(seed)` when calling the pipeline so outputs are reproducible for tests.
+  - Memory optimizations to expose in `gpu_utils.model_context`:
+    - `enable_model_cpu_offload()` for OOM avoidance.
+    - `enable_xformers_memory_efficient_attention()` when `xformers` is available.
+    - optional `torch.compile` for speed-ups when `torch>=2.0`.
+  - Respect SDXL micro-conditioning options (e.g., `original_size`, `target_size`, crop conditioning) and expose them as `opts` where useful for shot-level control.
+  - Document that heavy/real runs must be gated by `SMOKE_ADK=1` and that manifest/runtime deps must follow the repo proposal process.
+
 ## videos_wan (pilot)
 - Task: Implement `run_wan_inference(start_frames, end_frames, prompt) -> mp4`
   - Pilot first: highest VRAM and driver risk. Implement `WanAdapter` and `gpu_utils.model_context('wan2.1')`.
@@ -36,12 +50,112 @@ Guidelines:
   - Tests: heavy integration tests gated by `SMOKE_ADK=1` and run only on approved hosts; unit tests stub the adapter.
   - Estimate: 1–2 weeks (research + validation on A100 required)
 
-## tts_chatterbox
-- Task: Implement `synthesize_speech(text, voice_config) -> wav`
-  - Adapter should support ADK-exposed TTS via agent OR local fallbacks (Coqui TTS) in dev.
-  - Produce metadata (duration, sample_rate, voice_id) and publish WAV artifact.
-  - Tests: unit tests for format/metadata; gated TTS smoke.
+## tts_agent
+- Task: Implement `tts_agent` decision layer and `tts_chatterbox` FunctionTool adapter
+  - `tts_agent` (decision layer): responsible for provider selection, policy checks, retries/backoff, rate limiting, and orchestrating FunctionTool invocations. Public API: `synthesize(text: str, voice_config: dict) -> ArtifactRef` (returns a WAV artifact reference and metadata).
+  - `tts_chatterbox` (FunctionTool adapter): compute-bound adapter that performs heavy TTS work (model load, synthesis, wav export). Implement as an ADK FunctionTool so the agent can call it; keep model lifecycle inside a guarded context manager to ensure safe load/unload.
+  - Fallbacks: prefer ADK-managed TTS providers when available; fall back to local Coqui TTS for developer workflows. Entrypoints that instantiate agents must call `adk_helpers.require_adk()` or use `adk_helpers.probe_sdk(non_fatal=True)` where appropriate.
+  - Metadata: publish duration, sample_rate, voice_id, format, seed (if applicable), and runtime info (model id, inference device, synth time). Publish WAV artifacts via `adk_helpers.publish_artifact()`.
+  - Tests: unit tests for decision logic and metadata/format validation; integration smoke tests gated by `SMOKE_TTS=1` that exercise a small real or fixture TTS provider.
   - Estimate: 2–4 days
+  - Notes: runtime dependency or manifest changes must follow the `proposals/pyproject_adk.diff` process and require explicit approval before editing `pyproject.toml` or pushing runtime changes.
+
+### Chatterbox upstream (Resemble AI)
+
+Reference: Resemble AI's open-source Chatterbox TTS repository and model distribution. Use these links as the canonical upstream source when implementing the `tts_chatterbox` FunctionTool adapter:
+
+- GitHub repo: `https://github.com/resemble-ai/chatterbox`
+- Hugging Face model: `https://huggingface.co/ResembleAI/chatterbox`
+- PyPI package: `https://pypi.org/project/chatterbox-tts/`
+- Demo/Gradio pages: `https://resemble-ai.github.io/chatterbox_demopage/` and HF Spaces linked from the repo
+
+Key install & quickstart notes (extracted from upstream README):
+
+- Supported / tested: Python 3.11 on Debian; dependencies pinned in upstream `pyproject.toml`.
+- Quick install (pip):
+
+  ```bash
+  pip install chatterbox-tts
+  ```
+
+- From-source (dev):
+
+  ```bash
+  conda create -yn chatterbox python=3.11
+  conda activate chatterbox
+  git clone https://github.com/resemble-ai/chatterbox.git
+  cd chatterbox
+  pip install -e .
+  ```
+
+Canonical usage examples (important for adapter wiring):
+
+- English (single-language) quick example:
+
+  ```python
+  import torchaudio as ta
+  from chatterbox.tts import ChatterboxTTS
+
+  model = ChatterboxTTS.from_pretrained(device="cuda")
+  text = "Hello world"
+  wav = model.generate(text)
+  ta.save("test-english.wav", wav, model.sr)
+  ```
+
+- Multilingual quick example (multilingual model):
+
+  ```python
+  import torchaudio as ta
+  from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+
+  model = ChatterboxMultilingualTTS.from_pretrained(device="cuda")
+  wav = model.generate("Bonjour tout le monde", language_id="fr")
+  ta.save("test-fr.wav", wav, model.sr)
+  ```
+
+- Voice/Reference audio prompt support (voice cloning / voice transfer):
+
+  ```python
+  AUDIO_PROMPT_PATH = "ref.wav"
+  wav = model.generate(text, audio_prompt_path=AUDIO_PROMPT_PATH)
+  ```
+
+Upstream behavioral / tuning notes relevant to implementation:
+
+- Model variants: Chatterbox (English-focused) and Chatterbox-Multilingual (23 languages). Both provide `.from_pretrained()` entrypoints.
+- Useful knobs: `cfg_weight` (guides adherence to reference), `exaggeration` (controls emotion/intensity). Typical defaults: `exaggeration=0.5`, `cfg_weight=0.5`.
+- If using reference clips from a different language, prefer `cfg_weight=0` to avoid accent carryover.
+- Outputs are watermarked via Resemble's Perth watermarking; include watermark-awareness in metadata and policy notes.
+- Upstream provides example scripts: `example_tts.py`, `example_vc.py`, `gradio_tts_app.py` — consult for runtime args and best-practice invocation patterns.
+
+Implementation notes for `tts_chatterbox` FunctionTool adapter (from gathered upstream docs):
+
+- Packaging & dependencies:
+  - Upstream targets Python 3.11 and pins versions in `pyproject.toml`. Any repo `pyproject.toml` changes must be proposed via `proposals/pyproject_adk.diff` and approved before editing.
+  - Consider offering a lightweight fixture-mode that imports `chatterbox-tts` only when `SMOKE_TTS=1` or in non-dev flows; otherwise use a local/fixture stub to avoid heavy install in CI.
+
+- Model lifecycle & memory:
+  - Use `model = ChatterboxTTS.from_pretrained(device=device)` to instantiate; support `device="cuda"` or `device="cpu"` and provide offload/quantization options where feasible.
+  - Expose `audio_prompt_path` and `language_id` via FunctionTool `opts`.
+
+- Reproducibility & tests:
+  - Upstream examples use direct `.generate()` calls; to support deterministic tests, seed RNGs where the upstream API supports it or wrap calls with `torch.manual_seed()` where possible.
+  - Create unit tests that stub the `generate()` return value and assert metadata fields (duration, sample_rate, voice_id, watermark flag).
+
+- Metadata & publishing:
+  - Publish fields: `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`/`voice_name`, `model_id`, `device`, `synth_time_s`, `watermarked: bool`.
+  - Upstream includes watermarking; include `watermarked` flag and provide optional extraction script references in docs.
+
+- Safety & policy:
+  - The upstream repo includes a disclaimer—do not use for harmful content. Ensure the agent decision layer (`tts_agent`) enforces policy checks (content moderation) and logs policy events.
+
+Where to look upstream for implementation details and examples:
+
+- `example_tts.py` and `example_vc.py` in the upstream repo — copy or adapt invocation patterns and CLI args.
+- `gradio_tts_app.py` — demonstrates server-style usage and runtime flags.
+- `pyproject.toml` — see pinned dependency versions and Python requirement (3.11).
+
+Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/chatterbox`) as the authoritative source for adapter wiring, and mirror these quickstart snippets into the `docs/IMPLEMENTATION_TASKS.md` as reference usage for implementers.
 
 ## lipsync_wav2lip
 - Task: Implement `run_wav2lip(video_path, audio_path, out_path)`
