@@ -291,12 +291,91 @@ artifact_uri = publish_artifact(path=png_path, media_type="image/png", metadata=
   - `images_agent` must perform content policy checks (NSFW, disallowed content) before invoking `DiffusersAdapter`. Log policy decisions and memory events via `adk_helpers.write_memory_event()`.
 
 ### videos_wan (pilot)
-- Task: Implement `run_wan_inference(start_frames, end_frames, prompt) -> mp4`
-  - Pilot first: highest VRAM and driver risk. Implement `WanAdapter` and `gpu_utils.model_context('wan2.1')`.
-  - Implement deterministic output checks, codec validation, and chunked rendering to limit VRAM.
-  - Add explicit load/unload, CUDA context release, and robust error handling with retries/backoff.
-  - Tests: heavy integration tests gated by `SMOKE_ADK=1` and run only on approved hosts; unit tests stub the adapter.
-  - Estimate: 1–2 weeks (research + validation on A100 required)
+- Task: Implement `run_wan_inference(start_frames, end_frames, prompt, opts) -> ArtifactRef` for Wan2.1-style pipelines (FLF2V / I2V / T2V flows).
+  - Purpose: provide a safe, gated adapter (`WanAdapter` / `videos_wan` FunctionTool) that can run Wan2.1 First‑Last‑Frame→Video (FLF2V) and related pipelines via Diffusers and publish video artifacts.
+  - Model reference: `Wan-AI/Wan2.1-FLF2V-14B-720P` (Hugging Face Wan2.1 model family). Use the official HF model card and the Wan repo for runtime knobs and multi‑GPU strategies.
+
+  - Key implementation notes and sample code (adapted from Wan2.1 notebook):
+
+```python
+# Example: load FLF2V pipeline (balanced sharding example)
+import os, torch
+from transformers import CLIPVisionModel, CLIPImageProcessor
+from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
+from diffusers import DPMSolverMultistepScheduler
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+MODEL_ID = "Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers"
+
+image_encoder = CLIPVisionModel.from_pretrained(MODEL_ID, subfolder="image_encoder", torch_dtype=torch.float32)
+vae = AutoencoderKLWan.from_pretrained(MODEL_ID, subfolder="vae", torch_dtype=torch.float32)
+
+# Balanced sharding example (good for large A100 hosts)
+max_memory = {0: "74GiB", "cpu": "120GiB"}  # tune per-host
+pipe = WanImageToVideoPipeline.from_pretrained(
+    MODEL_ID,
+    vae=vae,
+    image_encoder=image_encoder,
+    device_map="balanced",
+    max_memory=max_memory,
+    low_cpu_mem_usage=True,
+)
+
+# Replace processor if needed
+from transformers import CLIPImageProcessor
+if not isinstance(getattr(pipe, "image_processor", None), CLIPImageProcessor):
+    pipe.image_processor = CLIPImageProcessor.from_pretrained(MODEL_ID, subfolder="image_processor")
+
+# Use a faster scheduler (dpmsolver++ / UniPC depending on model)
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, algorithm_type="dpmsolver++")
+```
+
+  - Inference flow & helpers (notes):
+    - Resize / crop inputs using the pipeline's `vae_scale_factor_spatial` and `pipe.transformer.config.patch_size` to compute valid (mod-aligned) width/height; Wan model docs and the notebook include `aspect_ratio_resize()` and `center_crop_resize()` helpers — reuse these in `videos_wan` to ensure valid dimensions.
+    - For deterministic tests accept a `seed` and create `generator = torch.Generator(device).manual_seed(seed)` and pass `generator=generator` to the pipeline call.
+    - Support callback hooks for progress and ETA: detect `callback`, `callback_on_step_end`, `callback_steps`, and `callback_on_step_end_tensor_inputs` in the pipeline signature and wire lightweight progress callbacks for smoke tests and local runs.
+    - Call pipeline with `output_type="pil"` (or `numpy`) to get frames back, then assemble to MP4 using `diffusers.utils.export_to_video()` and fallback to `imageio`/`ffmpeg` if export fails.
+
+  - Example inference call (simplified):
+
+```python
+result = pipe(
+    image=first_frame,
+    last_image=last_frame,
+    prompt=prompt,
+    negative_prompt=negative,
+    height=H, width=W,
+    num_frames=num_frames,
+    num_inference_steps=steps,
+    guidance_scale=guidance,
+    generator=generator,
+    output_type="pil",
+    **callback_kwargs,
+)
+frames = getattr(result, "frames", getattr(result, "images", None))[0]
+```
+
+  - Memory & runtime hygiene:
+    - Implement `gpu_utils.model_context("wan2.1", weights=MODEL_ID, offload=True, xformers=True)` that loads the pipeline safely and enforces explicit cleanup (del pipeline; torch.cuda.empty_cache(); gc.collect()).
+    - Provide `balanced` device_map examples for A100 (tune `max_memory` and `low_cpu_mem_usage`) and `sequential`/offload examples for single‑GPU (4090/3090) via the Wan repo guidance.
+    - Document recommended GPU budgets (e.g., A100-80GB balanced sharding settings from the notebook) and fail fast with descriptive OOM errors.
+
+  - Publish & artifact handling:
+    - Save a temporary MP4 (or PNG frames) and call `adk_helpers.publish_artifact(path=out_path, media_type="video/mp4", metadata=meta)` with metadata including `model_id`, `device`, `seed`, `inference_time_s`, `peak_vram_mb` (if available), and `plan_step`.
+
+  - Tests:
+    - Unit: stub `WanImageToVideoPipeline` to return deterministic PIL frames; assert `run_wan_inference` returns a valid artifact ref and metadata.
+    - Integration (gated): `SMOKE_ADK=1` smoke that runs a short FLF2V job (e.g., small `max_area`, low `num_frames`, reduced `steps`) on approved hardware and verifies publish path and artifact playback.
+
+  - Manifest / dependency proposal (for `proposals/pyproject_adk.diff`):
+    - Suggested runtime deps: `diffusers` (with Wan pipeline support), `transformers`, `accelerate`, `safetensors`, `imageio`, `imageio-ffmpeg`, `torch>=2.0`, `torchvision`, `huggingface_hub`.
+    - Optional: `xfuser` / `TeaCache` / `TeaCache`-like accelerators or vendor libs for multi‑GPU; document exact CUDA/torch combos (cu118/cu120) in the proposal.
+
+  - Safety & policy:
+    - `videos_agent` or `production_agent` must run content policy checks before invoking `videos_wan`. Log policy decisions and escalate via `adk_helpers.write_memory_event()` when needed.
+
+  - Estimate: 1–2 weeks for a robust, multi‑host aware pilot (including multi‑GPU validation); shorter (3–5 days) for a dev-only FunctionTool stub and gated smoke tests.
+
 
 ### lipsync_wav2lip
 - Task: Implement `run_wav2lip(video_path, audio_path, out_path)`
