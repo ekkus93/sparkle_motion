@@ -790,6 +790,100 @@ def execute_plan(plan, mode="dry"):
 
 - **Estimate**: 2–4 days to implement a robust `production_agent` scaffold and unit tests.
 
+**Orchestration policy & operational knobs**
+
+- Decision matrix (gating): which environment flags gate which FunctionTools
+  - `SMOKE_ADK=1`: enables ADK-backed FunctionTools and real artifact publishing. When not set, the `production_agent` must only call local stubs or simulate artifact creation.
+  - `SMOKE_LIPSYNC=1`: allows `lipsync_wav2lip` to run real inference; when unset, lipsync steps should be simulated or fail fast with a clear message.
+  - `SMOKE_TTS=1`: allows `tts_chatterbox` real calls; otherwise use a fixture TTS stub.
+  - `SMOKE_QA=1`: enables real `qa_qwen2vl` checks; when unset, run a lightweight heuristic QA or mark QA steps as `simulated`
+  - `SMOKE_ADAPTERS=1`: general flag the team can use to gate any heavy adapter outside the specific flags above (optional override)
+
+- Default concurrency & chunking strategy
+  - `max_concurrent_image_renders`: 4 (default) — cap concurrent calls to `images_sdxl` to avoid host overload.
+  - `max_concurrent_video_chunk_renders`: 2 (default) — cap parallel chunk renders per host; for high‑capacity hosts this can be increased via runtime config.
+  - `video_chunk_length_frames`: default 64 frames per chunk (tunable per plan/host). Use overlap of 2–4 frames between chunks for continuity.
+  - `video_chunk_overlap_frames`: 4 — how many frames overlap between adjacent chunks to enable smooth crossfade/temporal continuity.
+  - `step_queue_backlog_limit`: 100 — reject plans that would enqueue more than this many pending steps to avoid unbounded memory growth.
+
+- Retry / backoff policy (recommended default)
+  - Retry classification:
+    - Transient errors: network timeouts, temporary OOMs (recoverable by retrying with adjustments), intermittent API errors → retryable.
+    - Fatal errors: policy violations, invalid inputs, unsupported step types → non-retryable.
+  - Default retry policy:
+    - `max_attempts`: 3 (initial attempt + 2 retries)
+    - `backoff_base_seconds`: 1.0
+    - `backoff_multiplier`: 2.0
+    - `jitter`: 0.2 (fractional jitter added to backoff to avoid thundering herd)
+    - Example: attempt 1, wait 1s +/- jitter; attempt 2, wait 2s +/- jitter; attempt 3, wait 4s +/- jitter.
+  - Special handling: on OOM during a video chunk render, attempt a single adaptive retry that reduces chunk size by 50% before falling back to CPU/failed state.
+
+- `dry` vs `run` semantics (behavior contract)
+  - `mode="dry"`:
+    - Validate plan schema and policy checks fully.
+    - Simulate resource usage estimates for each step (GPU hours, memory, estimated runtime) and return a `simulate_execution_report` (see below) instead of invoking heavy adapters.
+    - Emit simulated artifact URIs (e.g., `file:///simulated/{plan_id}/{step_id}.png`) but do not call `adk_helpers.publish_artifact()`.
+    - Allowed side-effects: writing a small dry-report JSON to a local temp dir and logging; disallowed: network calls to ADK or model loads.
+  - `mode="run"`:
+    - Full guarded execution: require gates (flags + `adk_helpers.require_adk()` where applicable).
+    - Invoke adapters under `gpu_utils.model_context` with real publishes via `adk_helpers.publish_artifact()`.
+    - Ensure retries, telemetry, and cleanup happen as defined.
+
+**Simulate execution report (dry) shape**
+
+- `simulate_execution_report` (object)
+  - `plan_id: str`
+  - `steps: list[{step_id, step_type, estimated_runtime_s, estimated_gpu_memory_mb, simulated_artifact_uri}]`
+  - `resource_summary: {total_estimated_gpu_hours, total_estimated_runtime_s}`
+  - `policy_decisions: list` — any policy flags or warnings
+
+**Observable telemetry contract (per-step metadata)**
+
+- Each step execution must emit or return a `StepExecutionRecord` (structured metadata) with fields:
+  - `plan_id: str`
+  - `step_id: str`
+  - `step_type: str`
+  - `status: Literal["queued","running","succeeded","failed","skipped","simulated"]`
+  - `start_time: str` (ISO 8601)
+  - `end_time: str` (ISO 8601)
+  - `duration_s: float`
+  - `model_id: Optional[str]` — model identifier used (if applicable)
+  - `device: Optional[str]` — e.g., `cuda:0`, `cpu`
+  - `memory_hint_mb: Optional[int]` — peak or estimated memory usage
+  - `attempts: int` — number of attempts taken
+  - `logs_uri: Optional[str]` — path/URI to stdout/stderr logs or adapter logs
+  - `artifact_uri: Optional[str]` — published artifact (if any)
+  - `error_type: Optional[str]` — one of the `Plan*Error` codes if failed
+  - `meta: Optional[dict]` — adapter-specific metadata (seed, sampler, fps, etc.)
+
+Emit these records to logger/metrics sink and include them in any artifact metadata published.
+
+**Failure handling / cleanup**
+
+- On failure of a step:
+  - Record `StepExecutionRecord` with `status="failed"` and `error_type` populated.
+  - If transient and attempts remain, schedule retry with backoff. If retries exhausted, mark dependent steps as `skipped` and include explanation in final artifact metadata.
+  - Always run cleanup hooks: release GPU contexts, call `torch.cuda.empty_cache()`, `gc.collect()`, and remove or archive temp files per `debug` flag.
+
+**Sample unit & integration tests (suggested)**
+
+- Unit tests (fast, mocked adapters):
+  1. `test_execute_plan_dry_simulation`: feed a simple plan into `execute_plan(mode='dry')` and assert `simulate_execution_report` shape and simulated URIs.
+  2. `test_retry_on_transient_error`: mock an adapter to raise a transient exception on first call and succeed on the second; assert `attempts == 2` and final `status == 'succeeded'`.
+  3. `test_policy_rejection`: create a plan with disallowed content; assert `PlanPolicyViolation` is raised and no adapters are called.
+  4. `test_oom_adaptive_retry`: mock a video chunk renderer to raise an OOM on first attempt; assert that `production_agent` reduces chunk size and retries once before failing or succeeding per mock.
+
+- Integration/gated smoke tests (requires flags):
+  1. `smoke_execute_plan_end_to_end` (gated by `SMOKE_ADK=1`): run a tiny plan (1 image + 1 short TTS) against fixture/backed adapters and assert artifacts are published and `StepExecutionRecord` entries are produced.
+  2. `smoke_lipsync_flag_gate` (gated by `SMOKE_LIPSYNC=1`): verify lipsync steps run only when the flag is set; otherwise they are simulated and reported as `skipped`/`simulated`.
+
+**Developer notes**
+
+- Configuration: surface these knobs via a config object (env vars, config file or `production_agent` init args) so teams can tune per-deployment.
+- Observability: integrate `StepExecutionRecord` emission with existing telemetry/logging (e.g., `adk_helpers.write_memory_event()` or metrics export) so CI and operator dashboards can aggregate run results.
+- Backwards compatibility: if older plans lack `assemble_opts` or `step.id`, the agent should normalize them (generate `id` if missing) and record a warning rather than failing a `dry` run.
+
+
 ### qa_qwen2vl (expanded)
 
 - **Purpose**: frame-level QA and inspection adapter. Run multimodal QA using Qwen2‑VL (or another ADK multimodal provider) over frames or image+text prompts and produce a structured `QAReport` artifact used by agents and human reviewers.
