@@ -43,6 +43,90 @@ introduced there (now reflected in this architecture) include:
 	`ModelOOMError` domain exception so higher-level agents can implement
 	deterministic fallback/shrink strategies.
 
+## Agent responsibilities (aligned with `docs/IMPLEMENTATION_TASKS.md`)
+
+The architecture now mirrors the per-agent contracts introduced in the
+Implementation Tasks document.
+
+- **`script_agent`** – plan-only API `generate_plan(prompt: str) -> MoviePlan`.
+	Uses `adk_factory.get_agent('script_agent', model_spec)` to construct the
+	LLM, emits artifacts via `adk_helpers.publish_artifact()`, and records memory
+	events. It must enforce JSON-only prompting, validate outputs against the
+	MoviePlan schema, run content policy checks, and raise the documented error
+	types (`PlanParseError`, `PlanSchemaError`, `PlanPolicyViolation`,
+	`PlanResourceError`). Unit tests cover schema conformance and error cases;
+	integration smoke tests run behind `SMOKE_ADK=1` with a real or fixture LLM.
+- **`tts_agent`** – orchestrates synthesis via `synthesize(text, voice_config)
+	-> ArtifactRef`. Responsibilities include provider selection (priority
+	profiles for cost/latency/quality/balanced, `max_latency_s`,
+	`max_cost_usd`, `required_features`), rate limiting, retries/backoff, and
+	telemetry of score breakdowns. It manages voice metadata via
+	`get_voice_metadata` / `list_available_voices`, propagates watermark flags,
+	and differentiates retryable errors (`TTSRetryableError`,
+	`TTSProviderUnavailable`, `TTSServerError`) from terminal ones
+	(`TTSInvalidInputError`, `TTSPolicyViolation`, `TTSQuotaExceeded`). Real TTS
+	invocations stay behind `SMOKE_TTS=1` and fall back to fixture providers in
+	CI.
+- **`images_agent`** – API `render(prompt, opts) -> list[ArtifactRef]` that
+	performs text moderation, batching, rate limiting (token bucket, queueing
+	plumbed through `queue_allowed`), timeout enforcement, perceptual-dedupe
+	(`RecentIndex`), and pre/post QA with `qa_qwen2vl`. It chunks oversized
+	requests using `max_images_per_call`, annotates artifacts with
+	`batch_index`/`item_index`, and stores policy decisions via memory events.
+	Unit tests cover batching, dedupe, rate-limit queueing, policy rejections,
+	and QA-driven rejects.
+- **`videos_agent`** – API `render_video(start_frames, end_frames, prompt,
+	opts) -> ArtifactRef`. It implements chunking with parameters from the tasks
+	doc (`chunk_length_frames=64`, `chunk_overlap_frames=4`,
+	`min_chunk_frames=8`, adaptive retries, CPU fallback), handles multi-GPU
+	device maps, and forwards progress via callback contracts / memory events.
+	Unit tests validate chunk math, adaptive shrink-on-OOM, CPU fallback, and
+	progress propagation; integration smokes stay behind `SMOKE_ADK=1` /
+	`SMOKE_ADAPTERS=1`.
+- **`production_agent`** – API `execute_plan(plan, mode='dry'|'run') ->
+	list[ArtifactRef]`. `dry` mode simulates execution and returns a
+	`simulate_execution_report` (resource estimates, simulated artifact URIs,
+	policy warnings). `run` mode enforces gates (`SMOKE_*`,
+	`adk_helpers.require_adk()`), orchestrates steps, applies bounded retries,
+	and publishes final artifacts via `assemble_ffmpeg`. Every step emits a
+	`StepExecutionRecord` containing plan/step IDs, status, timings, attempt
+	counts, device/model metadata, logs URIs, and policy/error annotations.
+	Failures trigger cleanup (GPU context release, temp file handling) and
+	dependent-step skips per the Implementation Tasks guidance.
+
+### MoviePlan schema & validation recap
+
+`MoviePlan` artifacts must include `id`, `title`, optional `description` /
+`created_by`, ISO `created_at`, ordered `steps`, and optional `assemble_opts`.
+Steps share `id`, `type`, `title`, `opts` and specialize into:
+
+- `image`: `prompt`, `count`, `ImagesOpts` (width, height, seed, sampler,
+	steps, cfg_scale, denoising window, prompt_2, `dedupe`, `priority`).
+- `tts`: `text`, `voice`, `TTSOpts` (sample rate, format, provider hints).
+- `video`: `prompt`, `start_frames`, `end_frames`, `VideoOpts` (frames,
+	dimensions, steps).
+- `lipsync`: `face_video`, `audio`, `out_path`, `Wav2LipOpts` (checkpoint,
+	face-detector, pads, resize factor, nosmooth, gpu idx).
+- `custom`: `handler` plus arbitrary `opts` passed to extensions.
+
+Validation flow: parse JSON, enforce schema via `pydantic`/`jsonschema`, run
+step-level validation, apply policy filters, and reject plans exceeding
+resource caps (frames, clips, elapsed runtime). Errors map to the four
+`Plan*` exception types described above.
+
+### QA, rate limiting, and smoke-test gating
+
+- All heavy adapters expose smoke tests under `tests/smoke/...` and only run
+	when their corresponding `SMOKE_*` flag is set.
+- Rate limiting follows the token-bucket guidance from the Implementation
+	Tasks: per-tenant/user keys, configurable refill, queue-or-fail semantics,
+	and backlog guards to surface `PlanResourceError` when the queue is full.
+- QA policy flows call `qa_qwen2vl.inspect_frames()` both pre-render (when
+	reference images exist) and post-render with structured `QAReport` parsing.
+- Dedupe relies on the SQLite-backed `RecentIndex` APIs listed earlier; the
+	same index powers cross-plan dedupe for `images_agent` and `videos_agent`
+	(keyframes).
+
 Note: the `resources/` directory contains many ADK sample projects and
 examples. Those are vendor/sample code and are intentionally excluded from
 these counts per your instruction — they are references, not application
@@ -413,72 +497,118 @@ drive the immediate workstream and the TODO list.
 - **images_sdxl**
 	- Model/Tool: Stable Diffusion XL (SDXL) model family (via `diffusers` locally
 		or an ADK-hosted image-generation model). Canonical default: `stable-diffusion-xl`.
-	- Integration: implement `render_images(prompt, cfg)` helper that loads SDXL
-		in `gpu_utils.model_context(...)` and invokes the provider API (`pipeline(...)`
-		for `diffusers`, or `agent.generate_image(...)` when using ADK agent).
-	- Env vars: `IMAGES_SDXL_MODEL`, `IMAGES_SDXL_SEED`, `ARTIFACTS_DIR`.
-	- Dependencies (proposal): `diffusers`, `transformers`, `accelerate`, `safetensors` if local; otherwise none beyond `google-adk`.
-	- Risks: VRAM; use small-batch inference, offload schedulers, and test with
-		`MODEL_LOAD_DELAY` and `DETERMINISTIC` flags. Provide a fallback `--negative` memory-friendly sampler option.
+	- Integration: implement `render_images(prompt, cfg)` that wraps
+		`StableDiffusionXLPipeline` (base+refiner flow) inside
+		`gpu_utils.model_context('sdxl', weights=..., offload, xformers)` with
+		`torch_dtype=torch.float16`, `variant='fp16'`, `use_safetensors=True`, and
+		optional refiner passes. Honor `prompt_2`/`negative_prompt_2`, micro-
+		conditioning fields, deterministic sampling via `torch.Generator(device)
+		.manual_seed(seed)`, and publish PNG artifacts with metadata (seed,
+		model_id, device, sampler, steps, width/height, guidance scale, timings).
+	- Env vars: `IMAGES_SDXL_MODEL`, `IMAGES_SDXL_SEED`, `ARTIFACTS_DIR`, plus
+		optional overrides for refiner ids and sampler defaults.
+	- Dependencies (proposal): `torch>=2.0` (cu118/cu120), `diffusers`,
+		`transformers`, `accelerate`, `safetensors`, optional `xformers` /
+		`bitsandbytes`, `huggingface_hub`. Changes must be staged via
+		`proposals/pyproject_adk.diff` before editing manifests.
+	- Risks: VRAM / CUDA cleanup. Mitigate via `model_context`, explicit
+		pipeline deletion, `torch.cuda.empty_cache()`, and tests that simulate OOM
+		and verify cleanup. Real runs gated by `SMOKE_ADK=1`; unit tests use the
+		deterministic stub guidance from the Implementation Tasks doc.
 
 - **videos_wan**
-	- Model/Tool: Wan-AI Wan2.1-I2V-14B-720P (Hugging Face / Wan-Video). This is
-		the primary heavy-footprint model and the rollout pilot.
-	- Integration: provide `load_wan_model()` and `run_wan_inference(start_frames, end_frames, prompt)` functions.
-		Use `gpu_utils.model_context(_loader, name="videos_wan")` to page weights and
-		call the model's generation API. Produce MP4 artifacts and upload via
-		`adk_helpers.publish_with_sdk` or CLI.
+	- Model/Tool: Wan-AI Wan2.1 FLF2V family (e.g.,
+		`Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers`). Primary pilot due to GPU load.
+	- Integration: load `WanImageToVideoPipeline` with shared `CLIPVisionModel`
+		and `AutoencoderKLWan`, enable balanced/sequential device maps per host,
+		and wrap inference inside `gpu_utils.model_context('wan2.1/flf2v',
+		weights=MODEL_ID, offload=True, max_memory=..., low_cpu_mem_usage=True)`.
+		Support scheduler swaps (`DPMSolverMultistepScheduler`), per-chunk seeds,
+		keyframe inputs, and callback wiring for progress updates. Save frames via
+		`diffusers.utils.export_to_video()` (or ffmpeg fallback) and publish MP4s
+		with metadata (chunk stats, model_id, device_map, inference time, peak
+		VRAM, cpu_fallback flag).
 	- Env vars: `VIDEOS_WAN_MODEL`, `VIDEOS_WAN_SEED`, `ADK_MEMORY_SQLITE` for session persistence, `ARTIFACTS_DIR`.
-	- Dependencies (proposal): HF runtime deps as required by the Wan repo (likely `transformers`, `accelerate`, custom Wan-Video code). These must be added only after approval due to large wheels and licensing.
-	- Risks: VRAM/driver reliability; add intensive integration tests, GPU smoke tests, and a strict model load/unload discipline. Pilot this tool first.
+	- Dependencies (proposal): `torch>=2.0`, `diffusers` with Wan support,
+		`transformers`, `accelerate`, `safetensors`, `imageio`, `imageio-ffmpeg`,
+		Wan repo utilities. Proposals must document CUDA toolkits and wheel sizes.
+	- Risks: VRAM/driver reliability. Follow the Implementation Tasks fallback
+		sequence (adaptive chunk shrink, device swap, CPU fallback, fail). Add
+		telemetry at load/inference/cleanup and gate integration smokes under
+		`SMOKE_ADK=1`/`SMOKE_ADAPTERS=1`.
 
 - **tts_chatterbox**
-	- Model/Tool: two viable patterns — (A) ADK LlmAgent that exposes a TTS
-		`synthesize()` method (if available), or (B) integrate a dedicated TTS
-		engine such as ElevenLabs (cloud) or an open-source fallback (Coqui TTS,
-		Bark) for local runs.
-	- Integration: implement `synthesize_speech(text, voice_config)` that uses
-		the agent API when `ADK_USE_FIXTURE=0` + SDK present; otherwise call
-		external TTS SDK/HTTP endpoint. Persist WAV and publish via ADK artifacts.
-	- Env vars: `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_VOICE`, `TTS_API_KEY` (when using hosted).
-	- Dependencies (proposal): optional `coqui-ai` or provider SDKs; prefer
-		calling provider APIs via thin adapters to avoid heavy local installs.
-	- Risks: latency and licensing for hosted voices; include a license/cost
-		review before enabling any paid provider in CI runs.
+	- Model/Tool: Resemble AI's open-source Chatterbox TTS (English +
+		multilingual variants, `chatterbox-tts` PyPI /
+		`https://github.com/resemble-ai/chatterbox`). Outputs are watermarked;
+		metadata must capture `watermarked: bool`.
+	- Integration: implement `tts_chatterbox` FunctionTool entrypoint that loads
+		`ChatterboxTTS` / `ChatterboxMultilingualTTS` via
+		`ChatterboxTTS.from_pretrained(device='cuda'|'cpu')` inside
+		`gpu_utils.model_context('tts/chatterbox', ...)`, supports optional
+		`audio_prompt_path`, `language_id`, `cfg_weight`, `exaggeration`, and
+		optional fixture stubs when `SMOKE_TTS` is unset. Publish WAV artifacts via
+		`adk_helpers.publish_artifact()` including metadata (duration, sample_rate,
+		voice_id, provider voice id, model_id, device, synth_time_s,
+		watermarked flag, selected provider score breakdown).
+	- Env vars: `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`,
+		`TTS_PRIORITY_PROFILE`, `TTS_PROVIDER_ALLOWLIST`, `SMOKE_TTS`.
+	- Dependencies (proposal): `chatterbox-tts`, `torch`, `torchaudio`, and any
+		vendor-specific extras. Manifest edits require an approved
+		`proposals/pyproject_adk.diff` describing wheel sizes and CUDA variants.
+	- Risks: provider licensing / cost. Mitigate via the `tts_agent` selection
+		logic, fallback providers, and the error taxonomy defined earlier.
 
 - **lipsync_wav2lip**
-	- Model/Tool: Wav2Lip (open-source) pipeline that performs audio-driven
-		lip-synchronization using a face/video input and a target audio track.
-	- Integration: ship a light adapter `run_wav2lip(video_path, audio_path, out_path)`
-		that calls a Python API (preferred) or a subprocess helper pointing at the
-		Wav2Lip repo. Ensure the tool can run in a GPU-backed `gpu_utils.model_context`.
-	- Env vars: `LIPSYNC_WAV2LIP_MODEL` (path or name), `ARTIFACTS_DIR`.
-	- Dependencies (proposal): `torch`, `opencv-python`, and Wav2Lip sources.
-	- Risks: extra binary dependencies (ffmpeg/opencv). Use the `assemble_ffmpeg`
-		step to normalize final packaging.
+	- Model/Tool: Wav2Lip (upstream `https://github.com/Rudrabha/Wav2Lip`), with
+		configurable checkpoints (Wav2Lip or Wav2Lip+GAN) and S3FD face detector.
+	- Integration: expose `run_wav2lip(face_video, audio, out_path, opts)` that
+		either imports the Python inference helper or shells out to a pinned repo
+		commit via a safe `run_command` wrapper. Options include `checkpoint_path`,
+		`face_det_checkpoint`, `pads`, `resize_factor`, `nosmooth`, `crop`, `fps`,
+		`gpu`, `verbose`. Adapter must validate weights, manage temp dirs, ensure
+		`ffmpeg` availability, and publish MP4 artifacts with metadata (model
+		checkpoint, detector, opts snapshot, runtime, logs URIs).
+	- Env vars: `LIPSYNC_WAV2LIP_MODEL`, `LIPSYNC_FACE_DET_PATH`, `FFMPEG_PATH`,
+		`SMOKE_LIPSYNC`.
+	- Dependencies (proposal): `torch`, `numpy`, `scipy`, `opencv-python`,
+		`face-alignment`, upstream Wav2Lip modules. Document binary requirements
+		(`ffmpeg`). Tests mock subprocess/model calls to avoid heavy loads.
 
 - **assemble_ffmpeg**
-	- Model/Tool: `ffmpeg` binary invoked via a safe subprocess wrapper.
-	- Integration: implement deterministic assembly pipelines defined by the
-		`MoviePlan` (concat, overlay, audio mix). Use JSON-driven command templates
-		and verify output integrity before publishing artifacts.
-	- Env vars: `FFMPEG_PATH` (optional), `ARTIFACTS_DIR`.
-	- Dependencies: system `ffmpeg` (document installation), `python-ffmpeg` or
-		simple subprocess usage. No ADK SDK-specific dependency required beyond artifact publishing.
-	- Risks: cross-platform flags and codec licensing; lock a canonical ffmpeg
-		invocation and add acceptance tests that validate containerized runs.
+	- Model/Tool: deterministic `ffmpeg` pipeline invoked via a hardened
+		`run_command(cmd, cwd, timeout_s, retries)` helper that captures
+		stdout/stderr, enforces timeouts, and tears down process groups.
+	- Integration: provide `assemble_clips(movie_plan, clips, audio, out_path,
+		opts)` that builds concat/filter graphs for overlays, transitions, audio
+		mixes, and subtitles. Enforce canonical encode flags
+		(`-c:v libx264 -preset veryslow -crf 18 -pix_fmt yuv420p -movflags
+		+faststart`, `-c:a aac -b:a 192k`) unless overridden explicitly, and write
+		logs/commands into artifact metadata for reproducibility. Quarantine
+		temp outputs when `debug=True`.
+	- Env vars: `FFMPEG_PATH`, `SMOKE_ASSEMBLE`, `ARTIFACTS_DIR`.
+	- Dependencies: system `ffmpeg` (document install vector) plus optional
+		`imageio-ffmpeg` for verification. Unit tests focus on command generation
+		and error handling; smoke tests (gated) assemble short synthetic clips.
 
 - **qa_qwen2vl**
-	- Model/Tool: Qwen-2-VL (vision-language model) or an ADK LlmAgent that
-		exposes multimodal capabilities. Use it to inspect frames and emit a
-		`QAReport` artifact and policy decision.
-	- Integration: implement `inspect_frames(frames, prompts)` that calls the
-		agent (feature-detect `agent.analyze` / `agent.generate`) or invokes HF
-		adapter for Qwen-2-VL. Publish results and optionally call
-		`event_actions.request_human_input` when escalation is needed.
-	- Env vars: `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_SEED`.
-	- Dependencies (proposal): `transformers`/vision tokenizers or ADK SDK only.
-	- Risks: multimodal model licensing and performance; gate by opt-in smoke test.
+	- Model/Tool: `Qwen/Qwen2-VL-7B-Instruct` (HF) paired with `AutoProcessor`
+		and `qwen_vl_utils.process_vision_info` helpers. Supports mixed
+		image+text prompts formatted via the chat template.
+	- Integration: build `inspect_frames(frames, prompts, opts)` that packages
+		messages, sets processor pixel ranges (`min_pixels`, `max_pixels` or
+		`resized_height`/`width` multiples of 28), selects attention
+		implementations (flash2 when available), and runs inference under
+		`gpu_utils.model_context('qa/qwen2vl', device_map='auto', torch_dtype='auto')`.
+		Return structured `QAReport` artifacts with per-frame scores, flags,
+		confidence summaries, and attach them to memory events. When confidence is
+		indeterminate, call `request_human_input` with the report URI.
+	- Env vars: `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_PIXELS_MIN/MAX`,
+		`QA_QWEN2VL_DTYPE`, `SMOKE_QA`.
+	- Dependencies (proposal): `transformers` (recent main to avoid
+		`KeyError: 'qwen2_vl'`), `qwen-vl-utils`, `torch` with BF16/FP16 support,
+		`safetensors`, optional `accelerate`. Integration smokes stay gated behind
+		`SMOKE_ADK=1` / `SMOKE_QA=1`.
 
 ### Implementation notes & process
 
