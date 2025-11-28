@@ -37,9 +37,9 @@
   - [x] Implement `model_context()` guarding model load/unload, telemetry, and `ModelOOMError` normalization.
   - [x] Add `report_memory()` snapshots + device telemetry via `adk_helpers.write_memory_event()`.
   - [x] Provide `compute_device_map()` + presets for `a100-80gb`, `a100-40gb`, `rtx4090`.
-- [ ] Schema registry enforcement
-  - [ ] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, QAReport, StageEvent, Checkpoint, QA policy bundle.
-  - [ ] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
+- [x] Schema registry enforcement
+  - [x] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, QAReport, StageEvent, Checkpoint, QA policy bundle.
+  - [x] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
 
 #### Agents (decision/orchestration layers)
 - [ ] `script_agent` (`src/sparkle_motion/script_agent.py`)
