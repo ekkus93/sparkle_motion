@@ -42,9 +42,9 @@
   - [x] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
 
 #### Agents (decision/orchestration layers)
-- [ ] `script_agent` (`src/sparkle_motion/script_agent.py`)
-  - [ ] `generate_plan(prompt) -> MoviePlan` stub that calls `adk_factory.get_agent()` and enforces schema validation.
-  - [ ] Persist raw LLM output + validation metadata via `adk_helpers.publish_artifact()`.
+- [x] `script_agent` (`src/sparkle_motion/script_agent.py`) — **STATUS: complete** (generate_plan + artifact persistence landed)
+  - [x] `generate_plan(prompt) -> MoviePlan` stub that calls `adk_factory.get_agent()` and enforces schema validation.
+  - [x] Persist raw LLM output + validation metadata via `adk_helpers.publish_artifact()`.
 - [ ] `production_agent` (`src/sparkle_motion/production_agent.py`)
   - [ ] Implement `execute_plan(plan, mode='dry'|'run')` plus `StepExecutionRecord` dataclass and progress hooks.
   - [ ] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
@@ -80,7 +80,7 @@
 - [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
 - [x] `tests/unit/test_adk_helpers.py` — verify artifact publish fallbacks, schema registry loader behavior, and memory events.
 - [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
-- [ ] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
+- [x] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
 - [ ] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
 - [ ] `tests/unit/test_images_agent.py`, `tests/unit/test_videos_agent.py`, `tests/unit/test_tts_agent.py` — exercise batching, chunking, dedupe, QA integration, provider selection using stubs.
 - [ ] `tests/unit/test_images_adapter.py`, `tests/unit/test_videos_adapter.py`, `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
