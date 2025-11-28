@@ -268,19 +268,22 @@ Schema and policy artifacts are versioned once and consumed everywhere via
 `configs/schema_artifacts.yaml`. The helper module
 `sparkle_motion.schema_registry` reads that file and exposes utility methods:
 
+- `movie_plan_schema()` / `asset_refs_schema()` / `qa_report_schema()` /
+  `stage_event_schema()` / `checkpoint_schema()` — typed helpers returning the
+  `SchemaArtifact` (with both `.uri` and `.local_path`) for the canonical
+  artifacts.
+- `resolve_schema_uri(name, prefer_local=None)` — return either the artifact
+  URI or local fallback (with warnings when fixture mode forces a local path).
+- `resolve_qa_policy_bundle()` / `get_qa_policy_bundle()` — surface the QA
+  policy bundle + manifest URIs and local fallbacks packaged by
+  `scripts/package_qa_policy.py`.
 - `list_schema_names()` — enumerate MoviePlan/AssetRefs/QAReport/StageEvent/Checkpoint.
-- `get_schema_uri(name)` — return the canonical
-  `artifact://sparkle-motion/schemas/<name>/v1` URI for embedding in
-  WorkflowAgent YAML or PromptTemplates.
-- `get_schema_path(name)` — resolve the local fallback JSON Schema path
-  (e.g., for Colab smoke tests without ArtifactService connectivity).
-- `get_qa_policy_bundle()` — provide the QA policy bundle URI plus the local
-  tarball + manifest paths created by `scripts/package_qa_policy.py`.
 
-ScriptAgent prompts should call `get_schema_uri("movie_plan")` when populating
-the `json_schema` parameter in ADK PromptTemplates, while WorkflowAgent tooling
-injects the same URIs into stage validators. This keeps every environment on
-the same schema versions without copying JSON inline.
+ScriptAgent prompts should call `schema_registry.movie_plan_schema().uri` when
+populating the `json_schema` parameter in ADK PromptTemplates, while
+WorkflowAgent tooling injects the same URIs into stage validators via the typed
+helpers. This keeps every environment on the same schema versions without
+copying JSON inline.
 
 Use `sparkle_motion.prompt_templates.build_script_agent_prompt_template()` to
 assemble the prompt metadata in-process, or run

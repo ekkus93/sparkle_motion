@@ -99,7 +99,8 @@ def build_script_agent_prompt_template(
 ) -> PromptTemplateSpec:
     """Construct the ScriptAgent PromptTemplate bound to schema artifacts."""
 
-    schema = schema_registry.load_catalog().get_schema("movie_plan")
+    schema = schema_registry.movie_plan_schema()
+    schema_uri = schema_registry.resolve_schema_uri("movie_plan")
     system_prompt, user_prompt = _default_script_agent_prompts()
 
     variables = tuple(input_variables or ("idea", "duration_minutes", "style_notes"))
@@ -110,7 +111,7 @@ def build_script_agent_prompt_template(
         model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
-        response_schema_uri=schema.uri,
+        response_schema_uri=schema_uri,
         response_schema_path=schema.local_path,
         input_variables=variables,
     )

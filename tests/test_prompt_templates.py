@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sparkle_motion import prompt_templates, schema_registry
 
 
-def test_build_script_agent_prompt_template_uses_schema_registry() -> None:
+def test_build_script_agent_prompt_template_uses_schema_registry(monkeypatch) -> None:
+    monkeypatch.delenv("ADK_USE_FIXTURE", raising=False)
     spec = prompt_templates.build_script_agent_prompt_template(model="test-model")
 
-    assert spec.response_schema_uri == schema_registry.get_schema_uri("movie_plan")
-    assert spec.response_schema_path == schema_registry.get_schema_path("movie_plan")
+    movie_plan = schema_registry.movie_plan_schema()
+    assert spec.response_schema_uri == movie_plan.uri
+    assert spec.response_schema_path == movie_plan.local_path
 
     payload = spec.to_payload()
     assert payload["response_json_schema"]["artifact_uri"] == spec.response_schema_uri
@@ -37,9 +41,17 @@ def test_render_script_agent_prompt_template(tmp_path: Path) -> None:
     data = json.loads(rendered.read_text(encoding="utf-8"))
     assert data["id"] == "script_agent_movie_plan_test"
     assert data["model"] == "gemini-test"
-    assert data["response_json_schema"]["artifact_uri"] == schema_registry.get_schema_uri(
-        "movie_plan"
-    )
+    assert data["response_json_schema"]["artifact_uri"] == schema_registry.movie_plan_schema().uri
+
+
+def test_build_script_agent_prompt_template_prefers_local_uri_in_fixture_mode(monkeypatch) -> None:
+    monkeypatch.setenv("ADK_USE_FIXTURE", "1")
+    with pytest.warns(RuntimeWarning) as recorded:
+        spec = prompt_templates.build_script_agent_prompt_template(model="fixture-model")
+
+    assert spec.response_schema_uri.startswith("file://")
+    assert spec.response_schema_path == schema_registry.movie_plan_schema().local_path
+    assert any("local schema fallback" in str(w.message) for w in recorded)
 
 
 def test_to_payload_repo_relative_local_fallback(tmp_path: Path) -> None:

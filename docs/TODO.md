@@ -24,19 +24,19 @@
 ### P0 — Core runtime blockers
 
 #### Cross-cutting infrastructure
-- [ ] `adk_factory` enforcement (`src/sparkle_motion/adk_factory.py`)
-  - [ ] Implement `safe_probe_sdk()` (non-fatal) vs `require_adk()` (fail-fast) semantics.
-  - [ ] Add `get_agent(tool_name, model_spec, mode)` registry with typed errors + telemetry hooks.
-  - [ ] Track agent handles in `_agents` registry with `created_at/last_used_at/mode`, plus `shutdown()` cleanup.
-  - [ ] Ensure fixture/test bypass logs via `adk_helpers.write_memory_event()`.
-- [ ] `adk_helpers` façade (`src/sparkle_motion/adk_helpers.py`)
-  - [ ] Implement `publish_artifact()`, `write_memory_event()`, and `request_human_input()` with clear domain errors.
-  - [ ] Add `ensure_schema_artifacts(schema_config_path)` loader that validates `configs/schema_artifacts.yaml` and exposes typed accessors.
-  - [ ] Expose `set_backend()` context manager so tests can inject fakes.
-- [ ] `gpu_utils` core (`src/sparkle_motion/gpu_utils.py`)
-  - [ ] Implement `model_context()` guarding model load/unload, telemetry, and `ModelOOMError` normalization.
-  - [ ] Add `report_memory()` snapshots + device telemetry via `adk_helpers.write_memory_event()`.
-  - [ ] Provide `compute_device_map()` + presets for `a100-80gb`, `a100-40gb`, `rtx4090`.
+- [x] `adk_factory` enforcement (`src/sparkle_motion/adk_factory.py`)
+  - [x] Implement `safe_probe_sdk()` (non-fatal) vs `require_adk()` (fail-fast) semantics.
+  - [x] Add `get_agent(tool_name, model_spec, mode)` registry with typed errors + telemetry hooks.
+  - [x] Track agent handles in `_agents` registry with `created_at/last_used_at/mode`, plus `shutdown()` cleanup.
+  - [x] Ensure fixture/test bypass logs via `adk_helpers.write_memory_event()`.
+- [x] `adk_helpers` façade (`src/sparkle_motion/adk_helpers.py`)
+  - [x] Implement `publish_artifact()`, `write_memory_event()`, and `request_human_input()` with clear domain errors.
+  - [x] Add `ensure_schema_artifacts(schema_config_path)` loader that validates `configs/schema_artifacts.yaml` and exposes typed accessors.
+  - [x] Expose `set_backend()` context manager so tests can inject fakes.
+- [x] `gpu_utils` core (`src/sparkle_motion/gpu_utils.py`)
+  - [x] Implement `model_context()` guarding model load/unload, telemetry, and `ModelOOMError` normalization.
+  - [x] Add `report_memory()` snapshots + device telemetry via `adk_helpers.write_memory_event()`.
+  - [x] Provide `compute_device_map()` + presets for `a100-80gb`, `a100-40gb`, `rtx4090`.
 - [ ] Schema registry enforcement
   - [ ] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, QAReport, StageEvent, Checkpoint, QA policy bundle.
   - [ ] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
@@ -77,9 +77,9 @@
   - [ ] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
 ### P1 — Deterministic unit tests & harnesses
-- [ ] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
-- [ ] `tests/unit/test_adk_helpers.py` — verify artifact publish fallbacks, schema registry loader behavior, and memory events.
-- [ ] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
+- [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
+- [x] `tests/unit/test_adk_helpers.py` — verify artifact publish fallbacks, schema registry loader behavior, and memory events.
+- [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
 - [ ] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
 - [ ] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
 - [ ] `tests/unit/test_images_agent.py`, `tests/unit/test_videos_agent.py`, `tests/unit/test_tts_agent.py` — exercise batching, chunking, dedupe, QA integration, provider selection using stubs.
@@ -94,7 +94,7 @@
 - [ ] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.
 - [ ] `docs/gpu_utils.md` — document `model_context` usage, device presets, telemetry expectations, and troubleshooting.
 - [ ] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
-- [ ] `db/schema/recent_index.sql` and `src/sparkle_motion/db/sqlite.py` — persist RecentIndex/MemoryService tables + helper functions.
+- [x] `db/schema/recent_index.sql` and `src/sparkle_motion/db/sqlite.py` — persist RecentIndex/MemoryService tables + helper functions.
 
 ### P3 — Gated smokes, proposals, and integration follow-ups
 - [ ] Smoke tests: add opt-in tests under `tests/smoke/` for `images_sdxl`, `videos_wan`, `tts_chatterbox`, `assemble_ffmpeg`, `lipsync_wav2lip`, `qa_qwen2vl`, all gated via corresponding `SMOKE_*` env vars.

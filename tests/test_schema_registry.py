@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from sparkle_motion import schema_registry
 
@@ -24,3 +28,46 @@ def test_get_qa_policy_bundle_fields():
     assert bundle.bundle_path.name == "qa_policy_v1.tar.gz"
     assert bundle.manifest_path.exists()
     assert bundle.manifest_path.name == "manifest.json"
+
+
+def test_typed_getters_return_expected_names():
+    assert schema_registry.movie_plan_schema().name == "movie_plan"
+    assert schema_registry.asset_refs_schema().name == "asset_refs"
+    assert schema_registry.qa_report_schema().name == "qa_report"
+    assert schema_registry.stage_event_schema().name == "stage_event"
+    assert schema_registry.checkpoint_schema().name == "checkpoint"
+
+
+def test_resolve_schema_uri_prefers_artifact_outside_fixture(monkeypatch):
+    monkeypatch.delenv("ADK_USE_FIXTURE", raising=False)
+    uri = schema_registry.resolve_schema_uri("movie_plan")
+    assert uri == schema_registry.get_schema_uri("movie_plan")
+
+
+def test_resolve_schema_uri_uses_local_in_fixture_mode(monkeypatch):
+    monkeypatch.setenv("ADK_USE_FIXTURE", "1")
+    with pytest.warns(RuntimeWarning) as recorded:
+        uri = schema_registry.resolve_schema_uri("movie_plan")
+    assert uri.startswith("file://")
+    assert any("local schema fallback" in str(w.message) for w in recorded)
+
+
+def test_resolve_schema_uri_missing_local_warns_and_returns_artifact(monkeypatch):
+    catalog = schema_registry.load_catalog()
+    broken = replace(catalog, schemas=dict(catalog.schemas))
+    broken.schemas["movie_plan"] = replace(
+        broken.schemas["movie_plan"], local_path=Path("/nonexistent/schema.json")
+    )
+    monkeypatch.setattr(schema_registry, "load_catalog", lambda config_path=None: broken)
+    with pytest.warns(RuntimeWarning, match="does not exist"):
+        uri = schema_registry.resolve_schema_uri("movie_plan", prefer_local=True)
+    assert uri == broken.schemas["movie_plan"].uri
+
+
+def test_resolve_qa_policy_bundle_prefers_local_in_fixture_mode(monkeypatch):
+    monkeypatch.setenv("ADK_USE_FIXTURE", "1")
+    with pytest.warns(RuntimeWarning) as recorded:
+        bundle_uri, manifest_uri = schema_registry.resolve_qa_policy_bundle()
+    assert bundle_uri.startswith("file://")
+    assert manifest_uri.startswith("file://")
+    assert any("qa_policy.bundle" in str(w.message) for w in recorded)
