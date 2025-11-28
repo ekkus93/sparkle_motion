@@ -53,12 +53,146 @@ These are decision/orchestration layers that select providers, enforce policy, a
 ### script_agent
 - Task: Implement `generate_plan(prompt: str) -> MoviePlan`
 This agent is plan-only: it generates and validates a `MoviePlan` (the script) and should not execute the plan or call FunctionTools directly. Execution, rendering, and synthesis are delegated to the `production_agent`, which handles orchestration, policy enforcement, gating (e.g., `SMOKE_ADK`), and calls to per-media agents and FunctionTools.
-
   - Use `adk_factory.get_agent('script_agent', model_spec)` to construct the LlmAgent.
-  - Validate output against `MoviePlan` schema (use `schema_registry` artifact URIs).
   - Publish plan artifact via `adk_helpers.publish_artifact()` and write a memory event.
   - Tests: unit test for schema conformance; gated integration smoke that exercises a small LLM (fixture-mode or real SDK).
   - Estimate: 2–3 days (including prompts+validation)
+
+  **MoviePlan schema (recommended)**
+
+  - `MoviePlan` (object)
+    - `id: str` — unique plan identifier (UUID recommended)
+    - `title: str` — short human-readable title
+    - `description: Optional[str]` — optional longer description
+    - `created_by: Optional[str]` — user id or agent id that created the plan
+    - `created_at: str` — ISO 8601 timestamp
+    - `steps: List[Step]` — ordered list of steps to execute
+    - `assemble_opts: Optional[dict]` — final assembly/options (codec, crf, fps)
+
+  - `Step` (union by `type`)
+    - Common fields: `id: str`, `type: str`, `title: str`, `opts: dict`
+    - `type == "image"`:
+      - `prompt: str` — text prompt to render
+      - `count: int` — number of images to produce (default 1)
+      - `opts: ImagesOpts` — passed to `images_agent`/`images_sdxl`
+    - `type == "tts"`:
+      - `text: str` — text to synthesize
+      - `voice: dict` — voice config (id, style)
+      - `opts: TTSOpts` — sample rate, format
+    - `type == "video"`:
+      - `prompt: str` — prompt for video render
+      - `start_frames: list[str|Path]` — reference frames or keyframes
+      - `end_frames: list[str|Path]` — optional end frames
+      - `opts: VideoOpts` — number of frames, height/width, steps
+    - `type == "lipsync"`:
+      - `face_video: str|Path`, `audio: str|Path`, `out_path: str|Path`
+      - `opts: Wav2LipOpts`
+    - `type == "custom"`:
+      - `handler: str` — extension point; `opts` contains handler args
+
+  **Example MoviePlan (JSON)**
+
+  ```json
+  {
+    "id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+    "title": "Demo: Intro Clip",
+    "created_at": "2025-11-27T12:00:00Z",
+    "steps": [
+      {"id":"s1","type":"image","title":"title_card","prompt":"A cinematic title card, sunrise","opts":{"width":1280,"height":720,"seed":42}},
+      {"id":"s2","type":"tts","title":"narration","text":"Welcome to the demo.","voice":{"id":"emma"}},
+      {"id":"s3","type":"video","title":"main_shot","prompt":"A calm ocean at dawn","start_frames":[],"end_frames":[],"opts":{"num_frames":32}}
+    ],
+    "assemble_opts": {"codec":"libx264","crf":18,"fps":30}
+  }
+  ```
+
+  **Example MoviePlan (YAML)**
+
+  ```yaml
+  id: 0f8fad5b-d9cb-469f-a165-70867728950e
+  title: Demo: Intro Clip
+  created_at: 2025-11-27T12:00:00Z
+  steps:
+    - id: s1
+      type: image
+      title: title_card
+      prompt: "A cinematic title card, sunrise"
+      opts:
+        width: 1280
+        height: 720
+        seed: 42
+    - id: s2
+      type: tts
+      title: narration
+      text: "Welcome to the demo."
+      voice:
+        id: emma
+    - id: s3
+      type: video
+      title: main_shot
+      prompt: "A calm ocean at dawn"
+      opts:
+        num_frames: 32
+  assemble_opts:
+    codec: libx264
+    crf: 18
+    fps: 30
+  ```
+
+  **LLM prompt template & sampling guidance**
+
+  - Template: provide a short, structured system prompt and a user instruction that requests a JSON MoviePlan only. Always include an explicit output schema and a final validation checklist. Example system+user bundle:
+
+  ```text
+  System: You are a plan author. Produce valid JSON following the MoviePlan schema exactly. Do not include commentary.
+  User: Create a MoviePlan for: <user prompt>
+  Constraints: max 10 steps; steps must be one of image|tts|video|lipsync|custom; include assemble_opts.
+  Output: JSON only, matching the schema.
+  ```
+
+  - Sampling settings (recommended): `temperature=0.0..0.3` for deterministic structure; `top_p=0.8` where creative variation desired. Use `max_tokens` adequate for plan size (e.g., 1024).
+
+  - Few-shot: include 1–2 example plans as few-shot context when the prompt is ambiguous about style or length.
+
+  **Safety & hallucination mitigations**
+
+  - Enforce strict output-only mode in the LLM instruction (JSON-only). Post-parse: run schema validation and a content-policy pass (check for disallowed content in prompts/text fields). If disallowed content is detected, return a `PolicyViolation` result instead of a plan.
+  - Limit fields that can contain free text (e.g., `prompt`) to a configurable max length; normalize/escape user-provided text.
+  - Where factual claims are required (e.g., `created_by` metadata), mark as optional and do not rely on LLM for authoritative IDs.
+
+  **Validation rules & error types**
+
+  - Validation steps (brief):
+    1. JSON parse success
+    2. Conformance to `MoviePlan` schema (field presence/types)
+    3. Step-level validation: allowed `type`, valid `opts` types, numeric ranges
+    4. Policy checks: no disallowed content in `prompt`/`text` fields
+    5. Resource estimates: reject plans exceeding configured resource caps (e.g., total frames > 10k)
+
+  - Error types (exceptions / structured error objects):
+    - `PlanParseError` — invalid JSON / unparseable output
+    - `PlanSchemaError` — missing or invalid schema fields
+    - `PlanPolicyViolation` — disallowed content detected
+    - `PlanResourceError` — estimated resource usage exceeds allowed budgets
+
+  **Unit tests (suggested)**
+
+  - Positive test: given a simple prompt, `generate_plan()` returns a dict matching `MoviePlan` schema; assert presence of `id`, `steps` and that each step has required fields.
+
+  - Negative tests:
+    - Malformed output: LLM returns non-JSON → assert `PlanParseError` raised
+    - Schema mismatch: required field missing (e.g., no `steps`) → assert `PlanSchemaError`
+    - Policy violation: prompt contains disallowed terms and LLM returns a plan → assert `PlanPolicyViolation` and that no artifacts are scheduled
+    - Resource overage: LLM plans > configured frame budget → assert `PlanResourceError`
+
+  - Test harness notes: use a lightweight LLM stub / fixture that returns canned outputs for deterministic testing. For integration smoke, run with a real LLM behind `SMOKE_ADK=1` and verify `generate_plan` returns a valid plan and the artifact publish call is invoked (mock `adk_helpers.publish_artifact` when appropriate).
+
+  **Implementation tips**
+
+  - Always run a strict schema validator (e.g., `pydantic` or `jsonschema`) on the parsed LLM output before accepting the plan.
+  - When assembling few-shot examples include both a successful and a rejected example to guide structure and policy boundaries.
+  - Persist the raw LLM output alongside the validated plan for auditing and debugging.
+
 
 ### tts_agent
 - Task: Implement `tts_agent` decision layer and `tts_chatterbox` FunctionTool adapter
