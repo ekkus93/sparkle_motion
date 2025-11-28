@@ -598,6 +598,156 @@ If you want, I can implement the skeleton and safe subprocess helper as a local 
 
 ------------------------------------------------------------
 
+### production_agent (expanded)
+
+- **Purpose**: execute `MoviePlan` objects end-to-end; orchestrate `images_agent`, `tts_agent`, `videos_agent`, and `assemble_ffmpeg`; enforce policy and gating; publish final artifacts.
+
+- **Public API**: `execute_plan(plan: MoviePlan, *, mode: Literal["dry", "run"] = "dry") -> list[ArtifactRef]`
+  - `dry`: validate and simulate orchestration without invoking heavy FunctionTools.
+  - `run`: perform guarded execution (checks, gated services, publish artifacts).
+
+- **Responsibilities & behavior**:
+  - Validate `MoviePlan` schema and preconditions before execution.
+  - Run content & safety policy checks early; on rejection raise `PolicyViolationError` with clear reason and memory event.
+  - Apply gating: only call heavy FunctionTools when the appropriate environment flags are set (e.g., `SMOKE_ADK`, `SMOKE_LIPSYNC`) and when `adk_helpers.require_adk()` succeeds for ADK-backed providers.
+  - Orchestrate per-step execution with retries/backoff and bounded concurrency for expensive steps (e.g., chunked video renders).
+  - Track and publish intermediate artifacts (images, wavs, clips) and final assembled artifact via `adk_helpers.publish_artifact()`; include rich metadata (plan_id, step_id, model_id, device, seed, durations).
+  - Provide observability: for each step record timing, peak-memory hints, stdout/stderr logs for subprocess-backed tools and callback progress events for pipeline-backed tools.
+  - Provide a `simulate_execution_report(plan, policy_decisions)` output for `dry` runs that lists expected invocation graph, resource estimates, and publish URIs that would be created.
+
+- **Error handling & cleanup**:
+  - Implement bounded retries for transient errors with exponential backoff and jitter.
+  - Fail-fast on deterministic policy violations; for runtime OOM or hardware errors attempt controlled fallback (reduce chunk size, switch to CPU-limited path) where available and log memory telemetry.
+  - Ensure temporary files and GPU contexts are released on both success and failure (call `gpu_utils.model_context` cleanup, `torch.cuda.empty_cache()`, `gc.collect()`).
+
+- **Example orchestration pseudocode**:
+
+```python
+def execute_plan(plan, mode="dry"):
+    validate_plan_schema(plan)
+    policy_decisions = run_policy_checks(plan)
+    if policy_decisions.reject:
+        raise PolicyViolationError(policy_decisions.reason)
+    if mode == "dry":
+        return simulate_execution_report(plan, policy_decisions)
+
+    artifacts = []
+    for step in plan.steps:
+        if step.type == "image":
+            art = images_agent.render(step.prompt, opts=step.opts)
+        elif step.type == "tts":
+            art = tts_agent.synthesize(step.text, voice_config=step.voice)
+        elif step.type == "video":
+            art = videos_agent.render_video(step.start_frames, step.end_frames, step.prompt, opts=step.opts)
+        elif step.type == "lipsync":
+            art = lipsync_wav2lip.run_wav2lip(step.face_video, step.audio, step.out_path, opts=step.opts)
+        else:
+            art = handle_custom_step(step)
+        artifacts.append(art)
+
+    final_artifact = assemble_ffmpeg(plan, artifacts, opts=plan.assemble_opts)
+    publish_uri = adk_helpers.publish_artifact(path=final_artifact.path, media_type="video/mp4", metadata={"plan_id": plan.id})
+    return artifacts + [publish_uri]
+```
+
+- **Tests**:
+  - Unit tests: mock FunctionTools and assert orchestration, policy enforcement, and retry behavior.
+  - Integration/gated: full end-to-end smoke test run behind `SMOKE_ADK=1` that exercises a tiny plan, verifies published artifacts and metadata.
+
+- **Estimate**: 2–4 days to implement a robust `production_agent` scaffold and unit tests.
+
+### qa_qwen2vl (expanded)
+
+- **Purpose**: frame-level QA and inspection adapter. Run multimodal QA using Qwen2‑VL (or another ADK multimodal provider) over frames or image+text prompts and produce a structured `QAReport` artifact used by agents and human reviewers.
+
+- **Model & resources**:
+  - Canonical model id: `Qwen/Qwen2-VL-7B-Instruct` (Hugging Face).
+  - Upstream recommends using `Qwen2VLForConditionalGeneration`, `AutoProcessor`, and the `qwen_vl_utils` helper toolkit for vision pre-processing and packaging multi-image/video inputs.
+  - Note: building `transformers` from source is recommended in some environments to avoid `KeyError: 'qwen2_vl'` (e.g., `pip install git+https://github.com/huggingface/transformers`).
+
+- **Public API**: `inspect_frames(frames: Iterable[Path|str], prompts: list[str], *, opts: dict = None) -> QAReport`
+  - `QAReport` fields (recommended): `per_frame: list[{frame_index, scores, flags, annotations}]`, `global_flags`, `top_responses`, `confidence_summary`, `artifact_uri`, `logs_uri`, `opts_snapshot`.
+
+- **Quickstart / Usage (canonical snippet)**
+
+```python
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info
+import torch
+
+# Load model (device_map + dtype recommended for your infra)
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    "Qwen/Qwen2-VL-7B-Instruct",
+    torch_dtype="auto",
+    device_map="auto",
+)
+
+# Processor: handles chat template and input packaging (images/videos)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+
+# Example messages: interleaved image + text content per the model chat template
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image", "image": "file:///path/to/frame1.jpg"},
+            {"type": "text", "text": "Any safety issues in this frame?"},
+        ],
+    }
+]
+
+# Prepare text and vision inputs
+text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+image_inputs, video_inputs = process_vision_info(messages)
+inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+inputs = inputs.to("cuda")
+
+# Generate
+generated_ids = model.generate(**inputs, max_new_tokens=128)
+
+# Trim prompt tokens and decode
+generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+print(output_text)
+```
+
+- **Input formats supported**
+  - Images: local file paths (`file:///`), HTTP/HTTPS URLs, and base64 strings.
+  - Videos: local file paths only (video inference currently accepts local files).
+
+- **Performance & inference tips (from upstream)**
+  - Use `min_pixels` / `max_pixels` in `AutoProcessor.from_pretrained(..., min_pixels=..., max_pixels=...)` to control the dynamic visual tokenization range and balance memory vs. fidelity (example tokens range: 256–1280 tokens mapped to pixels via 28*28 factor).
+  - Alternatively set `resized_height` and `resized_width` for exact control (values are rounded to multiples of 28).
+  - Enable accelerated attention implementations when available (e.g., `attn_implementation="flash_attention_2"`) and prefer `torch_dtype=torch.bfloat16` / `torch_dtype="auto"` for BF16-capable hardware.
+  - Use `device_map="auto"` for multi‑GPU hosts and `torch_dtype="auto"` to let HF pick BF16/FP16 where supported.
+  - Upstream provides `qwen-vl-utils` (`pip install qwen-vl-utils`) for `process_vision_info` helpers that convert messages into `images`/`videos` tensors accepted by the processor.
+
+- **Recommended behavior for the adapter**
+  - Provide a small wrapper that accepts a list of frames and a list of QA prompts and maps them to the `messages` structure used by the processor.
+  - Batch frames into as few model calls as possible, respecting input token/visual token limits.
+  - Expose `opts` for `min_pixels`, `max_pixels`, `resized_height`, `resized_width`, `max_new_tokens`, `attn_implementation`, `torch_dtype`, and `device_map` so callers can tune resource vs. quality.
+  - Provide fallbacks: a lightweight stub for unit tests (no heavy deps) and a gated real-call path controlled by `SMOKE_ADK=1` (or similar).
+
+- **Policy & escalation**
+  - Run automated policy checks (NSFW, copyright, identity) by templating prompts for model-based detectors (e.g., "Does this image contain adult content?") and mapping response confidences to actions.
+  - If confidence is below the configured threshold, call `request_human_input()` and attach the `QAReport` artifact to the memory timeline using `adk_helpers.write_memory_event()`.
+
+- **Tests**
+  - Unit tests: stub `Qwen2VLForConditionalGeneration` / processor and assert `inspect_frames` returns correct `QAReport` shape and threshold logic. Use deterministic stubs for generated responses.
+  - Command/packaging tests: ensure `process_vision_info` and `processor.apply_chat_template` are called with expected messages when given frames+prompts.
+  - Integration/gated: run a small sample through the real model with `SMOKE_ADK=1` (requires `qwen-vl-utils`, `torch` with BF16 support or CPU fallback, and local `ffmpeg` if doing video input handling).
+
+- **Limitations & notes (from upstream)**
+  - Qwen2‑VL does not process audio embedded in videos — only visual frames and associated text.
+  - Data is current up to the model's training cutoff; validate factual claims accordingly.
+  - Some complex spatial reasoning, accurate counting, or person/IP identification may be limited — configure QA thresholds and human review conservatively.
+
+- **Manifest & dependency proposal guidance**
+  - Suggested runtime deps for proposals: `transformers` (recommend build-from-source in some CI images), `qwen-vl-utils`, `torch` (BF16/FP16 support per infra), `safetensors` (if using safetensors weights), and `accelerate` if using offload/device_map strategies.
+  - Do NOT modify `pyproject.toml` directly — prepare `proposals/pyproject_adk.diff` and wait for explicit approval before adding heavy packages.
+
+- **Estimate**: 2–4 days to implement adapter + unit tests and gated integration smoke tests.
+
 ## Cross-cutting tasks
 - `gpu_utils.model_context` — implement consistent context manager for model load/unload and CUDA cleanup (must be used by all heavy tools).
 - `adk_helpers.require_adk()` vs `adk_helpers.probe_sdk(non_fatal=True)` — audit callers and apply non-fatal probe in scripts and fail-fast in entrypoints.
