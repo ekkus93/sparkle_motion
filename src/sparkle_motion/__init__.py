@@ -1,3 +1,8 @@
+"""sparkle_motion package (minimal).
+
+This package exposes the gpu_utils helpers used by adapters and tests.
+"""
+__all__ = ["gpu_utils"]
 """sparkle_motion package
 
 Small package entry for the Sparkle Motion project. Keeps package namespace
