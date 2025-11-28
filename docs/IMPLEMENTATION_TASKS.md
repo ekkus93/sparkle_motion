@@ -393,10 +393,114 @@ frames = getattr(result, "frames", getattr(result, "images", None))[0]
 
 ### assemble_ffmpeg
 - Task: Implement deterministic assembly pipeline using `ffmpeg`
-  - Provide helper `assemble_clips(movie_plan, clips, audio)` that performs concat, overlay, and audio mixing with reproducible options.
-  - Use a safe subprocess wrapper that validates exit codes and captures logs/metrics.
-  - Tests: end-to-end assembly unit test (short synthetic clips), artifact integrity checks.
-  - Estimate: 1–2 days
+  - Provide helper `assemble_clips(movie_plan, clips, audio, out_path, opts)` that performs concat, overlay, transitions, and audio mixing with reproducible options.
+  - Use a safe subprocess wrapper that validates exit codes, captures stdout/stderr, handles timeouts and retries, and records logs/metrics.
+  - Tests: unit tests for command generation and error handling; end-to-end assembly unit test using short synthetic clips; gated integration smoke test that verifies final artifact integrity.
+  - Estimate: 1–2 days for a robust skeleton and unit tests; 3–4 days with CI integration and gated smoke tests.
+
+Details (design, API, and implementation guidance)
+
+- Purpose: deterministically assemble clips, overlays, audio mixing, subtitles, and transitions into a final published artifact (MP4/MOV) while recording reproducible metadata and logs for debugging and auditing.
+
+- Public API (suggested):
+
+```python
+def assemble_clips(movie_plan: dict, clips: list[dict], audio: Optional[dict], out_path: Path, opts: dict) -> ArtifactRef:
+    """Assemble ordered clips and audio into final output.
+
+    Returns an `ArtifactRef` (or dict) with `artifact_uri`, `media_type`, and metadata.
+    """
+
+def run_command(cmd: list[str], cwd: Path, timeout_s: int = 600, retries: int = 1) -> SubprocessResult:
+    """Run a subprocess safely and return structured result (exit_code, stdout, stderr, duration).
+    """
+```
+
+- Clip descriptor (example):
+
+```json
+{
+  "uri": "/tmp/clip1.mp4",
+  "start_s": 0.0,
+  "end_s": 2.5,
+  "transition": {"type":"fade", "duration":0.2},
+  "z": 0
+}
+```
+
+- Core implementation pieces:
+  1) High-level assembler: translate `movie_plan`/`clips`/`audio` into one or more deterministic `ffmpeg` invocations. Prefer `filter_complex` for mixed-format operations (overlay, crossfade, audio mixing), and the `concat` demuxer for same-format, same-codec sequences.
+  2) Safe subprocess wrapper: implement `run_command` that:
+     - Uses `subprocess.Popen` with captured stdout/stderr redirected to temp files.
+     - Enforces timeouts and kills process groups on timeout (use `preexec_fn=os.setsid` and `os.killpg`).
+     - Retries transient failures (configurable retries, e.g., 1 retry).
+     - Returns structured logs and duration.
+  3) Staging & temp filesystem management: create a per-run temp dir (`tempfile.TemporaryDirectory()`), copy or hard-link inputs into it, and use deterministic file names.
+  4) Cleanup & failure handling: on failure, collect ffmpeg logs as companion artifacts, optionally retain temp dir when `debug=True`, and ensure child processes are terminated.
+  5) Publishing: call `adk_helpers.publish_artifact(path=out_path, media_type="video/mp4", metadata=meta)` after a successful run. Include assembly metadata: `plan_id`, `ffmpeg_version`, encoding args, runtime durations, and logs URI.
+  6) Logging & telemetry: save full ffmpeg command, stdout/stderr, runtime, exit code, and peak resource hints (when available) as metadata and separate `.log` artifact.
+
+- Determinism & reproducibility:
+  - Pin encoding settings (codec, CRF, pixel format, framerate) in `opts` and record them in metadata.
+  - Record the `ffmpeg` version (`ffmpeg -version`) and platform/OS info.
+  - If any randomness is used (for stochastic transitions), accept a `seed` option and record it.
+
+- Security & input validation:
+  - Reject arbitrary shell passthrough. Only accept structured options and map them to safe ffmpeg flags.
+  - Validate that input URIs exist and are within expected workspaces.
+  - Sanitize metadata to avoid disclosing secrets.
+
+- FFmpeg patterns & recommended args:
+  - Concatenate same-format clips: use the concat demuxer with a deterministic list file when possible.
+  - Use `filter_complex` for overlays, `xfade` for crossfades, and `acrossfade`/`amix` for audio transitions/mixing.
+  - Deterministic encode args example:
+
+```
+-c:v libx264 -preset veryslow -crf 18 -pix_fmt yuv420p -movflags +faststart
+-c:a aac -b:a 192k
+```
+
+- Subprocess wrapper features (API sketch):
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class SubprocessResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_s: float
+
+def run_command(cmd: List[str], cwd: Path, timeout_s: int = 600, retries: int = 1) -> SubprocessResult:
+    ...
+```
+
+- Testing strategy:
+  - Unit tests:
+    - Test command-generation only (pure functions) to assert correct filter strings for concat, overlay, and mix.
+    - Mock `run_command` to simulate ffmpeg failures and assert retry and cleanup behavior.
+  - Integration (gated):
+    - Smoke test that uses small synthetic clips (generated by `ffmpeg` color source or programmatically created images and WAV) to produce a final MP4. Gate with `SMOKE_ADK=1` or `SMOKE_ASSEMBLE=1`. CI job must provide an `ffmpeg` binary.
+  - Edge cases: mixed framerates (either normalize or fail), missing inputs, invalid ranges — fail with descriptive errors.
+
+- Documentation & developer notes:
+  - Update `docs/IMPLEMENTATION_TASKS.md` with the public API and example usage.
+  - Add a `docs/assemble_ffmpeg.md` with example `ffmpeg` filter snippets, typical `movie_plan` shapes, and CI setup notes.
+
+- Manifest / dependency considerations:
+  - System: `ffmpeg` binary required (install via apt/yum/homebrew or provide a Docker image like `jrottenberg/ffmpeg` in CI).
+  - Optional Python packages: `imageio-ffmpeg` or `ffmpeg-python` (prefer direct subprocess for explicit control). If added, prepare `proposals/pyproject_adk.diff` per repo policy.
+
+- CI / environment:
+  - Ensure `ffmpeg` is available in CI images for the gated smoke test, or run the smoke test in a container with `ffmpeg` installed.
+  - Provide a lightweight fixture mode for tests to avoid heavy binaries when not gating (unit tests should not need `ffmpeg`).
+
+- Security / policy notes:
+  - The assembler must not execute arbitrary user-supplied shell commands. Validate and whitelist options.
+  - Production callers (e.g., `production_agent`) must run content policy checks before assembly.
+
+If you want, I can implement the skeleton and safe subprocess helper as a local patch (showing diffs), create the unit tests, and add example docs. I will not modify `pyproject.toml` or push changes without your explicit approval phrase.
 
 ------------------------------------------------------------
 
