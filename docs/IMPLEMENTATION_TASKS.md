@@ -204,6 +204,79 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
   - Estimate: 2–4 days
   - Notes: runtime dependency or manifest changes must follow the `proposals/pyproject_adk.diff` process and require explicit approval before editing `pyproject.toml` or pushing runtime changes.
 
+  Provider selection rules (cost / latency / quality priorities)
+
+  - Objective: choose a TTS provider (ADK-managed, local vendor like Chatterbox, or fixture stub) based on configured priorities and runtime signals.
+  - Inputs considered for selection:
+    - `priority_profile`: one of `cost`, `latency`, `quality`, or `balanced` (default `balanced`).
+    - `max_latency_s`: caller hint for acceptable end-to-end latency.
+    - `max_cost_usd`: soft cap per-synthesis request (if billing metadata available).
+    - `required_features`: list of required capabilities (e.g., `voice_clone`, `multilingual`, `emotional_range`).
+    - `smoke_flags`: `SMOKE_TTS`, `SMOKE_ADAPTERS` to gate heavy providers in dev/CI.
+  - Selection algorithm (recommended):
+    1. If `SMOKE_TTS`/`SMOKE_ADAPTERS` disabled, prefer local stub or fixture provider.
+    2. Filter candidate providers by `required_features` — discard providers that lack required features.
+    3. Rank candidates by profile:
+       - `cost`: prefer cheapest provider whose `estimated_cost` <= `max_cost_usd` (if provided), then latency.
+       - `latency`: prefer provider with lowest estimated latency (local/edge-first), then cost.
+       - `quality`: prefer provider with highest historical mean MOS / model quality score, with cost/latency as tiebreakers.
+       - `balanced`: weighted scoring of quality (0.5), latency (0.25), cost (0.25).
+    4. If top candidate reports transient overload/unavailable, fall back to next candidate. If no provider meets constraints, return `ProviderSelectionError` with suggested relaxations.
+  - Telemetry: record `selected_provider`, `score_breakdown`, `estimated_cost_usd`, `estimated_latency_s`, and `reason` in selection metadata.
+
+  Voice mapping API & metadata
+
+  - Purpose: provide a clear mapping from `voice_id` used in `MoviePlan`/step opts to provider-specific voice configurations and metadata.
+  - Public helpers (suggested):
+    - `get_voice_metadata(voice_id: str) -> VoiceMetadata` — returns a `VoiceMetadata` dataclass with fields below.
+    - `list_available_voices(provider: Optional[str]=None) -> List[VoiceMetadata]` — list voices across providers or for a specific provider.
+
+  - `VoiceMetadata` fields (example):
+    - `voice_id: str` — logical id used in plans (e.g., `emma`).
+    - `provider: str` — provider id/adapter name (e.g., `chatterbox`, `adk_tts`) or `stub`.
+    - `display_name: str` — human-friendly name.
+    - `language_codes: List[str]` — supported language tags (e.g., `['en-US']`).
+    - `features: List[str]` — capabilities like `voice_clone`, `style_control`, `spanish_support`.
+    - `sample_rate: int` — native sample rate.
+    - `bit_depth: int` — e.g., 16, 24.
+    - `watermarked: bool` — whether the provider applies watermarking by default.
+    - `cost_estimate_usd_per_1s: float` — optional per-second cost estimate for decisioning.
+    - `quality_score: float` — historical/benchmark quality metric (0..1) used in selection.
+
+  - Mapping behavior:
+    - Allow aliasing: a single logical `voice_id` can map to multiple provider voices with a provider preference order.
+    - When publishing metadata, include both `voice_id` and resolved `provider_voice_id` to aid auditing.
+
+  Error semantics (retryable vs non-retryable)
+
+  - Objective: classify failure modes so `tts_agent` can decide whether to retry, switch provider, or fail fast.
+  - Suggested error taxonomy:
+    - `TTSRetryableError` — transient errors that should be retried (network timeouts, rate-limit 429, transient backend errors 5xx). Include `retry_after_s` if provider supplies it.
+    - `TTSProviderUnavailable` — provider-side unavailability; treat as `retryable` for short backoff but also trigger provider-failover logic.
+    - `TTSQuotaExceeded` — billing/quota errors; do not retry on same provider, attempt fallback provider if available; surface `PlanResourceError` if no fallback.
+    - `TTSInvalidInputError` — non-retryable: invalid audio params, unsupported characters, voice_id unknown. Surface to caller as `BadRequest` / `PlanSchemaError` and do not retry.
+    - `TTSPolicyViolation` — non-retryable: content moderation blocked; fail with `PlanPolicyViolation` and do not publish artifact.
+    - `TTSServerError` — generic server error; treat as retryable up to `max_retries` then escalate.
+
+  - Retry policy (recommended):
+    - Default `max_retries`: 3 (with exponential backoff and jitter).
+    - For `TTSQuotaExceeded` or `TTSInvalidInputError` do not auto-retry; perform provider failover only if alternative providers exist and meet `required_features`.
+    - For `TTSRetryableError` and `TTSServerError` perform provider-local retries, then provider failover.
+
+  Watermark handling & metadata tests
+
+  - Providers may watermark TTS outputs. Agent must detect or be informed of watermarking behavior and record `watermarked: bool` in published metadata.
+  - Test cases to add (unit):
+    1. `test_tts_metadata_fields`: ensure `synthesize()` returns metadata containing `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`, `provider`, `model_id`, `device`, `synth_time_s`, and `watermarked` (bool).
+    2. `test_watermark_flag_propagated`: mock `tts_chatterbox` to return a `watermarked` flag and assert `tts_agent` includes it in published artifact metadata and telemetry.
+    3. `test_retryable_vs_nonretryable`: simulate provider returning a `429` then `200` and assert retries occur; simulate `InvalidInput` and assert no retries and immediate `TTSInvalidInputError`.
+    4. `test_provider_failover_on_quota`: simulate primary provider returning `TTSQuotaExceeded` and second provider succeeding; assert `tts_agent` switches providers and returns successful artifact.
+
+  Test harness notes:
+  - Use a fixture provider registry that exposes fake providers with programmable behavior (latency, cost, failure modes) to test selection and failover without real dependencies.
+  - Gate heavy integration tests with `SMOKE_TTS=1`; integration smoke should verify artifact publish and watermark metadata when using a real provider.
+
+
 #### Chatterbox upstream (Resemble AI)
 
 Reference: Resemble AI's open-source Chatterbox TTS repository and model distribution. Use these links as the canonical upstream source when implementing the `tts_chatterbox` FunctionTool adapter:
@@ -399,10 +472,200 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
   - Integration: coordinate with `WanAdapter`/`videos_wan` FunctionTool for heavy inference inside `gpu_utils.model_context` and publish assembled artifacts via `adk_helpers.publish_artifact()`.
   - Tests: unit tests for orchestration logic and chunking; gated integration smoke when `SMOKE_ADK=1`.
   - Estimate: 2–4 days
+  
+  Chunking & Reassembly (algorithm parameters)
+
+  - Goal: split long video renders into manageable chunks to avoid OOM, preserve temporal continuity, and enable parallel execution across devices when available.
+  - Parameters (defaults):
+    - `chunk_length_frames`: 64 — target number of frames per chunk. Tune per-host (lower for low-VRAM GPUs).
+    - `chunk_overlap_frames`: 4 — number of overlapping frames between adjacent chunks to smooth transitions and allow temporal blending.
+    - `min_chunk_frames`: 8 — do not produce chunks smaller than this (instead merge with adjacent chunk).
+    - `max_retries_per_chunk`: 2 — adaptive retries for transient failures before applying fallback strategies.
+    - `adaptive_shrink_factor`: 0.5 — on OOM reduce `chunk_length_frames` by this factor for the retry.
+  - Behavior:
+    - Chunk split: compute N chunks = ceil(num_frames / chunk_length_frames). For each chunk compute `start_frame` and `end_frame` inclusive. For chunks other than first/last, extend `start_frame` backwards by `chunk_overlap_frames` and `end_frame` forwards by `chunk_overlap_frames` to create overlap for blending.
+    - Reassemble semantics: after pipeline returns chunk frames, trim overlap regions using a deterministic policy (e.g., keep leading overlap from earlier chunk, trailing overlap from later chunk) or perform a simple crossfade in the overlap region (configurable via `reassembly.mode` = `trim|crossfade`).
+    - Ordering: preserve original temporal order when returning artifacts; each chunk should include metadata `chunk_index`, `chunk_start_frame`, `chunk_end_frame`, `overlap_left`, `overlap_right` so the assembler can recompose reliably.
+    - Deterministic seeds: if a `seed` is used, derive per-chunk seeds deterministically (e.g., `chunk_seed = hash(seed, chunk_index)`) to ensure reproducibility.
+
+  Multi‑GPU / Sharding Strategies
+
+  - Objectives: provide recommended device_map and memory presets for common host types and describe when to prefer balanced sharding vs sequential/offload.
+  - Preset examples:
+    - A100 multi‑GPU (balanced sharding):
+      - `device_map="balanced"` with `max_memory` mapping (e.g., {0: "74GiB", 1: "74GiB", "cpu": "120GiB"}) and `low_cpu_mem_usage=True`.
+      - Use `pipeline = WanImageToVideoPipeline.from_pretrained(..., device_map="balanced", max_memory=max_memory, low_cpu_mem_usage=True)`.
+    - Single high-memory GPU (A6000/80GB style):
+      - `device_map="auto"` or single-device `.to("cuda:0")` and enable `offload` only if needed.
+    - Consumer GPUs (4090/3090):
+      - Prefer `device_map="sequential"` or explicit offload using `accelerate`/`enable_model_cpu_offload()`; reduce `chunk_length_frames` and prefer smaller `height/width` micro-batches.
+    - CPU-fallback: for development or small jobs, set `device="cpu"` and reduce `num_frames`/`H/W`; this is slow but avoids GPU OOM and is a documented fallback path.
+  - Sharding advice:
+    - Try `balanced` on multi‑A100 hosts where each GPU has large RAM. Tune `max_memory` per-host using vendor guidance.
+    - For heterogeneous clusters, prefer explicit `device_map` assignments to avoid scheduler surprises.
+    - Always expose `device_map` and `max_memory` as configurable options in adapter `opts` and record them in step metadata for reproducibility.
+
+  OOM & Fallback Strategies (formalized)
+
+  - Strategy precedence on chunk-level failure (recommended):
+    1. If chunk fails with transient error (network, grpc timeout) → retry up to `max_retries_per_chunk` with exponential backoff + jitter.
+    2. If failure indicates OOM on GPU: one adaptive retry where `chunk_length_frames` is multiplied by `adaptive_shrink_factor` (round up to `min_chunk_frames`) and the chunk is retried on the same device.
+    3. If repeated OOMs or reduced-chunk attempt fails: attempt a device fallback sequence:
+       - Try to run the chunk on a different GPU with more free memory (if available).
+       - If no GPU fallback available, attempt `cpu` fallback path (documented caveats: CPU is slower and may need memory/time limits); mark the step as `cpu_fallback=true` in metadata.
+    4. If CPU fallback is not permitted or fails, mark chunk as `failed` with `failure_reason=OOM` and include diagnostic metadata (last attempted device, peak_vram_mb, stack/log excerpts). Optionally escalate to human review or mark plan as partially failed depending on `production_agent` policy.
+  - Adaptive retries: on OOM-triggered adaptive retry reduce `chunk_length_frames` progressively (cap to a small number of attempts to avoid long retries). Record each attempt's `attempt_index`, `attempt_chunk_length_frames`, `device`, and `outcome` in step telemetry.
+
+  Progress / Callback Contract
+
+  - Purpose: give callers a stable, minimal contract for receiving progress updates from `videos_wan` and `videos_agent` during long-running renders.
+  - Contracts:
+    - Adapter callback shape (from `videos_wan` pipeline): adapter should accept optional `callback` and `callback_steps` kwargs. When supported emit events at `callback_steps` intervals with a `CallbackEvent` shape.
+      - `CallbackEvent` fields: `plan_id`, `step_id`, `chunk_index`, `frame_index`, `num_frames`, `progress` (0.0-1.0), `eta_s` (optional), `device`, `phase` (one of `load`, `rendering`, `postprocess`).
+    - `videos_agent` should expose two ways to surface progress to callers:
+      1. Synchronous callback parameter: `execute_plan(..., on_progress: Optional[Callable[[CallbackEvent], None]])` — call this synchronously (or via executor) on every adapter event.
+      2. Event stream/async channel: publish progress events to an event bus (e.g., websocket/topic or in-process queue) and write an audit memory event via `adk_helpers.write_memory_event()` for durable timeline entries.
+    - StepExecutionRecord must include aggregated progress fields: `started_at`, `last_progress_at`, `progress_percent`, `current_chunk`, `completed_chunks`, and `logs_uri`.
+  - Best practices:
+    - Emit coarse events frequently (e.g., every 1–2 seconds or every `callback_steps`) and only emit heavy telemetry at important state transitions (chunk start/finish, retry, fallback, fail, success).
+    - Provide an `unsubscribe` handle when the caller supplies a long-lived subscription (avoid memory leaks).
+
+  Tests (unit + gated integration)
+
+  - Unit tests to implement (file: `tests/unit/test_videos_agent.py`):
+    1. `test_chunk_split_and_reassembly`: given `num_frames=150`, `chunk_length_frames=64`, `chunk_overlap_frames=4`, assert computed chunk ranges, overlaps and reassembly trimming produce correct global frame ordering and that per-chunk metadata is populated.
+    2. `test_adaptive_oom_retry_shrinks_chunk`: simulate OOM on first attempt and assert agent reduces chunk length by `adaptive_shrink_factor` and retries (mock `videos_wan` to raise OOM on first call, succeed on second).
+    3. `test_cpu_fallback_on_oom`: simulate persistent GPU OOM and assert agent attempts CPU fallback and records `cpu_fallback=true` in metadata (mock pipeline behavior accordingly).
+    4. `test_progress_events_forwarded`: mock adapter to emit `CallbackEvent` and assert `videos_agent` forwards events to `on_progress` callback and writes memory events.
+  - Gated integration smoke (to run behind env flags):
+    - `tests/integration/test_videos_wan_smoke.py` gated by `SMOKE_ADK=1` that submits a short FLF2V job (`num_frames=8`, low `H/W`, reduced steps) and asserts artifact publish and basic progress events.
+  - Test harness notes:
+    - Use deterministic generator seeds and a small pipeline stub for unit tests to avoid heavy deps.
+    - For integration smoke, provide a minimal plan and gate with `SMOKE_ADK=1` and `SMOKE_ADAPTERS=1` to ensure adapters run only when explicitly enabled.
 
 ## FunctionTool / Adapter Tasks
 
 These tasks cover compute-bound adapters (FunctionTools) that perform heavy model loading, inference, and artifact publishing. Adapters must be written to run safely inside `gpu_utils.model_context` and to publish deterministic artifacts.
+
+**Cross-cutting: `gpu_utils.model_context` (API & checklist)**
+
+- Purpose: a lightweight context manager that standardizes model lifecycle (load, optional offload, optional compile), exposes device mapping overrides for sharded pipelines, and guarantees cleanup and telemetry on exit. Adapters must use this context to avoid VRAM leakage and ensure reproducible behavior across different hardware.
+
+- Precise API surface (suggested):
+
+```python
+from contextlib import contextmanager
+from typing import Optional, Mapping
+
+@contextmanager
+def model_context(
+    model_key: str,
+    *,
+    weights: Optional[str] = None,
+    offload: bool = True,
+    xformers: bool = True,
+    compile: bool = False,
+    device_map: Optional[Mapping[int,str]] = None,
+    low_cpu_mem_usage: bool = True,
+    max_memory: Optional[Mapping[str,str]] = None,
+    timeout_s: Optional[int] = None,
+):
+    """Context manager for guarded model loading.
+
+    Yields: a `ModelContext` object with helpers: `pipeline`, `device_map`, `allocated_devices`.
+    """
+    ...
+```
+
+- Parameter semantics:
+  - `model_key` (str): logical identifier for telemetry and caching (e.g., `wan2.1/flf2v`).
+  - `weights` (str|Optional): HF id or path; if omitted use configured default for `model_key`.
+  - `offload` (bool): enable CPU/GPU offload helpers (accelerate / device/offload APIs).
+  - `xformers` (bool): attempt to enable xformers memory-efficient attention when available.
+  - `compile` (bool): hint to attempt `torch.compile()` where supported to speed up inference.
+  - `device_map` (Optional[Mapping]): explicit device map override for sharded pipelines (pass-through to HF/transformers/device_map APIs).
+  - `low_cpu_mem_usage` (bool): pass `low_cpu_mem_usage=True` to HF loaders when helpful to reduce peak host RAM.
+  - `max_memory` (Optional[Mapping[str,str]]): explicit memory budget hints used for `device_map="balanced"` loads.
+  - `timeout_s` (Optional[int]): optional time limit for model load; if exceeded raise `ModelLoadTimeout`.
+
+- ModelContext object (returned from context): fields and helpers:
+  - `pipeline` / `model` : the loaded pipeline or model instance (None until loaded).
+  - `device_map`: resolved device map used for this load.
+  - `allocated_devices`: list of devices that hold model state.
+  - `report_memory()` method: returns snapshot `{device: {'used_mb':int,'total_mb':int}}`.
+
+- Mandatory cleanup checklist (adapters must honor this on exit):
+  1. Delete references to large objects: `del pipeline`, `del model`, `del vae`, etc.
+  2. Call `torch.cuda.synchronize()` (when using CUDA) to flush async work.
+  3. Call `torch.cuda.empty_cache()` to release cached blocks.
+  4. Call `gc.collect()` to run Python GC and free host allocations.
+  5. If offloading helpers were enabled, call their cleanup hooks (`accelerate` or offload APIs) to release CPU pinned memory.
+  6. Return a final memory snapshot via `report_memory()` and include it in telemetry.
+
+- How to surface OOMs to callers:
+  - During `with model_context(...)` block, any exception from model load or inference that appears as an OOM should be normalized to a domain exception type, e.g., `ModelOOMError` with structured metadata:
+    - `model_key`, `weights`, `attempted_device_map`, `peak_vram_mb` (if available), `traceback_snippet`.
+  - The context manager should capture CUDA OOM errors (`RuntimeError` containing "out of memory") and wrap them as `ModelOOMError` before re-raising so callers can implement adaptive fallback strategies (shrink batch/chunk, switch device, CPU fallback).
+  - For load-time OOMs, include `stage='load'`, for runtime/inference OOMs include `stage='inference'`.
+
+- Memory telemetry & reporting (recommended):
+  - Emit telemetry at these points:
+    1. `load_start`: record `model_key`, `weights`, `device_map_hint`, `timestamp`.
+    2. `load_complete`: record `allocated_devices`, `peak_vram_mb_estimate`, `load_duration_s`.
+    3. `inference_start` (per-call or per-chunk): record `input_shape`, `num_frames` (video), `batch_size`, `seed`.
+    4. `inference_end`: record `inference_time_s`, `peak_vram_mb`, `gpu_utilization` (if available), `allocated_devices`.
+    5. `cleanup`: final `report_memory()` and `gc_collect_duration_s`.
+  - Telemetry format: structured dict with `model_key`, `step_id`, `plan_id` (when provided), `device_stats` mapping, and optional `cuda_metrics` if host supports NVML.
+  - Use `adk_helpers.write_memory_event()` or the project's telemetry API to persist these events.
+
+- Example usage patterns for adapters
+
+1) Simple single-device pipeline (consumer GPU):
+
+```python
+from sparkle_motion.gpu_utils import model_context
+
+with model_context('sdxl', weights='stabilityai/sdxl-base-1.0', offload=False, xformers=True) as ctx:
+    pipe = ctx.pipeline
+    gen = torch.Generator(device='cuda').manual_seed(seed)
+    images = pipe(prompt, generator=gen, num_inference_steps=opts.steps)
+# context exit ensures cleanup and telemetry emit
+```
+
+2) Wan2.1 balanced sharding example (multi‑GPU A100):
+
+```python
+max_memory = {0: '74GiB', 1: '74GiB', 'cpu': '120GiB'}
+with model_context('wan2.1/flf2v', weights=MODEL_ID, offload=True, device_map=None, max_memory=max_memory) as ctx:
+    pipe = ctx.pipeline
+    frames = pipe(..., callback=progress_cb, callback_steps=1)
+```
+
+3) Defensive adapter pattern (handle OOM and fallback):
+
+```python
+try:
+    with model_context(... ) as ctx:
+        result = ctx.pipeline(...)
+except ModelOOMError as e:
+    # record attempt, shrink batch/chunk and retry or escalate
+    log.warning('OOM for %s on %s', e.model_key, e.attempted_device_map)
+    raise
+```
+
+- Implementation checklist for `gpu_utils.model_context` maintainers
+  - [ ] Provide idiomatic context manager compatible with `with` and `async with` patterns if adapters use async.
+  - [ ] Normalize exceptions: `ModelLoadTimeout`, `ModelOOMError`, `ModelLoadError` with structured fields.
+  - [ ] Expose `report_memory()` that tries CUDA queries first, then falls back to host-process `/proc` (best-effort; avoid crashing if metrics unavailable).
+  - [ ] Integrate optional NVML support (but fail gracefully if NVML not installed); gate NVML metrics behind a capability check.
+  - [ ] Emit structured telemetry events via `adk_helpers.write_memory_event()` at `load_start`, `load_complete`, `inference_start`, `inference_end`, and `cleanup`.
+  - [ ] Provide a simple helper `suggest_shrink_for_oom(attempt_state) -> new_chunk_size` to centralize adaptive-shrink heuristics used by higher-level agents (videos_agent, images_agent).
+  - [ ] Document platform expectations and common device_map presets for A100/4090 hosts.
+
+- Notes & guidance
+  - The context must not swallow exceptions silently — always re-raise after emitting telemetry and performing cleanup.
+  - Keep the context implementation minimal and robust: prefer best-effort metrics (non-critical) and deterministic cleanup (critical).
+  
 
 ### images_sdxl
 - Task: Implement `render_images(prompt, opts) -> list[ArtifactRef]`
