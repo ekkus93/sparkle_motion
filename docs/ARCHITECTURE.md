@@ -3,7 +3,12 @@
 This file documents the authoritative, ADK-first architecture for Sparkle
 Motion (updated 2025-11-27). It explicitly states the current runtime
 counts, the per-process agent model, and the operational plan to finish
-converting FunctionTools to ADK-native entrypoints.
+converting FunctionTools to ADK-native entrypoints. It has been aligned with
+the implementation guidance in `docs/IMPLEMENTATION_TASKS.md` (2025-11-27):
+that document defines per-tool contracts, the `production_agent` orchestration
+semantics, explicit per-tool gating flags (SMOKE_*), and the cross-cutting
+`gpu_utils.model_context` pattern that adapters must use for safe model
+loads/unloads.
 
 ## Current runtime counts (authoritative)
 
@@ -19,6 +24,25 @@ converting FunctionTools to ADK-native entrypoints.
 	- Note: there is a case-duplicate pair `ScriptAgent` / `script_agent` in
 		the tree; the duplicate scaffold will be removed during normalization.
 
+Implementation tasks alignment: `docs/IMPLEMENTATION_TASKS.md` is the
+authoritative per-tool TODO reference for implementers. Important clarifications
+introduced there (now reflected in this architecture) include:
+
+- Agents (policy/orchestration) vs FunctionTools (compute adapters): Agents
+	include `script_agent` (plan generation), `production_agent` (plan
+	execution/orchestration), `images_agent`, `tts_agent`, and `videos_agent`.
+	FunctionTools remain the heavy compute adapters such as `images_sdxl`,
+	`videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, `qa_qwen2vl`, and
+	`assemble_ffmpeg`.
+- Per-tool gating: heavy adapters and integration tests are gated by
+	`SMOKE_*` flags (for example `SMOKE_ADK`, `SMOKE_TTS`, `SMOKE_LIPSYNC`,
+	`SMOKE_QA`, `SMOKE_ADAPTERS`) to avoid accidental heavy installs or model
+	loads in CI/local runs.
+- Model lifecycle: adapters must use the shared `gpu_utils.model_context`
+	pattern to load/unload models, emit telemetry, and normalize OOMs to the
+	`ModelOOMError` domain exception so higher-level agents can implement
+	deterministic fallback/shrink strategies.
+
 Note: the `resources/` directory contains many ADK sample projects and
 examples. Those are vendor/sample code and are intentionally excluded from
 these counts per your instruction — they are references, not application
@@ -26,6 +50,15 @@ runtime deployments.
 - **WorkflowAgent as the coordinator** – stage orchestration, retries,
 	resume, and hand-offs are modeled directly in ADK’s WorkflowAgent graph so
 	runs never depend on a bespoke Python runner.
+
+- **Production orchestration (`production_agent`)** – in addition to the
+	WorkflowAgent stage graph, the implementation guidance introduces a
+	runtime `production_agent` that executes validated `MoviePlan` objects.
+	`production_agent` provides `dry` vs `run` semantics (simulate vs execute),
+	enforces policy decisions, orchestrates per-step calls to agents and
+	FunctionTools, and manages retries, progress events, and artifact
+	publication. WorkflowAgent remains the declarative graph; `production_agent`
+	is the runtime orchestrator for local/Colab execution flows.
 - **Tool catalog + hosted runtimes** – each heavy stage is packaged and
 	registered as an ADK FunctionTool/ToolRuntime deployment. Under Option A,
 	each FunctionTool process owns its runtime agent and associated IAM and
@@ -228,6 +261,16 @@ provenance.
 - FunctionTool entrypoints will be normalized (one canonical directory name
 	per tool) as a small follow-up to remove duplicate scaffolds (e.g.,
 	`ScriptAgent` vs `script_agent`).
+
+- `gpu_utils.model_context` requirement: per the Implementation Tasks, adapters
+	must adopt a guarded `model_context` context manager that standardizes model
+	load/unload, emits memory telemetry at key points (load_start/load_complete/
+	inference_start/inference_end/cleanup), and normalizes OOMs to a
+	`ModelOOMError` domain exception for consistent fallback strategies.
+- Proposals required for manifest changes: any proposal that adds runtime
+	dependencies or system binaries (for example `torch`, `diffusers`, or
+	`ffmpeg`) must be prepared as `proposals/pyproject_adk.diff` and approved
+	before editing `pyproject.toml` or CI image definitions.
 
 For details on the next steps and the todo list, see the updated
 `resources/THE_PLAN.md` and `resources/TODO.md` files in this repo.
