@@ -7,14 +7,14 @@
   "invoke_path": "/invoke",
   "name": "qa_qwen2vl",
   "package_name": "sparkle_motion.qa_qwen2vl",
-  "response_json_schema": "artifact://sparkle-motion/schemas/QAReport/v1",
+  "response_json_schema": "artifact://sparkle-motion/schemas/qa_report/v1",
   "retry_hints": {
     "attempts": 3,
     "backoff_s": 2
   },
   "schemas": {
     "input": "artifact://sparkle-motion/schemas/QARequest/v1",
-    "output": "artifact://sparkle-motion/schemas/QAReport/v1"
+    "output": "artifact://sparkle-motion/schemas/qa_report/v1"
   },
   "version": "0.1.0"
 }

@@ -8,9 +8,50 @@ hardcoding endpoints in scripts or notebooks.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 import yaml
+
+from sparkle_motion import schema_registry
+
+
+class SchemaResolutionError(RuntimeError):
+    """Raised when a tool registry schema entry cannot be resolved."""
+
+
+def _resolve_schema_value(entry: Any) -> str:
+    """Normalize a schema entry to its artifact URI (respects registry helpers)."""
+
+    if isinstance(entry, str):
+        return entry
+
+    if isinstance(entry, dict):
+        registry_name = (
+            entry.get("registry")
+            or entry.get("registry_name")
+            or entry.get("schema")
+            or entry.get("schema_name")
+        )
+        prefer_local = entry.get("prefer_local")
+        if registry_name:
+            return schema_registry.resolve_schema_uri(registry_name, prefer_local=prefer_local)
+
+        artifact_uri = entry.get("artifact_uri") or entry.get("uri")
+        if artifact_uri:
+            return artifact_uri
+
+    raise SchemaResolutionError(f"Unsupported schema entry format: {entry!r}")
+
+
+def resolve_schema_references(schemas: Mapping[str, Any]) -> Dict[str, str]:
+    """Return a copy of *schemas* with every entry coerced to an artifact URI."""
+
+    resolved: Dict[str, str] = {}
+    for name, entry in schemas.items():
+        if entry is None:
+            continue
+        resolved[name] = _resolve_schema_value(entry)
+    return resolved
 
 
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "configs" / "tool_registry.yaml"

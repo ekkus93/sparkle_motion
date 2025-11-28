@@ -10,8 +10,10 @@ tools:
     ports:
       default: 5001
     schemas:
-      input: "artifact://sparkle-motion/schemas/ScriptAgentInput/v1"
-      output: "artifact://sparkle-motion/schemas/MoviePlan/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/ScriptAgentInput/v1"
+      output:
+        registry_name: movie_plan
     retry_hints:
       attempts: 3
       backoff_s: 2
@@ -23,8 +25,10 @@ tools:
     ports:
       default: 5002
     schemas:
-      input: "artifact://sparkle-motion/schemas/ImageRequest/v1"
-      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/ImageRequest/v1"
+      output:
+        registry_name: asset_refs
     retry_hints:
       attempts: 3
       backoff_s: 2
@@ -36,8 +40,10 @@ tools:
     ports:
       default: 5003
     schemas:
-      input: "artifact://sparkle-motion/schemas/VideoRequest/v1"
-      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/VideoRequest/v1"
+      output:
+        registry_name: asset_refs
     retry_hints:
       attempts: 2
       backoff_s: 4
@@ -49,8 +55,10 @@ tools:
     ports:
       default: 5004
     schemas:
-      input: "artifact://sparkle-motion/schemas/TTSRequest/v1"
-      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/TTSRequest/v1"
+      output:
+        registry_name: asset_refs
     retry_hints:
       attempts: 3
       backoff_s: 1
@@ -62,8 +70,10 @@ tools:
     ports:
       default: 5005
     schemas:
-      input: "artifact://sparkle-motion/schemas/LipSyncRequest/v1"
-      output: "artifact://sparkle-motion/schemas/AssetRefs/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/LipSyncRequest/v1"
+      output:
+        registry_name: asset_refs
     retry_hints:
       attempts: 2
       backoff_s: 2
@@ -88,8 +98,10 @@ tools:
     ports:
       default: 5007
     schemas:
-      input: "artifact://sparkle-motion/schemas/QARequest/v1"
-      output: "artifact://sparkle-motion/schemas/QAReport/v1"
+      input:
+        artifact_uri: "artifact://sparkle-motion/schemas/QARequest/v1"
+      output:
+        registry_name: qa_report
     retry_hints:
       attempts: 3
       backoff_s: 2

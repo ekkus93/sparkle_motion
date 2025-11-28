@@ -7,14 +7,14 @@
   "invoke_path": "/invoke",
   "name": "images_sdxl",
   "package_name": "sparkle_motion.images_sdxl",
-  "response_json_schema": "artifact://sparkle-motion/schemas/AssetRefs/v1",
+  "response_json_schema": "artifact://sparkle-motion/schemas/asset_refs/v1",
   "retry_hints": {
     "attempts": 3,
     "backoff_s": 2
   },
   "schemas": {
     "input": "artifact://sparkle-motion/schemas/ImageRequest/v1",
-    "output": "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    "output": "artifact://sparkle-motion/schemas/asset_refs/v1"
   },
   "version": "0.1.0"
 }

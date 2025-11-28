@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 from sparkle_motion.adk_helpers import probe_sdk, register_entity_with_sdk, register_entity_with_cli
+from sparkle_motion.tool_registry import resolve_schema_references
 import argparse
 
 LOG = logging.getLogger("register_tools")
@@ -107,6 +108,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         # normalize tool dict
         t = tool if isinstance(tool, dict) else dict(tool)
         t.setdefault("id", name if isinstance(name, str) else t.get("id", f"tool-{name}"))
+        if isinstance(t.get("schemas"), dict):
+            try:
+                t["schemas"] = resolve_schema_references(t["schemas"])
+            except Exception as exc:
+                LOG.error("Failed to resolve schema references for %s: %s", t.get("id"), exc)
+                return 4
 
         LOG.info("Processing tool: %s", t.get("id"))
 
@@ -156,7 +163,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 from typing import Any, Dict, List
 
-from sparkle_motion.tool_registry import load_tool_registry
+from sparkle_motion.tool_registry import load_tool_registry, resolve_schema_references
 
 
 def parse_args() -> argparse.Namespace:
@@ -235,12 +242,14 @@ def normalize_meta(tool_id: str, raw: Dict[str, Any]) -> Dict[str, Any]:
 
     This keeps the YAML expressive but produces a compact dict for registration.
     """
+    raw_schemas = raw.get("schemas") or {}
+    schemas = resolve_schema_references(raw_schemas) if isinstance(raw_schemas, dict) else raw_schemas
     return {
         "id": tool_id,
         "description": raw.get("description"),
         "endpoint": raw.get("endpoints", {}).get("local-colab") or raw.get("endpoints", {}).get("default"),
         "ports": raw.get("ports", {}),
-        "schemas": raw.get("schemas", {}),
+        "schemas": schemas,
         "retry_hints": raw.get("retry_hints", {}),
     }
 

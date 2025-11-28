@@ -30,7 +30,7 @@ def test_dry_run_prints(reload_module, monkeypatch, capsys):
             "toolA": {
                 "description": "A sample tool",
                 "endpoints": {"local-colab": "http://localhost:9000"},
-                "schemas": {"MoviePlan": {}},
+                "schemas": {"output": {"artifact_uri": "artifact://example/schemas/movie_plan/v1"}},
             }
         }
     })

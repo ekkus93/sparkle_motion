@@ -7,14 +7,14 @@
   "invoke_path": "/invoke",
   "name": "videos_wan",
   "package_name": "sparkle_motion.videos_wan",
-  "response_json_schema": "artifact://sparkle-motion/schemas/AssetRefs/v1",
+  "response_json_schema": "artifact://sparkle-motion/schemas/asset_refs/v1",
   "retry_hints": {
     "attempts": 2,
     "backoff_s": 4
   },
   "schemas": {
     "input": "artifact://sparkle-motion/schemas/VideoRequest/v1",
-    "output": "artifact://sparkle-motion/schemas/AssetRefs/v1"
+    "output": "artifact://sparkle-motion/schemas/asset_refs/v1"
   },
   "version": "0.1.0"
 }
