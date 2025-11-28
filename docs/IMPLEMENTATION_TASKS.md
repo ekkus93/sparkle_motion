@@ -309,6 +309,89 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
   - Tests: unit tests for policy logic and fallback behavior; gated integration smoke that exercises full adapter when `SMOKE_ADK=1`.
   - Estimate: 1–2 days
 
+**Batching, rate-limits, and policy (detailed)**
+
+- Batching rules (explicit)
+  - `max_images_per_call` (default 8): the maximum number of images to request from `images_sdxl` in a single call. If a step requests `count > max_images_per_call`, chunk into multiple adapter calls.
+  - `per_batch_timeout_s` (default 120s): per-call timeout for a single `images_sdxl` invocation. If the adapter does not respond within the timeout, mark the batch attempt as failed and apply retry/backoff.
+  - Splitting strategy:
+    - Chunk by `count`: split the `count` evenly across batches (last batch gets remainder).
+    - For multi-prompt steps (array of prompts), group similar prompts together (same style/seed/palette) when possible to reduce prompt jitter and improve batching efficiency.
+    - Preserve plan ordering semantics: produce outputs in the same step order and annotate artifact metadata with `batch_index` and `item_index` to allow correct reassembly.
+
+- Timeout & per-request guardrails
+  - Global per-call timeout: apply `per_batch_timeout_s` and cancel/cleanup the `gpu_utils.model_context` on timeout.
+  - Soft deadline: start a background watchdog at 80% of `per_batch_timeout_s` to capture logs and partial telemetry before forceful cancellation.
+
+- Rate-limiting / quota enforcement
+  - Enforce a token-bucket rate limiter per-tenant/user key and per-host.
+    - Default token refill: 60 tokens/min (configurable); each `images_sdxl` call costs `count` tokens.
+  - Behavior on limit hit:
+    - If `queue_allowed=True` (agent config): enqueue the step with TTL (default 600s) and return a queued `StepExecutionRecord` with status `queued`.
+    - If `queue_allowed=False`: return an immediate `RateLimitError` to the caller (agent should surface to user/UI).
+  - Backpressure: when system-wide backlog exceeds `step_queue_backlog_limit`, start rejecting new plans with `PlanResourceError` to preserve stability.
+
+- Canonical policy checks (concretized)
+  - Textual prompt checks (fast, pre-render): run a lightweight text-moderation pass (policy LLM or regex-based classifier) on `prompt`/`negative_prompt`/`text` fields.
+    - If `disallowed` → raise `PlanPolicyViolation` and do not render.
+    - If `ambiguous` → mark for QA or apply stricter generation constraints.
+  - Post-render image checks (recommended): always run `qa_qwen2vl.inspect_frames()` on outputs in `run` mode before publishing.
+    - Post-render thresholds (example defaults):
+      - `nsfw_confidence >= 0.70` → `reject` (delete artifact, mark step failed)
+      - `nsfw_confidence >= 0.40 and < 0.70` → `escalate` (request human review via `request_human_input()` and mark artifact `quarantined`)
+      - `< 0.40` → `approve`
+    - The `qa_qwen2vl` call should pass a prompt like: `"Does this image contain sexual content, minors, graphic violence, or other policy-prohibited material? Provide a confidence score for each category."` and the agent should parse the structured `QAReport` to decide.
+  - Duplicate detection / hashing:
+    - Use perceptual hashing (pHash or `imagehash`) to detect duplicates and near-duplicates against a recent-artifacts index (sliding window, e.g., last 1000 artifacts).
+    - Consider duplicates within a plan as `dedupe` (skip publishing duplicates) if `dedupe=True` in `opts`.
+    - pHash threshold: Hamming distance <= 6 → treat as duplicate; values tuned per data.
+
+- Pre-render QA via `qa_qwen2vl` (how/when)
+  - For prompts that contain image references (URLs/base64) or where the user included reference images, call `qa_qwen2vl.inspect_frames()` on the referenced images with textual prompts (e.g., `"Is this reference image safe to base synthetic output on?"`). If QA flags issues, abort rendering the step and surface `PlanPolicyViolation`.
+  - For text-only prompts, prefer a text moderation model first. If textual output is borderline and `SMOKE_QA=1`, optionally run a small sample render (sandbox) of 1 image with low-cost settings and run `qa_qwen2vl` on that sample before committing to full `count` renders.
+
+- Fallback & remediation flows
+  - On `reject`: surface failure to caller with `PlanPolicyViolation` and no publish.
+  - On `escalate`: persist outputs to a quarantine area and call `request_human_input()` with a link to the artifact and the `QAReport`.
+  - On duplicate detection: if `dedupe=True`, replace duplicate artifact URIs with the canonical artifact and mark the step as `succeeded (deduped)`.
+
+**Example `opts` schema for `images_agent` → `images_sdxl`**
+
+- `ImagesOpts` (example fields):
+  - `seed: Optional[int]`
+  - `num_images: int` (default 1)
+  - `width: int`, `height: int`
+  - `sampler: str` (e.g., "ddim", "euler")
+  - `steps: int` (inference steps)
+  - `cfg_scale: float`
+  - `denoising_start: Optional[float]`, `denoising_end: Optional[float]`
+  - `prompt_2: Optional[str]`, `negative_prompt_2: Optional[str]`
+  - `max_images_per_call: Optional[int]` (overrides default)
+  - `dedupe: bool` (default False)
+  - `queue_allowed: bool` (default True)
+  - `priority: Literal["low","normal","high"]` (scheduling hint)
+
+**Deterministic test harness (stub pipeline)**
+
+- Purpose: provide a lightweight, deterministic stub to test batching, rate-limiting, policy, and duplicate detection without heavy model deps.
+
+- Stub characteristics:
+  - Deterministic outputs based on `(prompt, seed, index)` — e.g., return a small 16x16 PNG derived from a seeded PRNG or a hash of prompt+seed.
+  - Provide metadata fields (`seed`, `prompt`, `width`, `height`) and predictable pHash values to test duplicate detection.
+
+- Tests to implement with stubbed pipeline:
+  1. `test_batch_split_and_ordering`: request `num_images=20` with `max_images_per_call=8` and assert that the agent makes 3 adapter calls, preserves ordering, and returns 20 artifacts with proper `batch_index` and `item_index` metadata.
+  2. `test_rate_limit_queueing`: configure token-bucket with 2 tokens and request 4 images in quick succession with `queue_allowed=True`; assert two are executed immediately and two are queued and eventually executed within TTL.
+  3. `test_policy_text_rejects_prompt`: mock text-moderation to mark prompt disallowed; assert `PlanPolicyViolation` and no adapter calls.
+  4. `test_post_render_nsfw_rejects`: use stub pipeline to emit an output with a pHash known to correspond to `nsfw_confidence=0.9` (inject via QA stub) and assert the artifact is rejected and not published.
+  5. `test_deduplicate_within_plan`: produce two identical deterministic stub images and assert a single published artifact when `dedupe=True` and returned artifact list references canonical URI twice.
+
+**Implementation notes**
+  - Keep `images_agent` logic separate from adapter invocation: build a small orchestration layer that prepares batches, enforces rate-limits, runs policy checks, and calls `DiffusersAdapter.render_images()`.
+  - Persist `pHash` and recent-artifact index in a lightweight key-value store (e.g., Redis) or an in-process LRU for dev; expose TTL and size limit in config.
+  - Surface policy decisions via `adk_helpers.write_memory_event()` with the `QAReport` attached for auditing.
+
+
 ### videos_agent
 - Task: Implement `videos_agent` decision layer (caller for `videos_wan`/video adapters)
   - Public API: `render_video(start_frames: Iterable[Frame], end_frames: Iterable[Frame], prompt: str, opts: dict) -> ArtifactRef`.
