@@ -20,6 +20,21 @@ tools:
     endpoints:
       local-colab: "http://127.0.0.1:5001/invoke"
 
+  production_agent:
+    description: "MoviePlan execution orchestrator"
+    ports:
+      default: 5008
+    schemas:
+      input:
+        registry_name: movie_plan
+      output:
+        registry_name: asset_refs
+    retry_hints:
+      attempts: 2
+      backoff_s: 4
+    endpoints:
+      local-colab: "http://127.0.0.1:5008/invoke"
+
   images_sdxl:
     description: "Image generation (SDXL)"
     ports:

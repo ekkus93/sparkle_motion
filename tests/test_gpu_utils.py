@@ -19,7 +19,7 @@ def test_model_context_calls_close(monkeypatch):
 
     from sparkle_motion.gpu_utils import model_context
 
-    with model_context(loader) as m:
+    with model_context("test-model", loader=loader) as m:
         assert hasattr(m, "close")
 
     assert called["closed"] is True
@@ -40,7 +40,7 @@ def test_model_context_fixture_mode(monkeypatch):
 
     from sparkle_motion.gpu_utils import model_context
 
-    with model_context(loader) as m:
+    with model_context("test-model", loader=loader) as m:
         assert hasattr(m, "close")
     # In fixture mode teardown is a no-op (we don't require close to be called)
     del os.environ["ADK_USE_FIXTURE"]

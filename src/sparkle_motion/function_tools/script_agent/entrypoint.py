@@ -8,6 +8,7 @@ import logging
 import uuid
 import time
 import asyncio
+from datetime import datetime, timezone
 from threading import Lock
 from contextlib import asynccontextmanager
 
@@ -16,7 +17,8 @@ from pydantic import BaseModel, model_validator
 
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion import adk_helpers
-from sparkle_motion import adk_factory, observability, telemetry
+from sparkle_motion import adk_factory, observability, telemetry, script_agent, schema_registry
+from sparkle_motion.schemas import MoviePlan
 
 LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -137,13 +139,16 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
+            plan = _generate_movie_plan(req, request_id)
+
             # prepare artifact persistence
             deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
             artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
             os.makedirs(artifacts_dir, exist_ok=True)
 
-            # sanitize filename
-            content_for_name = req.prompt or req.title or "artifact"
+            # sanitize filename using either prompt or generated title
+            content_for_name = plan.title or req.prompt or req.title or "artifact"
+
             def _slugify(s: str) -> str:
                 s = s.strip()
                 s = re.sub(r"\s+", "_", s)
@@ -154,18 +159,11 @@ def make_app() -> FastAPI:
             filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
             local_path = os.path.join(artifacts_dir, filename)
 
-            try:
-                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
-            except Exception:
-                try:
-                    payload = json.dumps(req.dict(), ensure_ascii=False)
-                except Exception as e:
-                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
-                    raise HTTPException(status_code=500, detail="failed to serialize request")
+            payload = _build_artifact_payload(req, plan, request_id)
 
             try:
                 with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
+                    json.dump(payload, fh, ensure_ascii=False, indent=2)
             except Exception as e:
                 LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
                 raise HTTPException(status_code=500, detail="failed to persist artifact")
@@ -174,7 +172,7 @@ def make_app() -> FastAPI:
             artifact_ref = adk_helpers.publish_artifact(
                 local_path=local_path,
                 artifact_type="script_agent_movie_plan",
-                metadata={"request_id": request_id, "tool": "script_agent"},
+                metadata={"request_id": request_id, "tool": "script_agent", "shot_count": len(plan.shots)},
             )
             artifact_uri = artifact_ref["uri"]
             try:
@@ -196,3 +194,201 @@ def make_app() -> FastAPI:
 
 
 app = make_app()
+
+
+def _build_artifact_payload(req: RequestModel, plan: MoviePlan, request_id: str) -> dict[str, Any]:
+    request_payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    plan_payload = plan.model_dump() if hasattr(plan, "model_dump") else plan.dict()
+    payload: dict[str, Any] = {
+        "request": request_payload,
+        "validated_plan": plan_payload,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "tool": "script_agent",
+            "request_id": request_id,
+            "shot_count": len(plan.shots),
+        },
+    }
+    try:
+        payload["schema_uri"] = schema_registry.movie_plan_schema().uri
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        LOG.debug("schema lookup failed: %s", exc)
+    return payload
+
+
+def _generate_movie_plan(req: RequestModel, request_id: str) -> MoviePlan:
+    if req.shots:
+        try:
+            return _plan_from_request_shots(req)
+        except Exception as exc:
+            LOG.warning("failed to coerce request shots; falling back to generation: %s", exc)
+
+    prompt = _derive_prompt(req)
+    try:
+        plan = script_agent.generate_plan(prompt, run_id=request_id)
+        plan.metadata.setdefault("source", "script_agent.generate_plan")
+        if req.title:
+            plan.metadata.setdefault("requested_title", req.title)
+        return plan
+    except Exception as exc:
+        LOG.warning("script_agent.generate_plan failed; synthesizing inline: %s", exc)
+
+    fallback_payload = _synthetic_plan_payload(prompt, req.title, request_id)
+    return MoviePlan.model_validate(fallback_payload)
+
+
+def _plan_from_request_shots(req: RequestModel) -> MoviePlan:
+    shots: list[dict[str, Any]] = []
+    for idx, raw in enumerate(req.shots or []):
+        shots.append(_normalize_shot(idx, raw or {}, req))
+    if not shots:
+        raise ValueError("no shots provided")
+    payload = {
+        "title": req.title or _title_from_prompt(req.prompt, fallback="ScriptAgent Plan"),
+        "shots": shots,
+        "metadata": {"source": "script_agent.entrypoint.pass_through"},
+    }
+    return MoviePlan.model_validate(payload)
+
+
+def _normalize_shot(idx: int, raw: dict[str, Any], req: RequestModel) -> dict[str, Any]:
+    base_desc = _first_non_empty(
+        raw.get("visual_description"),
+        raw.get("description"),
+        raw.get("desc"),
+        f"Shot {idx + 1} for {req.title or _title_from_prompt(req.prompt)}",
+    )
+    start_prompt = _first_non_empty(
+        raw.get("start_frame_prompt"),
+        raw.get("start_prompt"),
+        raw.get("prompt"),
+        f"{base_desc} establishing frame",
+    )
+    end_prompt = _first_non_empty(
+        raw.get("end_frame_prompt"),
+        raw.get("end_prompt"),
+        f"{base_desc} closing frame",
+    )
+    duration = _coerce_duration(raw.get("duration_sec") or raw.get("duration"), default=4.0 + idx)
+    dialogue = _normalize_dialogue(raw.get("dialogue"), idx)
+    return {
+        "id": str(raw.get("id") or f"shot_{idx + 1:03d}"),
+        "duration_sec": duration,
+        "visual_description": base_desc,
+        "start_frame_prompt": start_prompt,
+        "end_frame_prompt": end_prompt,
+        "motion_prompt": raw.get("motion_prompt") or "Deliberate cinematic move",
+        "is_talking_closeup": bool(raw.get("is_talking_closeup") or raw.get("talking_closeup") or False),
+        "dialogue": dialogue,
+        "setting": raw.get("setting") or (req.title or "soundstage"),
+    }
+
+
+def _coerce_duration(value: Any, *, default: float) -> float:
+    if value is None:
+        return max(default, 1.0)
+    if isinstance(value, (int, float)):
+        return max(float(value), 1.0)
+    cleaned = "".join(ch for ch in str(value) if ch.isdigit() or ch == ".")
+    try:
+        parsed = float(cleaned) if cleaned else default
+    except ValueError:
+        parsed = default
+    return max(parsed, 1.0)
+
+
+def _normalize_dialogue(raw_dialogue: Any, shot_idx: int) -> list[dict[str, Any]]:
+    if not raw_dialogue:
+        return []
+    normalized: list[dict[str, Any]] = []
+    for idx, entry in enumerate(raw_dialogue):
+        if entry is None:
+            continue
+        if hasattr(entry, "model_dump"):
+            entry = entry.model_dump()
+        if isinstance(entry, str):
+            normalized.append({"character_id": f"char_{shot_idx + 1:02d}", "text": entry})
+            continue
+        if isinstance(entry, dict):
+            text = _first_non_empty(entry.get("text"), entry.get("line"), entry.get("dialogue"))
+            if not text:
+                continue
+            char_id = _first_non_empty(entry.get("character_id"), entry.get("character"), entry.get("speaker"), f"char_{shot_idx + 1:02d}")
+            payload: dict[str, Any] = {"character_id": str(char_id), "text": str(text)}
+            if entry.get("start_time_sec") is not None:
+                try:
+                    payload["start_time_sec"] = float(entry["start_time_sec"])
+                except (TypeError, ValueError):
+                    pass
+            normalized.append(payload)
+    return normalized
+
+
+def _derive_prompt(req: RequestModel) -> str:
+    if req.prompt and req.prompt.strip():
+        return req.prompt.strip()
+    if req.title:
+        return f"Write a cinematic short film titled '{req.title}'."
+    if req.shots:
+        desc = _first_non_empty(*(shot.get("visual_description") for shot in req.shots if isinstance(shot, dict)))
+        if desc:
+            return f"Create a plan around: {desc}"
+    return "Write a concise, imaginative short film plan with vibrant visuals."
+
+
+def _synthetic_plan_payload(prompt: str, title_hint: Optional[str], request_id: str) -> dict[str, Any]:
+    base_title = title_hint or _title_from_prompt(prompt, fallback="Generated Short Film")
+    descriptor = prompt or "cinematic short"
+    shots: list[dict[str, Any]] = []
+    motifs = (
+        "establishing vista",
+        "character turning point",
+        "closing tableau",
+    )
+    for idx, motif in enumerate(motifs[:2]):
+        shots.append(
+            {
+                "id": f"shot_{idx + 1:03d}",
+                "duration_sec": 4.0 + idx,
+                "visual_description": f"{motif.title()} inspired by {descriptor}",
+                "start_frame_prompt": f"{descriptor} — {motif} opening",
+                "end_frame_prompt": f"{descriptor} — {motif} closing",
+                "motion_prompt": "Subtle dolly with volumetric light",
+                "is_talking_closeup": idx == 1,
+                "dialogue": [
+                    {
+                        "character_id": "narrator",
+                        "text": f"Moment {idx + 1}: narrate the {motif} beat.",
+                    }
+                ],
+            }
+        )
+    return {
+        "title": base_title,
+        "shots": shots,
+        "metadata": {
+            "source": "script_agent.entrypoint.synthetic",
+            "request_id": request_id,
+            "prompt_excerpt": descriptor[:120],
+        },
+    }
+
+
+def _title_from_prompt(prompt: Optional[str], fallback: str = "Untitled Short") -> str:
+    if not prompt:
+        return fallback
+    words = [w.strip(".,:;!?") for w in prompt.split() if w.strip()]
+    if not words:
+        return fallback
+    snippet = " ".join(words[:6])
+    return snippet.title() or fallback
+
+
+def _first_non_empty(*candidates: Any) -> str:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        text = str(candidate).strip()
+        if text:
+            return text
+    return ""

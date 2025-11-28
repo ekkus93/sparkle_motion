@@ -45,9 +45,9 @@
 - [x] `script_agent` (`src/sparkle_motion/script_agent.py`) — **STATUS: complete** (generate_plan + artifact persistence landed)
   - [x] `generate_plan(prompt) -> MoviePlan` stub that calls `adk_factory.get_agent()` and enforces schema validation.
   - [x] Persist raw LLM output + validation metadata via `adk_helpers.publish_artifact()`.
-- [ ] `production_agent` (`src/sparkle_motion/production_agent.py`)
-  - [ ] Implement `execute_plan(plan, mode='dry'|'run')` plus `StepExecutionRecord` dataclass and progress hooks.
-  - [ ] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
+- [x] `production_agent` (`src/sparkle_motion/production_agent.py`)
+  - [x] Implement `execute_plan(plan, mode='dry'|'run')` plus `StepExecutionRecord` dataclass and progress hooks.
+  - [x] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
 - [ ] `images_agent` orchestration
   - [ ] Enforce batching (`max_images_per_call`), per-step dedupe flag, and per-plan ordering guarantees.
   - [ ] Integrate QA pre-check via `qa_qwen2vl.inspect_frames()` when reference images provided.
@@ -81,7 +81,7 @@
 - [x] `tests/unit/test_adk_helpers.py` — verify artifact publish fallbacks, schema registry loader behavior, and memory events.
 - [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
 - [x] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
-- [ ] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
+- [x] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
 - [ ] `tests/unit/test_images_agent.py`, `tests/unit/test_videos_agent.py`, `tests/unit/test_tts_agent.py` — exercise batching, chunking, dedupe, QA integration, provider selection using stubs.
 - [ ] `tests/unit/test_images_adapter.py`, `tests/unit/test_videos_adapter.py`, `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
 - [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_assemble_ffmpeg.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.

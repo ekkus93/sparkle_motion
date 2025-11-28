@@ -29,5 +29,7 @@ def test_invoke_persists_artifact(tmp_path, monkeypatch):
     file_path = Path(artifact_uri.replace("file://", ""))
     assert file_path.exists()
     data = json.loads(file_path.read_text(encoding="utf-8"))
-    # payload may be serialized as an object with prompt/title/shots
-    assert data.get("prompt") == "unit-test-prompt"
+    request_payload = data.get("request") or {}
+    assert request_payload.get("prompt") == "unit-test-prompt"
+    plan = data.get("validated_plan") or {}
+    assert isinstance(plan.get("shots"), list) and plan["shots"]

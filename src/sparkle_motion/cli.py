@@ -4,7 +4,8 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import yaml
 
@@ -44,11 +45,13 @@ def run_workflow(path: Path, outdir: Path, *, dry_run: bool = True) -> int:
 
     outdir.mkdir(parents=True, exist_ok=True)
     manifest: Dict[str, Any] = {"workflow": str(path), "stages": []}
+    stage_outputs: Dict[str, Dict[str, Any]] = {}
 
-    for stage in wf.get("stages", []):
+    for idx, stage in enumerate(wf.get("stages", [])):
         sid = stage.get("id")
+        sid_slug = _safe_stage_id(sid, idx)
         tool_id = stage.get("tool_id")
-        print(f"Running stage: {sid} -> {tool_id}")
+        print(f"Running stage: {sid_slug} -> {tool_id}")
         mod_path = _tool_module_from_tool_id(tool_id)
         try:
             mod = __import__(mod_path, fromlist=["*"])
@@ -63,14 +66,33 @@ def run_workflow(path: Path, outdir: Path, *, dry_run: bool = True) -> int:
             from fastapi.testclient import TestClient
 
             client = TestClient(app)
-            payload = {"prompt": f"operator-run:{sid}"}
+            payload = _build_stage_payload(stage, stage_outputs, sid_slug)
             r = client.post("/invoke", json=payload)
             if r.status_code != 200:
-                print(f"Stage {sid} failed: {r.status_code} {r.text}")
+                print(f"Stage {sid_slug} failed: {r.status_code} {r.text}")
                 return 3
             data = r.json()
-            manifest["stages"].append({"id": sid, "artifact_uri": data.get("artifact_uri")})
-            print(f"Stage {sid} completed, artifact={data.get('artifact_uri')}")
+            response_path = _persist_stage_response(outdir, idx, sid_slug, data)
+            artifact_uri = data.get("artifact_uri")
+            artifact_payload = _load_artifact_payload(artifact_uri)
+            artifact_path: Optional[Path] = None
+            if artifact_payload is not None:
+                artifact_path = _persist_artifact_payload(outdir, idx, sid_slug, artifact_payload)
+
+            entry: Dict[str, Any] = {
+                "id": sid or sid_slug,
+                "artifact_uri": artifact_uri,
+                "response_path": str(response_path),
+            }
+            if artifact_path is not None:
+                entry["artifact_payload_path"] = str(artifact_path)
+            manifest["stages"].append(entry)
+            stage_outputs[sid or sid_slug] = {
+                "response": data,
+                "artifact_uri": artifact_uri,
+                "artifact_payload": artifact_payload,
+            }
+            print(f"Stage {sid_slug} completed, artifact={artifact_uri}")
         except Exception as e:
             print(f"Stage {sid} runtime error: {e}")
             return 4
@@ -84,6 +106,181 @@ def run_workflow(path: Path, outdir: Path, *, dry_run: bool = True) -> int:
 
     print(f"Workflow run completed. Manifest: {mf}")
     return 0
+
+
+def _persist_stage_response(outdir: Path, idx: int, stage_id: str, payload: Dict[str, Any]) -> Path:
+    path = outdir / f"{idx:02d}_{stage_id}_response.json"
+    _write_json(path, payload)
+    return path
+
+
+def _persist_artifact_payload(outdir: Path, idx: int, stage_id: str, payload: Any) -> Path:
+    path = outdir / f"{idx:02d}_{stage_id}_artifact.json"
+    _write_json(path, payload)
+    return path
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_artifact_payload(uri: Optional[str]) -> Optional[Any]:
+    if not uri:
+        return None
+    parsed = urlparse(uri)
+    if parsed.scheme and parsed.scheme != "file":
+        return None
+    if parsed.scheme == "file":
+        path = Path(parsed.path)
+    else:
+        path = Path(uri)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _safe_stage_id(stage_id: Optional[str], idx: int) -> str:
+    if stage_id:
+        return stage_id
+    return f"stage-{idx}"
+
+
+def _build_stage_payload(stage: Dict[str, Any], stage_outputs: Dict[str, Dict[str, Any]], sid_slug: str) -> Dict[str, Any]:
+    tool_id = stage.get("tool_id") or ""
+    if _is_production_stage(stage, tool_id):
+        plan_payload = _extract_movie_plan(stage_outputs)
+        if plan_payload is None:
+            plan_payload = _fallback_movie_plan()
+            print(f"Warning: No MoviePlan detected from previous stages; using fallback plan for stage {sid_slug}")
+        mode = stage.get("mode") or "run"
+        return {"plan": plan_payload, "mode": mode}
+    return {"prompt": f"operator-run:{sid_slug}"}
+
+
+def _is_production_stage(stage: Dict[str, Any], tool_id: str) -> bool:
+    stage_id = (stage.get("id") or "").lower()
+    tool_name = tool_id.split(":", 1)[0].lower() if tool_id else ""
+    return stage_id == "production" or tool_name == "production_agent"
+
+
+def _extract_movie_plan(stage_outputs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    priority_ids = ("script",)
+    for pid in priority_ids:
+        plan = _coerce_plan(stage_outputs.get(pid))
+        if plan is not None:
+            return plan
+    for entry in stage_outputs.values():
+        plan = _coerce_plan(entry)
+        if plan is not None:
+            return plan
+    return None
+
+
+def _coerce_plan(entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not entry:
+        return None
+    artifact_payload = entry.get("artifact_payload")
+    plan = _plan_from_payload(artifact_payload)
+    if plan is not None:
+        return plan
+    response_payload = entry.get("response")
+    plan = _plan_from_payload(response_payload)
+    if plan is not None:
+        return plan
+    return None
+
+
+def _plan_from_payload(payload: Any) -> Optional[Dict[str, Any]]:
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if _has_required_shot_fields(payload):
+        return payload
+    for key in ("validated_plan", "plan", "movie_plan", "payload"):
+        candidate = payload.get(key)
+        if isinstance(candidate, dict) and _has_required_shot_fields(candidate):
+            return candidate
+    return None
+
+
+def _has_required_shot_fields(plan: Dict[str, Any]) -> bool:
+    shots = plan.get("shots")
+    if not isinstance(shots, list) or not shots:
+        return False
+    first = next((shot for shot in shots if isinstance(shot, dict)), None)
+    if first is None:
+        return False
+    required = {"duration_sec", "visual_description", "start_frame_prompt", "end_frame_prompt"}
+    return required.issubset(first.keys())
+
+
+def _fallback_movie_plan() -> Dict[str, Any]:
+    candidate = Path("artifacts/Test_Movie.json")
+    if candidate.exists():
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            plan = _plan_from_payload(payload)
+            if plan is not None:
+                return plan
+        except Exception:
+            pass
+    # Synthetic plan keeps local workflow unblocked when upstream stages fail to produce one.
+    return {
+        "title": "CLI fallback plan",
+        "metadata": {"source": "cli_fallback", "reason": "missing_plan"},
+        "characters": [
+            {
+                "id": "char_narrator",
+                "name": "Narrator",
+                "description": "Explains the scene transitions",
+                "voice_profile": {},
+            },
+            {
+                "id": "char_hero",
+                "name": "Hero",
+                "description": "Adventurer exploring luminous canyon",
+                "voice_profile": {},
+            },
+        ],
+        "shots": [
+            {
+                "id": "fallback-shot-1",
+                "duration_sec": 4,
+                "setting": "Sunrise plateau",
+                "visual_description": "Wide sunrise shot over a glowing canyon with floating dust motes.",
+                "start_frame_prompt": "Golden hour light over a sandstone plateau, cinematic lighting, 35mm, volumetric rays",
+                "end_frame_prompt": "Camera settles on glowing canyon rim with dust particles sparkling in the air",
+                "motion_prompt": "Slow dolly forward from wide to medium",
+                "is_talking_closeup": False,
+                "dialogue": [
+                    {"character_id": "char_narrator", "text": "A new journey begins at first light."}
+                ],
+            },
+            {
+                "id": "fallback-shot-2",
+                "duration_sec": 5,
+                "setting": "Crystal cavern",
+                "visual_description": "Medium shot of the hero touching bioluminescent crystals inside a cavern.",
+                "start_frame_prompt": "Hero steps into a teal-lit cavern, crystals casting caustic reflections",
+                "end_frame_prompt": "Closeup of the hero's hand leaving streaks of light across the wall",
+                "motion_prompt": "Handheld push-in with gentle camera shake",
+                "is_talking_closeup": True,
+                "dialogue": [
+                    {"character_id": "char_hero", "text": "I can hear the canyon breathe."}
+                ],
+            },
+        ],
+    }
 
 
 if __name__ == "__main__":

@@ -65,7 +65,10 @@ def test_integration_invoke_creates_artifact(tmp_path):
         file_path = Path(artifact_uri.replace("file://", ""))
         assert file_path.exists()
         data = json.loads(file_path.read_text(encoding="utf-8"))
-        assert data.get("prompt") == "integration-test"
+        request_payload = data.get("request") or {}
+        assert request_payload.get("prompt") == "integration-test"
+        plan = data.get("validated_plan") or {}
+        assert isinstance(plan.get("shots"), list) and plan["shots"]
     finally:
         proc.terminate()
         try:

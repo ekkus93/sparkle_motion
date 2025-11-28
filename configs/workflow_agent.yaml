@@ -12,68 +12,28 @@ description: >-
 stages:
   - id: script
     tool_id: script_agent:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/MoviePlan
-    output_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
+    input_schema: configs/schema_artifacts.yaml#/schemas/movie_plan
+    output_schema: configs/schema_artifacts.yaml#/schemas/movie_plan
     retry:
       attempts: 3
       backoff_seconds: 2
       max_backoff_seconds: 30
       jitter: true
 
-  - id: images
-    tool_id: images_sdxl:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
-    output_schema: configs/schema_artifacts.yaml#/schemas/ImageAssets
+  - id: production
+    tool_id: production_agent:local-colab
+    input_schema: configs/schema_artifacts.yaml#/schemas/movie_plan
+    output_schema: configs/schema_artifacts.yaml#/schemas/asset_refs
     retry:
       attempts: 2
-      backoff_seconds: 1
-      max_backoff_seconds: 20
+      backoff_seconds: 4
+      max_backoff_seconds: 60
       jitter: true
-
-  - id: videos
-    tool_id: videos_wan:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/ImageAssets
-    output_schema: configs/schema_artifacts.yaml#/schemas/VideoAssets
-    retry:
-      attempts: 2
-      backoff_seconds: 2
-      max_backoff_seconds: 40
-      jitter: true
-
-  - id: tts
-    tool_id: tts_chatterbox:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/ShotPlan
-    output_schema: configs/schema_artifacts.yaml#/schemas/AudioAssets
-    retry:
-      attempts: 3
-      backoff_seconds: 1
-      max_backoff_seconds: 30
-      jitter: true
-
-  - id: lipsync
-    tool_id: lipsync_wav2lip:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/VideoAssets
-    output_schema: configs/schema_artifacts.yaml#/schemas/LipsyncAssets
-    retry:
-      attempts: 2
-      backoff_seconds: 1
-      max_backoff_seconds: 20
-      jitter: true
-
-  - id: assemble
-    tool_id: assemble_ffmpeg:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/AssembleInput
-    output_schema: configs/schema_artifacts.yaml#/schemas/MovieAsset
-    retry:
-      attempts: 1
-      backoff_seconds: 1
-      max_backoff_seconds: 10
-      jitter: false
 
   - id: qa
     tool_id: qa_qwen2vl:local-colab
-    input_schema: configs/schema_artifacts.yaml#/schemas/MovieAsset
-    output_schema: configs/schema_artifacts.yaml#/schemas/QAReport
+    input_schema: configs/schema_artifacts.yaml#/schemas/asset_refs
+    output_schema: configs/schema_artifacts.yaml#/schemas/qa_report
     retry:
       attempts: 1
       backoff_seconds: 1

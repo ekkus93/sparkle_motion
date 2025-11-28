@@ -4,10 +4,9 @@ import contextlib
 import gc
 import os
 import time
-import warnings
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
-from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Sequence, Union
+from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Sequence
 
 from . import adk_helpers, telemetry
 
@@ -94,7 +93,7 @@ class ModelContext:
 
 @contextlib.contextmanager
 def model_context(
-    model_key: Union[str, Callable[[], Any]],
+    model_key: str,
     *,
     loader: Optional[Callable[[], Any]] = None,
     weights: Optional[str] = None,
@@ -109,21 +108,10 @@ def model_context(
     """Load a model via *loader* and guarantee deterministic cleanup."""
 
     actual_loader = loader
-    actual_key: str
-    if callable(model_key):  # backward-compat (loader passed positionally)
-        if actual_loader is None:
-            warnings.warn(
-                "Passing the loader as the first positional argument is deprecated; "
-                "call model_context('key', loader=...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            actual_loader = model_key  # type: ignore[assignment]
-            actual_key = getattr(model_key, "__name__", "model")
-        else:
-            raise ValueError("model_context received callable model_key and loader; supply only one loader")
-    else:
+    if isinstance(model_key, str) and model_key.strip():
         actual_key = model_key
+    else:
+        raise ValueError("model_context requires a non-empty string model_key")
 
     if actual_loader is None:
         raise ValueError("model_context requires a loader callable")
