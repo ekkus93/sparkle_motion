@@ -42,6 +42,89 @@ Guidelines:
   - Respect SDXL micro-conditioning options (e.g., `original_size`, `target_size`, crop conditioning) and expose them as `opts` where useful for shot-level control.
   - Document that heavy/real runs must be gated by `SMOKE_ADK=1` and that manifest/runtime deps must follow the repo proposal process.
 
+Implementation checklist & notes (practical details)
+
+- **Public API**: implement `render_images(prompt: str, opts: dict) -> list[ArtifactRef]` on `DiffusersAdapter` and expose a thin wrapper used by `images_agent` decision layer.
+- **GPU context**: `gpu_utils.model_context('sdxl', *, weights: str|Path, offload: bool=True, xformers: bool=True, compile: bool=False)` must:
+  - load model with suggested args (`torch_dtype=torch.float16`, `use_safetensors=True`) and call `.to("cuda")` for inference.
+  - enable `accelerate`/offload helpers (e.g., `enable_model_cpu_offload()`), enable `xformers` memory friendly attention when available, and optionally call `torch.compile()` when requested and supported.
+  - ensure explicit cleanup on exit: delete pipeline, call `torch.cuda.empty_cache()`, and release CUDA context to avoid leaking VRAM between invocations.
+
+- **Adapter responsibilities** (`DiffusersAdapter`):
+  - Accept `prompt: str`, `opts: ImagesOpts` (see schema below), and an optional `device` override.
+  - Create a reproducible `torch.Generator(device)` when `seed` is provided and pass it to the pipeline call.
+  - Support base+refiner flow: either run base→refiner or call refiner separately on base outputs to improve quality. Expose `denoising_start`/`denoising_end` in `opts`.
+  - Save outputs as PNG files (sRGB) and return `ArtifactRef` objects with metadata: `seed`, `sampler`, `prompt`, `model_id`, `device`, `width`, `height`, `steps`, `scheduler`.
+  - Ensure outputs are written to a temp dir and published using `adk_helpers.publish_artifact()` (with file:// fallback in local dev/test modes).
+
+- **Options schema (suggested)**
+  - `ImagesOpts` (example fields):
+    - `seed: int | None`
+    - `num_images: int` (default 1)
+    - `width: int`, `height: int`
+    - `sampler: str` (e.g., "ddim", "ddpm", "euler")
+    - `steps: int`
+    - `cfg_scale: float`
+    - `denoising_start: float | None`, `denoising_end: float | None` (for base+refiner control)
+    - `prompt_2`, `negative_prompt_2` (second text encoder)
+    - `original_size`, `target_size`, `crop_conditioning` (micro-conditioning)
+
+- **Deterministic sampling example**
+
+```python
+import torch
+
+gen = torch.Generator(device="cuda").manual_seed(seed)
+images = pipeline(prompt, num_images_per_prompt=opts.num_images, generator=gen, guidance_scale=opts.cfg_scale, num_inference_steps=opts.steps)
+```
+
+- **Pipeline load example**
+
+```python
+from diffusers import StableDiffusionXLPipeline
+
+pipeline = StableDiffusionXLPipeline.from_pretrained(
+    model_id,
+    torch_dtype=torch.float16,
+    variant="fp16",
+    use_safetensors=True,
+)
+pipeline.to("cuda")
+if xformers_available:
+    pipeline.enable_xformers_memory_efficient_attention()
+```
+
+- **Memory & runtime hygiene**
+  - Use `with gpu_utils.model_context('sdxl', weights=model_id, offload=True, xformers=True):` in entrypoints that call the adapter.
+  - After inference: `del pipeline; torch.cuda.empty_cache()` and consider calling `gc.collect()`.
+  - Instrument VRAM usage in smoke tests and fail fast with clear error messages if memory thresholds are exceeded.
+
+- **Publish artifacts**
+
+```python
+from sparkle_motion.adk_helpers import publish_artifact
+
+artifact_uri = publish_artifact(path=png_path, media_type="image/png", metadata=meta_dict)
+```
+
+- **Tests**
+  - Unit: stub the pipeline object (small lightweight fake) that returns a deterministic PIL image or numpy array; assert `render_images` returns correctly shaped PNG artifacts and metadata.
+  - Integration (gated): `SMOKE_ADK=1` test that instantiates a tiny model (or CI-approved model) in `gpu_utils.model_context` and verifies outputs and publish path.
+  - Add a test that simulates OOM and asserts cleanup path runs (e.g., monkeypatch pipeline to raise OOM and assert `torch.cuda.empty_cache()` called).
+
+- **Manifest & dependency proposal**
+  - Proposed runtime deps (for `proposals/pyproject_adk.diff`): `torch>=2.0+cu*`, `diffusers`, `transformers`, `accelerate`, `safetensors`, `bitsandbytes` (optional), `xformers` (optional), `huggingface_hub`.
+  - Document expected CUDA/torch combos in the proposal (cu118 vs cu120) and recommend pinned minor versions used in validated CI runners.
+
+- **Telemetry & metadata**
+  - Record: `model_id`, `device`, `inference_time_s`, `peak_vram_mb` (when available), `seed`, and `opts` snapshot.
+  - Include these fields in published artifact metadata to aid reproducibility and debugging.
+
+- **Security & policy**
+  - `images_agent` must perform content policy checks (NSFW, disallowed content) before invoking `DiffusersAdapter`. Log policy decisions and memory events via `adk_helpers.write_memory_event()`.
+
+If you'd like, I can create a patch that adds the `DiffusersAdapter` skeleton under `src/` and the minimal unit tests (stubs) — tell me if you want me to prepare that patch next.
+
 ## videos_wan (pilot)
 - Task: Implement `run_wan_inference(start_frames, end_frames, prompt) -> mp4`
   - Pilot first: highest VRAM and driver risk. Implement `WanAdapter` and `gpu_utils.model_context('wan2.1')`.

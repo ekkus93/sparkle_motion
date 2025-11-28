@@ -1,4 +1,52 @@
 from __future__ import annotations
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
+
+
+@contextmanager
+def model_context(name: str, *, weights: Optional[str] = None, **kwargs) -> Iterator[Any]:
+    """Lightweight context manager to load/unload model resources safely.
+
+    This is a scaffold. Real implementations MUST perform lazy imports inside
+    the context (so module import does not require heavy deps) and must
+    implement deterministic CUDA/device cleanup (torch.cuda.empty_cache(),
+    context timely deletion, etc.).
+
+    Usage (example):
+        with model_context('sdxl', weights='stabilityai/sdxl-base-1.0') as ctx:
+            pipe = ctx.pipeline  # adapter-specific
+            outputs = pipe(...)
+
+    The returned context object is intentionally minimal; adapters may return
+    whatever handle they need (pipeline, model, tokenizer, etc.).
+    """
+    # NOTE: keep imports lazy to avoid requiring torch/diffusers on import.
+    class _DummyCtx:
+        def __init__(self) -> None:
+            self.model = None
+
+        def __enter__(self) -> "_DummyCtx":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return False
+
+    # A real implementation would look like:
+    # try:
+    #     import torch
+    #     from diffusers import DiffusionPipeline
+    #     # load pipeline with specified dtype and device placement
+    #     pipe = DiffusionPipeline.from_pretrained(weights, torch_dtype=torch.float16)
+    #     pipe.to('cuda')
+    #     ctx = SimpleNamespace(pipeline=pipe)
+    #     yield ctx
+    # finally:
+    #     # cleanup: delete, torch.cuda.empty_cache(), etc.
+    #     del pipe
+    #     torch.cuda.empty_cache()
+
+    yield _DummyCtx()
+from __future__ import annotations
 
 import contextlib
 import gc
