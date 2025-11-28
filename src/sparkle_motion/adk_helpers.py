@@ -1169,6 +1169,10 @@ def _normalize_timestamp(ts: Optional[datetime]) -> int:
     return int(dt.timestamp())
 
 
+def _fixture_mode_enabled() -> bool:
+    return os.environ.get("ADK_USE_FIXTURE") == "1"
+
+
 def write_memory_event(
     *,
     run_id: Optional[str],
@@ -1181,12 +1185,24 @@ def write_memory_event(
     if not event_type:
         raise ValueError("event_type is required")
 
+    fixture_mode = _fixture_mode_enabled()
     normalized_run_id = run_id or os.environ.get("SPARKLE_RUN_ID") or "unknown"
     payload_dict = dict(payload or {})
     timestamp = _normalize_timestamp(ts)
 
     try:
         svc = get_memory_service()
+    except SystemExit as exc:
+        if fixture_mode:
+            try:
+                telemetry.emit_event(
+                    "memory.write_event.skipped",
+                    {"run_id": normalized_run_id, "event_type": event_type, "reason": "fixture"},
+                )
+            except Exception:
+                pass
+            return
+        raise MemoryWriteError("MemoryService unavailable", run_id=normalized_run_id, event_type=event_type, cause=exc) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise MemoryWriteError("MemoryService unavailable", run_id=normalized_run_id, event_type=event_type, cause=exc) from exc
 

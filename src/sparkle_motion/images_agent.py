@@ -11,10 +11,16 @@ except Exception:  # adapter may be stubbed in tests
         raise RuntimeError("images_sdxl adapter not available")
 
 try:
-    from function_tools.qa_qwen2vl.entrypoint import inspect_frames
-except Exception:
-    def inspect_frames(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:  # type: ignore
-        return {"ok": True}
+    from function_tools.qa_qwen2vl import entrypoint as _qa_entrypoint
+except Exception:  # pragma: no cover - optional dependency
+    _qa_entrypoint = None
+
+
+def _inspect_frames(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
+    target = getattr(_qa_entrypoint, "inspect_frames", None)
+    if callable(target):
+        return target(frames, prompts)
+    return {"ok": True}
 
 
 class PlanPolicyViolation(RuntimeError):
@@ -48,7 +54,7 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
 
     # Pre-render QA check (textual sampling); here we call a lightweight inspect hook
     if qa_enabled:
-        qa_report = inspect_frames([], [prompt])
+        qa_report = _inspect_frames([], [prompt])
         if qa_report.get("reject"):
             raise PlanPolicyViolation("Prompt rejected by QA: %s" % qa_report)
 

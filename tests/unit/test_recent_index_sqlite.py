@@ -15,7 +15,7 @@ def test_add_and_get_and_prune(tmp_path: Path):
     db_path = str(tmp_path / "test_sparkle.db")
     conn = get_conn(db_path)
     # load schema from repo file
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     ddl_path = repo_root / "db" / "schema" / "recent_index.sql"
     ensure_schema(conn, ddl_path.read_text(encoding="utf-8"))
 
@@ -50,7 +50,7 @@ def test_add_and_get_and_prune(tmp_path: Path):
 def test_prune_max_entries(tmp_path: Path):
     db_path = str(tmp_path / "test_sparkle2.db")
     conn = get_conn(db_path)
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     ddl_path = repo_root / "db" / "schema" / "recent_index.sql"
     ensure_schema(conn, ddl_path.read_text(encoding="utf-8"))
 

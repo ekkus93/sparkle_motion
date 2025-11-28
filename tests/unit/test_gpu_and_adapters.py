@@ -9,9 +9,19 @@ from sparkle_motion.adapters.tts_adapter import TTSAdapter
 
 
 def test_model_context_basic():
-    with model_context("sdxl", weights="dummy") as ctx:
-        # context should be enterable and provide an object
-        assert ctx is not None
+    closed = {"flag": False}
+
+    class DummyModel:
+        def close(self):
+            closed["flag"] = True
+
+    def loader():
+        return DummyModel()
+
+    with model_context("sdxl", loader=loader, weights="dummy") as ctx:
+        assert ctx.pipeline is not None
+
+    assert closed["flag"] is True
 
 
 def test_diffusers_adapter_renders(tmp_path: Path):

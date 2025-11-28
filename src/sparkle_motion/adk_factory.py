@@ -88,23 +88,28 @@ def _agent_key(cfg: AgentConfig) -> str:
 def safe_probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     """Wrapper around adk_helpers.probe_sdk that never raises SystemExit."""
 
+    def _log(event_type: str, payload: Mapping[str, Any]) -> None:
+        if _fixture_enabled():
+            return
+        _emit_memory_event(event_type, payload)
+
     try:
         result = adk_helpers.probe_sdk()
     except SystemExit as exc:
-        _emit_memory_event(
+        _log(
             "adk_factory.sdk_probe_failure",
             {"reason": "system_exit", "message": str(exc)},
         )
         return None
     except Exception as exc:
-        _emit_memory_event(
+        _log(
             "adk_factory.sdk_probe_failure",
             {"reason": "exception", "message": str(exc)},
         )
         return None
 
     if result is None:
-        _emit_memory_event(
+        _log(
             "adk_factory.sdk_probe_failure",
             {"reason": "sdk_missing"},
         )

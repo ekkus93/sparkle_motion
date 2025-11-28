@@ -31,7 +31,8 @@ def ensure_schema(conn: sqlite3.Connection, ddl: Optional[str] = None) -> None:
     will be loaded from the repo root.
     """
     if ddl is None:
-        p = Path(__file__).resolve().parents[2] / "db" / "schema" / "recent_index.sql"
+        repo_root = Path(__file__).resolve().parents[3]
+        p = repo_root / "db" / "schema" / "recent_index.sql"
         ddl = p.read_text(encoding="utf-8")
     conn.executescript(ddl)
     conn.commit()

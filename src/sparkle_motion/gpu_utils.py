@@ -1,109 +1,291 @@
 from __future__ import annotations
-from contextlib import contextmanager
-from typing import Any, Iterator, Optional
-
-
-@contextmanager
-def model_context(name: str, *, weights: Optional[str] = None, **kwargs) -> Iterator[Any]:
-    """Lightweight context manager to load/unload model resources safely.
-
-    This is a scaffold. Real implementations MUST perform lazy imports inside
-    the context (so module import does not require heavy deps) and must
-    implement deterministic CUDA/device cleanup (torch.cuda.empty_cache(),
-    context timely deletion, etc.).
-
-    Usage (example):
-        with model_context('sdxl', weights='stabilityai/sdxl-base-1.0') as ctx:
-            pipe = ctx.pipeline  # adapter-specific
-            outputs = pipe(...)
-
-    The returned context object is intentionally minimal; adapters may return
-    whatever handle they need (pipeline, model, tokenizer, etc.).
-    """
-    # NOTE: keep imports lazy to avoid requiring torch/diffusers on import.
-    class _DummyCtx:
-        def __init__(self) -> None:
-            self.model = None
-
-        def __enter__(self) -> "_DummyCtx":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return False
-
-    # A real implementation would look like:
-    # try:
-    #     import torch
-    #     from diffusers import DiffusionPipeline
-    #     # load pipeline with specified dtype and device placement
-    #     pipe = DiffusionPipeline.from_pretrained(weights, torch_dtype=torch.float16)
-    #     pipe.to('cuda')
-    #     ctx = SimpleNamespace(pipeline=pipe)
-    #     yield ctx
-    # finally:
-    #     # cleanup: delete, torch.cuda.empty_cache(), etc.
-    #     del pipe
-    #     torch.cuda.empty_cache()
-
-    yield _DummyCtx()
-from __future__ import annotations
 
 import contextlib
 import gc
 import os
-from typing import Any, Callable, Generator, Optional
+import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from dataclasses import dataclass, field
+from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Sequence, Union
 
-try:
-    import torch
-except Exception:
-    torch = None  # optional, only used when available
+from . import adk_helpers, telemetry
+
+try:  # pragma: no cover - optional heavy dependency
+    import torch  # type: ignore
+except Exception:  # pragma: no cover - environments without torch
+    torch = None  # type: ignore
+
+
+_OOM_TOKENS = ("out of memory", "cuda error", "cublas_status_alloc_failed")
+_CLEANUP_METHODS = ("close", "shutdown", "stop", "release", "unload", "dispose")
+
+_DEVICE_MAP_PRESETS: dict[str, Mapping[str, str]] = {
+    "a100-80gb": {"text_encoder": "cuda:0", "unet": "cuda:0", "vae": "cuda:0", "controlnet": "cuda:0"},
+    "a100-40gb": {"text_encoder": "cuda:0", "unet": "cuda:0", "vae": "cuda:0"},
+    "rtx4090": {"text_encoder": "cuda:0", "unet": "cuda:0", "vae": "cuda:0"},
+}
+
+
+class ModelContextError(RuntimeError):
+    """Base class for gpu_utils errors."""
+
+
+class ModelLoadTimeoutError(ModelContextError):
+    """Raised when model loading exceeds the configured timeout."""
+
+    def __init__(self, *, model_key: str, timeout_s: float) -> None:
+        super().__init__(f"Timed out loading model '{model_key}' after {timeout_s:.2f}s")
+        self.model_key = model_key
+        self.timeout_s = timeout_s
+
+
+class ModelOOMError(ModelContextError):
+    """Raised when CUDA/NPU OOM conditions are detected."""
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        stage: str,
+        message: str,
+        device_map: Optional[Mapping[str, str]],
+        memory_snapshot: Mapping[str, Mapping[str, float]],
+    ) -> None:
+        super().__init__(f"{model_key} OOM during {stage}: {message}")
+        self.model_key = model_key
+        self.stage = stage
+        self.device_map = dict(device_map or {})
+        self.memory_snapshot = dict(memory_snapshot)
+
+
+@dataclass
+class ModelContext:
+    """Model handle wrapper returned by :func:`model_context`."""
+
+    model_key: str
+    pipeline: Any
+    weights: Optional[str]
+    device_map: Optional[Mapping[str, str]]
+    allocated_devices: Sequence[str]
+    metadata: MutableMapping[str, Any] = field(default_factory=dict)
+
+    def report_memory(self) -> Mapping[str, Mapping[str, float]]:
+        return _collect_memory_snapshot(self.allocated_devices)
+
+    def __getattr__(self, item: str) -> Any:
+        # Allow legacy callers/tests to treat the context as the pipeline directly.
+        return getattr(self.pipeline, item)
+
+    @contextlib.contextmanager
+    def inference_span(self, label: str = "default", extra: Optional[Mapping[str, Any]] = None) -> Iterator[Any]:
+        payload = {"model_key": self.model_key, "label": label, **(extra or {})}
+        _emit_gpu_event("gpu.model.inference_start", payload, self.allocated_devices)
+        start = time.time()
+        try:
+            yield self.pipeline
+        except RuntimeError as exc:  # pragma: no cover - inference spans optional
+            raise _normalize_oom(exc, model_key=self.model_key, stage="inference", device_map=self.device_map) from exc
+        finally:
+            duration_ms = int((time.time() - start) * 1000)
+            payload["duration_ms"] = duration_ms
+            _emit_gpu_event("gpu.model.inference_end", payload, self.allocated_devices)
 
 
 @contextlib.contextmanager
-def model_context(load_fn: Callable[[], Any], name: Optional[str] = None) -> Generator[Any, None, None]:
-    """Context manager that loads a model/resource and ensures cleanup.
+def model_context(
+    model_key: Union[str, Callable[[], Any]],
+    *,
+    loader: Optional[Callable[[], Any]] = None,
+    weights: Optional[str] = None,
+    offload: bool = True,
+    xformers: bool = True,
+    compile: bool = False,
+    device_map: Optional[Mapping[str, str]] = None,
+    low_cpu_mem_usage: bool = True,
+    max_memory: Optional[Mapping[str, str]] = None,
+    timeout_s: Optional[float] = None,
+) -> Generator[ModelContext, None, None]:
+    """Load a model via *loader* and guarantee deterministic cleanup."""
 
-    - `load_fn` is a callable that returns a loaded model or resource handle.
-    - On exit, attempts to call common teardown methods and clears CUDA cache
-      if `torch` is available.
-    - In test/fixture mode (`ADK_USE_FIXTURE=1`) the loader is called but
-      teardown becomes a no-op to keep unit tests deterministic.
-    """
-    fixture = os.environ.get("ADK_USE_FIXTURE") == "1"
-    handle = None
+    actual_loader = loader
+    actual_key: str
+    if callable(model_key):  # backward-compat (loader passed positionally)
+        if actual_loader is None:
+            warnings.warn(
+                "Passing the loader as the first positional argument is deprecated; "
+                "call model_context('key', loader=...) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            actual_loader = model_key  # type: ignore[assignment]
+            actual_key = getattr(model_key, "__name__", "model")
+        else:
+            raise ValueError("model_context received callable model_key and loader; supply only one loader")
+    else:
+        actual_key = model_key
+
+    if actual_loader is None:
+        raise ValueError("model_context requires a loader callable")
+
+    metadata = {
+        "model_key": actual_key,
+        "weights": weights,
+        "offload": offload,
+        "xformers": xformers,
+        "compile": compile,
+        "low_cpu_mem_usage": low_cpu_mem_usage,
+        "max_memory": dict(max_memory or {}),
+        "device_map": dict(device_map or {}),
+    }
+    load_start = time.time()
+    allocated_devices = _derive_allocated_devices(device_map)
+    _emit_gpu_event("gpu.model.load_start", metadata, allocated_devices)
+
+    handle: Optional[Any] = None
     try:
-        handle = load_fn()
-        yield handle
+        handle = _execute_loader(actual_loader, actual_key, timeout_s)
+        ctx = ModelContext(
+            model_key=actual_key,
+            pipeline=handle,
+            weights=weights,
+            device_map=device_map,
+            allocated_devices=allocated_devices,
+            metadata=metadata,
+        )
+        _emit_gpu_event(
+            "gpu.model.load_complete",
+            {**metadata, "duration_ms": int((time.time() - load_start) * 1000)},
+            allocated_devices,
+        )
+        yield ctx
+    except RuntimeError as exc:
+        raise _normalize_oom(exc, model_key=actual_key, stage="load", device_map=device_map) from exc
     finally:
-        if handle is None:
-            return
+        if handle is not None:
+            _cleanup_handle(handle)
+            _emit_gpu_event("gpu.model.cleanup", metadata, allocated_devices)
 
-        # Note: even in fixture mode we still attempt light-weight teardown
-        # (call `close()`/`shutdown()` if present). Tests expect the model's
-        # `close` to be invoked for deterministic cleanup. Heavy GPU cache
-        # clearing remains gated by torch.cuda.is_available().
 
-        # Try common close/shutdown methods
-        for meth in ("close", "shutdown", "stop", "release", "unload", "dispose"):
-            fn = getattr(handle, meth, None)
-            if callable(fn):
-                try:
-                    fn()
-                except Exception:
-                    pass
+def compute_device_map(preset: str, overrides: Optional[Mapping[str, str]] = None) -> Mapping[str, str]:
+    """Return a shallow copy of the registered device-map preset."""
 
-        # Attempt to clear CUDA caches if torch is present
+    preset_key = preset.lower()
+    if preset_key not in _DEVICE_MAP_PRESETS:
+        raise KeyError(f"Unknown device preset '{preset}'")
+    base = dict(_DEVICE_MAP_PRESETS[preset_key])
+    if overrides:
+        base.update(overrides)
+    return base
+
+
+def list_device_presets() -> Mapping[str, Mapping[str, str]]:
+    """Return available device-map presets."""
+
+    return {k: dict(v) for k, v in _DEVICE_MAP_PRESETS.items()}
+
+
+def _execute_loader(loader: Callable[[], Any], model_key: str, timeout_s: Optional[float]) -> Any:
+    if timeout_s is None:
+        return loader()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(loader)
         try:
-            if torch is not None and getattr(torch, "cuda", None) is not None and torch.cuda.is_available():
-                try:
+            return future.result(timeout=timeout_s)
+        except FuturesTimeout as exc:
+            future.cancel()
+            raise ModelLoadTimeoutError(model_key=model_key, timeout_s=timeout_s) from exc
+
+
+def _derive_allocated_devices(device_map: Optional[Mapping[str, str]]) -> Sequence[str]:
+    if device_map:
+        seen: list[str] = []
+        for dev in device_map.values():
+            if dev not in seen:
+                seen.append(dev)
+        return tuple(seen)
+
+    if torch is not None and getattr(torch, "cuda", None) is not None:
+        try:
+            if torch.cuda.is_available():  # pragma: no branch - depends on env
+                return (f"cuda:{torch.cuda.current_device()}",)
+        except Exception:
+            pass
+    return ("cpu",)
+
+
+def _cleanup_handle(handle: Any) -> None:
+    for name in _CLEANUP_METHODS:
+        fn = getattr(handle, name, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    if torch is not None and getattr(torch, "cuda", None) is not None:
+        try:
+            if torch.cuda.is_available():  # pragma: no branch - depends on env
+                with contextlib.suppress(Exception):
+                    torch.cuda.synchronize()
+                with contextlib.suppress(Exception):
                     torch.cuda.empty_cache()
-                except Exception:
-                    pass
         except Exception:
             pass
 
-        # Force a GC pass
+    with contextlib.suppress(Exception):
+        gc.collect()
+
+
+def _emit_gpu_event(name: str, payload: Mapping[str, Any], allocated_devices: Sequence[str]) -> None:
+    data = dict(payload)
+    data.setdefault("allocated_devices", list(allocated_devices))
+    telemetry.emit_event(name, data)
+    try:
+        adk_helpers.write_memory_event(run_id=None, event_type=name, payload=data)
+    except Exception:
+        pass
+
+
+def _collect_memory_snapshot(devices: Sequence[str]) -> Mapping[str, Mapping[str, float]]:
+    snapshot: dict[str, Mapping[str, float]] = {}
+    if torch is None or getattr(torch, "cuda", None) is None:
+        return snapshot
+
+    for dev in devices:
+        if not dev.startswith("cuda"):
+            continue
         try:
-            gc.collect()
+            index = int(dev.split(":", 1)[1]) if ":" in dev else torch.cuda.current_device()
+            if torch.cuda.is_available():  # pragma: no branch - env dependent
+                free, total = torch.cuda.mem_get_info(index)
+                snapshot[dev] = {
+                    "free_mb": round(free / (1024 * 1024), 2),
+                    "total_mb": round(total / (1024 * 1024), 2),
+                    "used_mb": round((total - free) / (1024 * 1024), 2),
+                }
         except Exception:
-            pass
+            continue
+    return snapshot
+
+
+def _normalize_oom(
+    exc: RuntimeError,
+    *,
+    model_key: str,
+    stage: str,
+    device_map: Optional[Mapping[str, str]],
+) -> RuntimeError:
+    message = str(exc)
+    lowered = message.lower()
+    if any(token in lowered for token in _OOM_TOKENS):
+        snapshot = _collect_memory_snapshot(tuple(device_map.values()) if device_map else ("cuda:0", "cpu"))
+        return ModelOOMError(
+            model_key=model_key,
+            stage=stage,
+            message=message,
+            device_map=device_map,
+            memory_snapshot=snapshot,
+        )
+    return exc

@@ -189,7 +189,7 @@ def make_app() -> FastAPI:
             artifact_uri = None
             artifact_name = Path(local_path).name
             try:
-                with gpu_utils.model_context(_loader, name="videos_wan") as model_handle:
+                with gpu_utils.model_context("videos_wan", loader=_loader) as model_handle:
                     # model_handle may be agent or a model object; prefer
                     # calling .info() when present so warmup happens.
                     try:
