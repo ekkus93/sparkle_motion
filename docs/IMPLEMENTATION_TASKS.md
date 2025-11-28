@@ -378,11 +378,105 @@ frames = getattr(result, "frames", getattr(result, "images", None))[0]
 
 
 ### lipsync_wav2lip
-- Task: Implement `run_wav2lip(video_path, audio_path, out_path)`
-  - Prefer Python API; if not available, use a subprocess wrapper with a pinned Wav2Lip repo commit.
-  - Ensure ffmpeg/ OpenCV availability and robust temp-file handling.
-  - Tests: unit tests with short fixture clips; gated integration smoke.
-  - Estimate: 2–3 days
+- Task: Implement `run_wav2lip(video_path, audio_path, out_path, *, opts)`
+  - Purpose: provide a safe, testable adapter that lip-syncs a target video to input audio using the open-source Wav2Lip implementation. The adapter should support both using the Wav2Lip Python API (when vendored/installed) and a pinned-subprocess fallback that runs a known commit of the upstream repo.
+
+  - Key upstream references (canonical):
+    - GitHub: `https://github.com/Rudrabha/Wav2Lip`
+    - Colab / notebooks and demo links referenced from upstream README (for example quickstart and inference patterns).
+
+  - Prerequisites (from upstream README):
+    - `Python 3.6+` (project historically used 3.6; prefer modern 3.10+ within repo policies).
+    - `ffmpeg` binary available on PATH (CI images or container must provide it).
+    - Face detector weight `face_detection/detection/sfd/s3fd.pth` (upstream link or mirrored internal location); `face_alignment` model support expected.
+    - Python dependencies: `torch`, `opencv-python`, `numpy`, `scipy`, `face-alignment` (or `face_alignment`), and any other packages listed in upstream `requirements.txt` (pin via `proposals/pyproject_adk.diff` before adding to manifest).
+
+  - Public API (suggested):
+
+```python
+def run_wav2lip(
+    face_video: Path | str,
+    audio: Path | str,
+    out_path: Path | str,
+    *,
+    opts: dict | None = None,
+) -> dict:
+    """Lip-sync `face_video` to `audio`, write result to `out_path`.
+
+    Returns metadata dict with `artifact_uri`, `duration_s`, `model_checkpoint`, `face_detector`, `opts`, and `logs`.
+    """
+```
+
+  - Options schema (common Wav2Lip flags mapped as `opts`):
+    - `checkpoint_path: str` — path to Wav2Lip model checkpoint (required).
+    - `face_det_checkpoint: str` — path to `s3fd.pth` face detector (optional; ensure a default/mirrored path exists).
+    - `pads: tuple[int,int,int,int]` — bounding-box padding (up, down, left, right) to improve chin capture.
+    - `resize_factor: int` — downscale factor for faster processing / better results on low-res faces.
+    - `nosmooth: bool` — disable smoothing of face detections to avoid double-mouth artifacts.
+    - `crop: Optional[tuple[int,int,int,int]]` — manual crop (x,y,w,h) if provided.
+    - `fps: float | None` — output framerate override.
+    - `gpu: int | None` — device id to run inference on; default to cuda:0 if available and allowed.
+    - `verbose: bool` — include full ffmpeg/Wav2Lip logs in metadata when true.
+
+  - Recommended implementation pieces
+    1) Model & artifact preparation helper
+       - Validate `checkpoint_path` and `face_det_checkpoint` exist; if not, provide a helper to download/mirror upstream weights into an approved `resources/` location (do NOT commit those weights; only provide URLs and a download helper).
+       - Fail early and with a clear message if required weights are missing.
+
+    2) API-first path: import & call upstream inference code
+       - Prefer importing the upstream inference routines where possible (e.g., call functions from `inference.py` or expose a small wrapper `wav2lip.infer(face, audio, checkpoint, opts)` if the package is installed in the environment).
+       - Use `torch` device selection (support CPU for dev & CUDA for gated smoke tests). Seed RNG where upstream supports it for deterministic tests.
+
+    3) Subprocess fallback (pinned-commit strategy)
+       - When the Python package is not available or in CI isolation, use a pinned clone of the upstream repo and run `python inference.py --checkpoint_path ... --face ... --audio ...` in a safe subprocess.
+       - Use a safe `run_command(cmd, cwd, timeout_s, retries)` helper that:
+         - Captures stdout/stderr to files / strings.
+         - Kills process groups on timeout (use `preexec_fn=os.setsid` + `os.killpg`).
+         - Validates exit codes and returns structured `SubprocessResult`.
+         - Returns logs and the final output path.
+
+    4) Pre- and post-processing
+       - Provide helpers for face detection / cropping adjustments (wrap upstream face detection helpers or reuse `face_alignment`) and expose `pads` and `resize_factor` as first-class opts.
+       - After inference, ensure audio is preserved or re-mixed with ffmpeg as needed (Wav2Lip inference typically preserves or re-attaches audio in its pipeline; validate behavior and fix if necessary using `ffmpeg` to copy/mix audio).
+
+    5) Output handling & publishing
+       - Write final MP4 to `out_path` and return/publish via `adk_helpers.publish_artifact()` in production flows.
+       - Include metadata: `model_checkpoint`, `face_detector_path`, `device`, `duration_s`, `opts_snapshot`, `ffmpeg_version`, `stdout_log_uri`, `stderr_log_uri`.
+
+  - Recommended CLI / invocation example (mirrors upstream usage):
+
+```
+python inference.py --checkpoint_path <ckpt> --face <video.mp4> --audio <audio.wav> --outfile <out.mp4> --pads 0 20 0 0 --resize_factor 1
+```
+
+  - Upstream tips (extracted from README)
+    - Experiment with `--pads` (increase bottom padding to include chin) to fix dislocated mouth artifacts.
+    - If double-mouth or artifacts appear, try `--nosmooth` to disable smoothing of face detections.
+    - For higher-resolution videos, `--resize_factor` can improve visual quality or speed trade-offs.
+    - Upstream provides multiple checkpoints (Wav2Lip, Wav2Lip+GAN). Choose the checkpoint appropriate for quality vs. artifact trade-offs.
+
+  - Tests
+    - Unit tests (fast, no heavy deps): mock the Wav2Lip inference call to return a deterministic short MP4 (or frames) and assert `run_wav2lip` metadata and publishing behavior.
+    - Command-generation tests: pure functions that produce subprocess command lists for given `opts` should be tested to ensure correct flags and escaping.
+    - Integration (gated): gated by `SMOKE_LIPSYNC=1` (or `SMOKE_ADK=1`) to run a short inference using a small checkpoint or a fixture checkpoint on supported hardware. CI must provide `ffmpeg` binary for this.
+    - Failure path tests: simulate subprocess timeouts and non-zero exits; assert retries, logs capture, and cleanup behavior.
+
+  - Manifest / dependency proposal
+    - Upstream runtime deps: `torch`, `numpy`, `scipy`, `opencv-python`, `face-alignment` (or `face_alignment`), and any upstream pinned versions. `ffmpeg` binary required on system image.
+    - Do NOT modify `pyproject.toml` directly — propose changes via `proposals/pyproject_adk.diff` and wait for explicit approval before adding heavy packages.
+
+  - Security & licensing notes
+    - The open-source Wav2Lip code and checkpoints are for research/non-commercial use per upstream README. Ensure project adheres to this restriction — production/commercial usage must contact authors.
+    - Validate and sanitize any user-provided paths/URIs; do not allow arbitrary shell injection; map structured options to flags.
+
+  - Estimate: 2–3 days for a robust adapter skeleton + unit tests; 3–5 days including gated integration smoke tests and CI image setup for `ffmpeg`.
+
+  - Next steps (if you want me to implement):
+    - A: Create a local adapter skeleton at `src/sparkle_motion/function_tools/lipsync_wav2lip/` with `run_wav2lip` and `run_command` helpers (local patch only). Requires no manifest edits.
+    - B: Also add unit tests under `tests/unit/test_lipsync_wav2lip.py` that mock subprocess/pipeline outputs.
+    - C: Prepare `proposals/pyproject_adk.diff` suggesting runtime deps for review (will not apply without your explicit approval phrase).
+
+If you want me to produce the adapter skeleton and tests locally, choose A/B/C (you can pick multiple). I will not edit manifests or push changes without your explicit approval phrase.
 
 ### qa_qwen2vl
 - Task: Implement `inspect_frames(frames, prompts) -> QAReport`
