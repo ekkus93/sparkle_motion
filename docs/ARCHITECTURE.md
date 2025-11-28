@@ -121,6 +121,10 @@ resource caps (frames, clips, elapsed runtime). Errors map to the four
 - Rate limiting follows the token-bucket guidance from the Implementation
 	Tasks: per-tenant/user keys, configurable refill, queue-or-fail semantics,
 	and backlog guards to surface `PlanResourceError` when the queue is full.
+- Rate limiter implementation status: because the runtime is explicitly
+	single-user/single-job, we are **not** implementing token-bucket + queue
+	mechanics yet. The spec remains documented for the future multi-tenant
+	workstream, and this note serves as the authoritative deferral.
 - QA policy flows call `qa_qwen2vl.inspect_frames()` both pre-render (when
 	reference images exist) and post-render with structured `QAReport` parsing.
 - Dedupe relies on the SQLite-backed `RecentIndex` APIs listed earlier; the
@@ -344,7 +348,9 @@ provenance.
 	`sparkle_motion.schema_registry` expose the canonical artifact URIs for
 	MoviePlan, AssetRefs, QAReport, StageEvent, and Checkpoint along with local
 	fallback paths. Prompt templates and WorkflowAgent tooling must read from this
-	source so every environment points at the same schema versions.
+	source so every environment points at the same schema versions. A concise
+	reference table now lives in `docs/SCHEMA_ARTIFACTS.md`; update both the YAML
+	and that document whenever URIs or versions change.
 - **AssetRefs** – stored as structured JSON artifacts plus derived parquet
 	rows for analytics. Tools receive signed URLs or stream handles from ADK.
 - **QAReport** – emitted as an artifact + memory event; policy schemas live in
@@ -391,15 +397,39 @@ provenance.
 	per tool) as a small follow-up to remove duplicate scaffolds (e.g.,
 	`ScriptAgent` vs `script_agent`).
 
-- `gpu_utils.model_context` requirement: per the Implementation Tasks, adapters
 	must adopt a guarded `model_context` context manager that standardizes model
 	load/unload, emits memory telemetry at key points (load_start/load_complete/
 	inference_start/inference_end/cleanup), and normalizes OOMs to a
 	`ModelOOMError` domain exception for consistent fallback strategies.
-- Proposals required for manifest changes: any proposal that adds runtime
 	dependencies or system binaries (for example `torch`, `diffusers`, or
 	`ffmpeg`) must be prepared as `proposals/pyproject_adk.diff` and approved
 	before editing `pyproject.toml` or CI image definitions.
+
+## ADK helper modules (spec reference)
+
+To keep THE_PLAN, ARCHITECTURE, and IMPLEMENTATION_TASKS in lockstep, this section mirrors the helper spec introduced in `docs/THE_PLAN.md` and establishes the canonical interfaces for implementers.
+
+### `src/sparkle_motion/adk_factory.py`
+- **Purpose**: enforce "ADK required" semantics, centralize agent construction, and expose lifecycle hooks for Option A per-tool agents (with a documented shared-mode escape hatch).
+- **Public API**:
+	- `require_adk(*, allow_fixture: bool = False) -> None` — validates SDK import + credentials; raises `MissingAdkSdkError` unless fixture mode explicitly allowed.
+	- `get_agent(tool_name: str, model_spec: ModelSpec, mode: Literal['per-tool','shared']='per-tool') -> LlmAgent` — constructs/returns the agent handle for the caller while recording provenance; raises `AdkAgentCreationError` on failure.
+	- `create_agent(config: AgentConfig) -> LlmAgent` — low-level helper for bespoke orchestration layers/tests that need direct control over construction parameters.
+	- `close_agent(tool_name: str) -> None` — disposes the per-tool agent (and removes it from the registry) when FunctionTools shut down or Colab resets.
+	- `shutdown() -> None` — best-effort cleanup to close every tracked agent; used by notebooks/tests.
+- **Failure behavior**: all helpers raise typed exceptions (`MissingAdkSdkError`, `AdkAgentCreationError`, `AdkAgentLifecycleError`) carrying `tool_name`, `model_spec`, and the underlying SDK exception. Fixture bypasses must emit a warning-level `adk_helpers.write_memory_event()` so telemetry shows that a stub path was used.
+- **State**: maintains an in-memory registry (`_agents: dict[str, LlmAgentHandle]`) containing metadata (`created_at`, `last_used_at`, `mode`). No persistence; callers reconstruct agents on process restart.
+
+### `src/sparkle_motion/adk_helpers.py`
+- **Purpose**: shared façade for ArtifactService publishing, MemoryService writes, human-input requests, and schema registry loading so every FunctionTool and agent emits telemetry the same way.
+- **Public API (minimum set)**:
+	- `publish_artifact(*, local_path: Path, artifact_type: str, metadata: dict[str, Any], run_id: str | None = None) -> ArtifactRef` — uploads to ADK ArtifactService (or file:// fallback) and returns canonical URIs, raising `ArtifactPublishError` on failure.
+	- `publish_local(*, payload: bytes | str, suffix: str, metadata: dict[str, Any] | None = None) -> ArtifactRef` — deterministic helper for fixture/unit tests that stores data under `runs/<run_id>/` and marks `metadata['fixture']=True`.
+	- `write_memory_event(run_id: str, event_type: str, payload: Mapping[str, Any], *, ts: datetime | None = None) -> None` — appends structured events to MemoryService (or SQLite fallback). Raises `MemoryWriteError` instead of swallowing failures.
+	- `request_human_input(*, run_id: str, reason: str, artifact_uri: str | None, metadata: dict[str, Any]) -> str` — wraps ADK’s review queue, returning a task ID or raising `HumanInputRequestError`.
+	- `ensure_schema_artifacts(schema_config_path: Path) -> SchemaRegistry` — loads and validates `configs/schema_artifacts.yaml`, exposing accessors for ScriptAgent/production_agent.
+- **Failure behavior**: helper-layer errors (`ArtifactPublishError`, `MemoryWriteError`, `HumanInputRequestError`, `SchemaRegistryError`) must surface machine-readable context so agents can log them. Any fallback to local storage must log via `write_memory_event` that artifacts were saved outside ADK.
+- **Testing hooks**: expose `set_backend(overrides: HelperBackend) -> ContextManager` so unit tests inject in-memory fakes; IMPLEMENTATION_TASKS references these hooks for `tests/unit/test_adk_helpers.py`.
 
 For details on the next steps and the todo list, see the updated
 `resources/THE_PLAN.md` and `resources/TODO.md` files in this repo.

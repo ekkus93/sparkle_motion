@@ -161,6 +161,32 @@ Notes:
 
 ---
 
+## ADK helper modules (spec reference)
+
+### `src/sparkle_motion/adk_factory.py`
+- **Purpose**: single place that enforces "ADK required" semantics, centralizes agent construction, and provides lifecycle hooks for per-tool agents (Option A) with a documented path to a future shared mode.
+- **Public API**:
+   - `require_adk(*, allow_fixture: bool = False) -> None` — verifies SDK import + credentials, raising `MissingAdkSdkError` when unavailable (unless fixture allowed).
+   - `get_agent(tool_name: str, model_spec: ModelSpec, mode: Literal['per-tool','shared']='per-tool') -> LlmAgent` — constructs/returns an agent for the calling FunctionTool; records provenance + raises `AdkAgentCreationError` on failure.
+   - `create_agent(config: AgentConfig) -> LlmAgent` — lower-level helper for bespoke agents (used by future extensions/tests) so tasks do not reach into SDK internals directly.
+   - `close_agent(tool_name: str) -> None` — disposes per-tool agents when FunctionTools shut down or Colab resets to avoid leaked handles.
+   - `shutdown() -> None` — best-effort cleanup invoked during notebook resets/tests to close all tracked agents.
+- **Failure behavior**: all functions raise typed errors (`MissingAdkSdkError`, `AdkAgentCreationError`, `AdkAgentLifecycleError`) instead of returning `None`. Errors must include `tool_name`, `model_spec`, and the underlying SDK exception text for audit. Fixture/test modes must log via `adk_helpers.write_memory_event()` when the real SDK is bypassed.
+- **State**: maintains an in-memory registry (`_agents: dict[str, LlmAgentHandle]`) with lightweight metrics (`created_at`, `last_used_at`, `mode`). No persistence; callers are responsible for rehydration on process restart.
+
+### `src/sparkle_motion/adk_helpers.py`
+- **Purpose**: thin façade over common ADK operations (artifact publishing, memory timeline writes, human-input requests) so adapters and agents share the same telemetry/publishing behavior without duplicating SDK plumbing.
+- **Public API** (minimum set implementers should target):
+   - `publish_artifact(*, local_path: Path, artifact_type: str, metadata: dict[str, Any], run_id: str | None = None) -> ArtifactRef` — uploads a file/dir to ADK ArtifactService (or file:// fallback when SDK missing), returning canonical URIs. Raises `ArtifactPublishError` when ADK rejects the upload; surfaces fallback paths explicitly in the returned metadata (`storage='local'|'adk'`).
+   - `publish_local(*, payload: bytes | str, suffix: str, metadata: dict[str, Any] | None = None) -> ArtifactRef` — deterministic helper for fixture/unit tests; stores bytes under `runs/<run_id>/` with stable names and records `metadata['fixture']=True` for traceability.
+   - `write_memory_event(run_id: str, event_type: str, payload: Mapping[str, Any], *, ts: datetime | None = None) -> None` — appends structured telemetry to ADK MemoryService (or SQLite fallback). Raises `MemoryWriteError` on failure and never swallows exceptions; callers may catch/log but must not ignore errors silently.
+   - `request_human_input(*, run_id: str, reason: str, artifact_uri: str | None, metadata: dict[str, Any]) -> str` — wraps ADK review queue creation so QA/production agents do not need to stitch custom JSON; returns review task ID and raises `HumanInputRequestError` if the platform rejects the request.
+   - `ensure_schema_artifacts(schema_config_path: Path) -> SchemaRegistry` — loads `configs/schema_artifacts.yaml`, validates URIs, and provides accessors used by ScriptAgent and production_agent to fetch schema versions.
+- **Failure behavior**: each helper raises a domain error (`ArtifactPublishError`, `MemoryWriteError`, `HumanInputRequestError`, `SchemaRegistryError`) with machine-readable context (`{"run_id": ..., "event_type": ...}`) so agents can attach the exception payload to ADK memory logs. When falling back to local fixture mode, helpers must emit a warning-level `write_memory_event` stating that data was saved outside ArtifactService.
+- **Testing hooks**: module exposes `set_backend(overrides: HelperBackend) -> ContextManager` so unit tests can inject fakes (for example, in-memory artifact storage). IMPLEMENTATION_TASKS references `tests/unit/test_adk_helpers.py`; this spec clarifies where those tests should target.
+
+---
+
 ## Stage-by-stage plan (hosted / local FunctionTools)
 
 1. ScriptAgent (ADK LlmAgent)
@@ -173,6 +199,11 @@ Notes:
    - Requirements: batching rules, token-bucket rate-limiter, pre-render QA
      (text moderation or `qa_qwen2vl` sample check), deterministic stub for
      unit tests, and `gpu_utils.model_context` for pipeline loads.
+
+   **Rate limiter status (single-user deferral)** – The pipeline is expressly
+   single-user/single-job today, so we are _not_ building the token-bucket +
+   queue semantics during this rollout. Keep the spec below for the future
+   multi-tenant milestone; this paragraph is the canonical deferral note.
 
    Concrete API & types (implementers)
 
@@ -217,6 +248,11 @@ Notes:
    class TokenBucketRateLimiter(RateLimiter):
       def __init__(self, capacity: int, refill_rate_per_sec: float): ...
    ```
+   Behavior & defaults:
+   - Maintain per-tenant and per-host buckets; default capacity `60` with `refill_rate_per_sec = 1` (60 tokens/min). Each adapter call spends `count` tokens so large batches deplete faster.
+   - Support `queue_allowed` semantics: when tokens are exhausted and queueing is enabled, enqueue the batch with TTL (default 600s) and surface a `StepExecutionRecord(status="queued")` until execution resumes; otherwise raise `RateLimitError` immediately.
+   - Provide `tests/unit/test_rate_limiter.py` to cover leak-free acquire/release, burst behavior, queue drain, and clock-skew handling (use a fake clock to keep tests deterministic).
+   - Instrument limit hits via `adk_helpers.write_memory_event()` so production_agent can surface global backpressure in dashboards.
 
    QA contract (stub): `function_tools/qa_qwen2vl/entrypoint.py`:
    ```py
@@ -244,47 +280,208 @@ Notes:
    DB schema location: create `db/schema/recent_index.sql` (see `docs/ARCHITECTURE.md`)
    and a DB helper `src/sparkle_motion/db/sqlite.py` exposing `get_conn(path)` and
    `ensure_schema(conn)`.
+   Canonical DDL (`docs/ARCHITECTURE.md` excerpt — copy verbatim into `db/schema/recent_index.sql`):
+
+   ```sql
+   CREATE TABLE IF NOT EXISTS recent_index (
+   	id INTEGER PRIMARY KEY AUTOINCREMENT,
+   	phash TEXT NOT NULL UNIQUE,
+   	canonical_uri TEXT NOT NULL,
+   	last_seen INTEGER NOT NULL,
+   	hit_count INTEGER NOT NULL DEFAULT 1
+   );
+   CREATE INDEX IF NOT EXISTS ix_recent_index_phash ON recent_index(phash);
+
+   CREATE TABLE IF NOT EXISTS memory_events (
+   	id INTEGER PRIMARY KEY AUTOINCREMENT,
+   	run_id TEXT,
+   	timestamp INTEGER NOT NULL,
+   	event_type TEXT NOT NULL,
+   	payload TEXT NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS ix_memory_events_runid ON memory_events(run_id);
+   ```
+
+   Helper API (`src/sparkle_motion/utils/recent_index_sqlite.py`):
+   - `get_canonical(phash: str) -> Optional[str]`
+   - `add_or_get(phash: str, uri: str) -> str`
+   - `touch(phash: str, uri: str) -> None`
+   - `prune(max_age_s: int, max_entries: int) -> None`
 
 3. Videos (Wan FunctionTool)
-   - Agent: `videos_agent` (orchestration); Adapter: `videos_wan` (Wan2.1)
-   - Requirements: chunking/sharding/reassembly semantics, overlap defaults,
-     multi-GPU device_map presets, OOM fallback precedence and adaptive
-     shrink heuristics. Gate heavy runs with `SMOKE_ADAPTERS`/`SMOKE_ADK`.
+    - Agent/Adapter: `videos_agent` orchestrates Wan2.1 (`videos_wan`) adapters. Public API:
+
+       ```python
+       def render_video(start_frames: Iterable[Frame], end_frames: Iterable[Frame], prompt: str, opts: dict) -> ArtifactRef:
+             ...
+       ```
+
+    - Chunking + reassembly: default `chunk_length_frames=64`, `chunk_overlap_frames=4`, `min_chunk_frames=8`. Compute overlapping chunks, track `chunk_index`, and deterministically trim/crossfade overlaps on reassembly. Derive per-chunk seeds via `hash(seed, chunk_index)` for reproducibility.
+    - Multi-GPU presets: document balanced `device_map` + `max_memory` (e.g., `{0:"74GiB",1:"74GiB","cpu":"120GiB"}`) for A100 hosts, auto/single-device modes for A6000, sequential/offload for 4090/3090, and CPU fallback for fixture runs. Surface these knobs in `opts` and record chosen map in artifact metadata.
+    - OOM strategy: retry transient errors up to `max_retries_per_chunk=2`, shrink chunk length by `adaptive_shrink_factor=0.5` on OOM, then fall back to alternate GPU or CPU. Every attempt records `attempt_index`, `device`, `chunk_length_frames`, and outcome in telemetry.
+    - Progress contract: adapters emit `CallbackEvent` (`plan_id`, `step_id`, `chunk_index`, `frame_index`, `progress`, `eta_s`, `phase`). `videos_agent` forwards events through `on_progress` callbacks and via `adk_helpers.write_memory_event()`.
+    - Tests: `tests/unit/test_videos_agent.py` covers chunk split/reassembly, adaptive OOM retry, CPU fallback metadata, and progress forwarding. Gated smoke test (`SMOKE_ADK=1` + `SMOKE_ADAPTERS=1`) renders a short Wan2.1 job and asserts artifact publish + progress events.
+      - Wan2.1 pilot deliverables (from `docs/IMPLEMENTATION_TASKS.md`):
+         - Adapter loads `Wan-AI/Wan2.1-FLF2V-14B-720P` (and siblings) via `WanImageToVideoPipeline` inside `gpu_utils.model_context("wan2.1", weights=MODEL_ID, offload=True, xformers=True)`; enforce cleanup (`del pipeline; torch.cuda.empty_cache(); gc.collect()`).
+         - Ship multi-host presets: balanced sharding for dual A100s (`max_memory = {0: "74GiB", 1: "74GiB", "cpu": "120GiB"}`), sequential/offload modes for single 4090/A6000, and CPU/fixture fallback for CI; surface chosen `device_map`/`max_memory` in artifact metadata.
+         - Provide helper functions mirroring Wan notebooks (`aspect_ratio_resize`, `center_crop_resize`, `export_to_video` fallback) and deterministic per-chunk seeding (`hash(seed, chunk_index)`), plus callback plumbing for ETA/progress.
+         - Publish artifacts through `adk_helpers.publish_artifact()` with metadata (`model_id`, `seed`, `device`, `inference_time_s`, `peak_vram_mb`, `plan_step`) and gate real runs behind `SMOKE_ADK=1`/`SMOKE_ADAPTERS=1`.
+         - Test plan: unit tests stub `WanImageToVideoPipeline`, smoke test renders a tiny FLF2V plan (<=8 frames) using approved hardware, and telemetry assertions ensure attempt metadata + adaptive OOM shrink path behave as documented.
 
 4. TTS (Chatterbox FunctionTool)
-   - Agent: `tts_agent` (provider selection, retries, policy enforcement);
-     Adapter: `tts_chatterbox` (Chatterbox / hosted fallbacks).
-   - Requirements: VoiceMetadata schema, watermark awareness, provider
-     registry, and gated integration tests (`SMOKE_TTS=1`).
+    - Agent/Adapter: `tts_agent` decision layer plus `tts_chatterbox` adapter (Resemble AI Chatterbox + Chatterbox-Multilingual). Public API:
+
+       ```python
+       def synthesize(text: str, voice_config: dict) -> ArtifactRef:
+             """Return WAV ArtifactRef with metadata (voice_id, model_id, device, watermarked)."""
+       ```
+
+    - Dependencies: upstream repo `https://github.com/resemble-ai/chatterbox`, Hugging Face weights `ResembleAI/chatterbox`, PyPI package `chatterbox-tts`. Python 3.11 is required; all manifest changes go through `proposals/pyproject_adk.diff`.
+    - Adapter behavior: instantiate `ChatterboxTTS.from_pretrained(device)` (cuda/cpu), expose `audio_prompt_path`, `language_id`, `cfg_weight`, `exaggeration`, and enforce watermark metadata. When `SMOKE_TTS!=1`, prefer fixture mode to avoid heavy installs.
+    - Metadata + policy: publish `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`, `model_id`, `device`, `synth_time_s`, `watermarked`. Enforce policy/content moderation in `tts_agent` (reject harmful text, log via `adk_helpers.write_memory_event()`).
+    - Tests: unit tests stub `.generate()` to verify retries/backoff, metadata, and watermark flag handling. Integration smoke gated by `SMOKE_TTS=1` validates real synthesis + watermark awareness.
 
 5. Lipsync (Wav2Lip FunctionTool)
-   - Adapter: `lipsync_wav2lip` with a small, testable wrapper around the
-     Wav2Lip pipeline or subprocess invocation.
+    - Adapter API:
+
+       ```python
+       def run_wav2lip(face_video: Path | str, audio: Path | str, out_path: Path | str, *, opts: dict | None = None) -> dict:
+             """Return metadata with artifact_uri, duration_s, checkpoint, face_detector, opts, logs."""
+       ```
+
+    - Options: `checkpoint_path`, `face_det_checkpoint`, `pads`, `resize_factor`, `nosmooth`, `crop`, `fps`, `gpu`, `verbose`. Require `ffmpeg` and upstream weights (validate/download before run).
+    - Implementation notes: prefer in-process API when Wav2Lip Python modules are installed; supply subprocess fallback pinned to upstream commit using a safe `run_command()` helper (kill process groups on timeout, capture logs, retries). Support CUDA + CPU fallback; seed torch when supported for deterministic tests.
+    - Security/licensing: upstream is research/non-commercial; enforce policy + sanitized paths and forbid arbitrary shell injection.
+    - Tests: unit tests mock inference/subprocess to assert command generation, metadata, retries, and failure cleanup. Gated smoke (`SMOKE_LIPSYNC=1`) runs a short clip to confirm ffmpeg pipeline.
 
 6. Assemble (ffmpeg FunctionTool)
-   - Deterministic ffmpeg wrapper used to produce final movie artifact. Use a
-     safe subprocess helper and publish as ADK artifacts.
+    - Responsibilities: deterministically assemble clips/audio/subtitles via `ffmpeg` using safe subprocess helpers. Public API:
+
+       ```python
+       def assemble_clips(movie_plan: dict, clips: list[dict], audio: Optional[dict], out_path: Path, opts: dict) -> ArtifactRef:
+             ...
+
+       def run_command(cmd: list[str], cwd: Path, timeout_s: int = 600, retries: int = 1) -> SubprocessResult:
+             ...
+       ```
+
+    - Implementation checklist: translate plan into concat/filter_complex graphs, manage per-run temp dirs, pin encode args (`libx264`, CRF, pixel format), capture stdout/stderr, enforce timeouts, and publish artifacts with `ffmpeg_version`, command, opts, logs URIs.
+    - Determinism: record codec, CRF, seed (if transitions random), OS/ffmpeg versions. Reject arbitrary flags; map structured options only. Ensure cleanup yet retain logs when `debug=True`.
+    - Tests: unit tests for command construction and retry behavior (mock `run_command`), assembly unit test with synthetic clips, and gated smoke (`SMOKE_ADK=1` or `SMOKE_ASSEMBLE=1`) that runs ffmpeg on short fixtures.
 
 7. QA (Qwen-2-VL FunctionTool)
-   - `qa_qwen2vl` inspects frames and prompts, emits `QAReport` artifacts,
-     and triggers human review or automated regenerate actions.
+    - Adapter: `qa_qwen2vl.inspect_frames(frames, prompts, *, opts=None) -> QAReport`. Canonical model `Qwen/Qwen2-VL-7B-Instruct` via `transformers` + `qwen-vl-utils` (`process_vision_info`).
+    - Behavior: batch frames + prompts into chat-template messages, run multimodal QA under `gpu_utils.model_context`, and emit structured reports (`per_frame`, `global_flags`, `confidence_summary`, `artifact_uri`, `logs_uri`). Surface knobs for `min_pixels`, `max_pixels`, `resized_height/width`, `max_new_tokens`, `attn_implementation`, `torch_dtype`, `device_map`.
+    - Policy integration: map model responses to policy actions (approve/escalate/reject). On escalation call `request_human_input()` and log via `adk_helpers.write_memory_event()`. Provide lightweight stub for unit tests; gate real model runs behind `SMOKE_QA=1`/`SMOKE_ADK=1`.
+    - Tests: unit tests stub model/processor to verify QAReport shape, thresholding, and prompt packaging; integration smoke (gated) runs a small frame set through the real model.
+      - QA enforcement flow (authoritative thresholds):
+         - Pre-check prompts/reference frames via text moderation or lightweight vision QA. If prompt flagged `disallowed`, raise `PlanPolicyViolation`; if `ambiguous`, mark the step for post-run escalation and limit generation parameters.
+         - Post-render: invoke `qa_qwen2vl.inspect_frames` on every artifact before publish. Interpret `QAReport.per_frame` confidences using defaults: `nsfw_confidence >= 0.70` → reject + delete artifact, `0.40–0.69` → quarantine and call `request_human_input()`, `<0.40` → approve/publish.
+         - Always attach the serialized `QAReport` to `adk_helpers.write_memory_event()` payloads so production_agent can reconstruct the policy trail. Escalations must persist quarantined artifact URIs, reviewer assignments, and `QAReport.global_flags` for ADK review console parity.
+         - Smoke tests with `SMOKE_QA=1` must verify the escalation path by forcing synthetic outputs that cross the threshold and asserting human-input events fire.
+
+---
+
+## Operational blueprint (aligned with `docs/ARCHITECTURE.md`)
+
+### Layered system view
+- **Interaction**: Colab notebooks and the CLI call ADK `SessionService` to create sessions and drive runs. They stay thin; ADK owns session + artifact state.
+- **Reasoning**: `script_agent` is an ADK `LlmAgent` that turns ideas into MoviePlans. Each FunctionTool process instantiates its own agent via `adk_factory` per Option A.
+- **Coordination**: The WorkflowAgent YAML encodes the stage graph, retry rules, and hand-offs; we deploy/run it through the ADK control plane.
+- **Execution**: Each hosted stage is a FunctionTool served as a local FastAPI/in-process server (Colab profile). FunctionTools handle heavy compute and publish artifacts via ADK.
+- **Persistence**: ADK ArtifactService + MemoryService remain the source of truth; local folders are convenience caches only.
+
+### Service & tool wiring
+- **SessionService**: points at SQLite (e.g., `/content/sparkle_session.db`) for the Colab profile; every run creates a managed session and reuses it for resume flows.
+- **ArtifactService**: artifacts land in Drive-mounted buckets (e.g., `/content/drive/MyDrive/sparkle_artifacts`). Local fallback roots like `artifacts/` are dev-only and never replace ADK publishes.
+- **MemoryService**: backed by SQLite (e.g., `/content/sparkle_memory.db`) so all agents can append/query timelines without bespoke log parsing.
+- **Duplicate detection**: RecentIndex lives in SQLite (see canonical DDL above) with helper APIs `get_canonical`, `add_or_get`, `touch`, `prune`. `SPARKLE_DB_PATH` controls the location; enable `PRAGMA journal_mode=WAL` when concurrent writers appear.
+- **Tool catalog**: each FunctionTool is published with metadata (IAM scopes, cost hints). WorkflowAgent binds to tool IDs, keeping deployments consistent across environments.
+
+### Workflow walk-through
+1. **Session bootstrap** – `SessionService.create_session` issues `run_id`, stores the idea payload, and pre-allocates artifact prefixes (mounted via `adk mount`).
+2. **Script planning** – ScriptAgent loads schema URIs from `configs/schema_artifacts.yaml` and publishes the validated MoviePlan plus a memory event.
+3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → qa` graph, emits manifest events, and supports resume via `start_stage` overrides.
+4. **FunctionTool executions** – Hosted tools listen on `127.0.0.1:<port>` inside Colab, accept artifact IDs, emit telemetry, and publish new ArtifactRefs.
+5. **QA & human gating** – `qa_qwen2vl` emits QAReport artifacts + policy decisions. Escalations use `event_actions.request_human_input` and block the workflow until reviewers respond.
+6. **Observability** – Operators inspect ADK timelines/metrics and local logs; telemetry export stays disabled, but `run_events.json` can be generated from ADK data when needed.
+
+### Data contracts & storage layout
+- **MoviePlan / AssetRefs / QAReport / StageEvent / Checkpoint** schemas are published as ADK artifacts, with local fallbacks referenced via `sparkle_motion.schema_registry`.
+- **Schema registry reference** – see `docs/SCHEMA_ARTIFACTS.md` for the
+   table of canonical URIs, versions, and fallback paths extracted from
+   `configs/schema_artifacts.yaml`. Update both sources together when schemas or
+   policy bundles change.
+- **Artifact storage**: IDs follow `artifact://sparkle-motion/<type>/<run>/<version>`; local scratch copies live under `runs/<run_id>` for inspection only.
+- **Memory logs**: long-lived QA decisions, human approvals, and stage failures are stored via MemoryService so agents can replay context without filesystem scraping.
+
+### Enforced ADK usage & short-term decisions
+- Application/runtime code MUST import the real `google.adk` SDK in entrypoints; per-tool agents are mandatory under Option A (no silent fallbacks).
+- `adk_factory` provides guarded probing yet defaults to per-tool construction; shared mode is documented but not enabled for this rollout.
+- `gpu_utils.model_context` is required for every heavy adapter and must emit telemetry + normalized `ModelOOMError` exceptions.
+- Manifest changes (torch, diffusers, ffmpeg, chatterbox, etc.) stay proposal-only via `proposals/pyproject_adk.diff` until explicitly approved.
+- FunctionTool directories must be normalized (case duplicates removed) and each tool must provide deterministic smoke tests gated by the relevant `SMOKE_*` flags.
+
+### Human + QA governance hooks
+- Script review, per-shot approvals, and QA escalations all use ADK’s review queue (`request_human_input`). Memory events must capture reviewer assignments and QAReport URIs for audit.
+- New stages plug into the WorkflowAgent graph and inherit QA/human gating declaratively; no bespoke runner work is needed beyond registering the tool and updating the workflow spec.
+
+### Operational summary
+- Single-user Colab runtime hosts WorkflowAgent definitions, tool catalog, and artifact buckets under the `local-colab` profile.
+- Resume/retry is an ADK API call (`workflow_runs.resume(run_id, start_stage=...)`); no filesystem surgery required.
+- Artifact access goes through `adk artifacts download` or signed URLs; local exports are optional.
+- Human + QA governance remain auditable inside ADK; documentation parity across `THE_PLAN.md`, `docs/ARCHITECTURE.md`, and `docs/ORCHESTRATOR.md` is required before coding resumes.
 
 ---
 
 ## Cross-cutting implementation rules and notes
 
 - Agents must be small, testable, and segregate policy decisions from heavy
-  compute. Agents orchestrate adapters (FunctionTools); adapters are plain,
-  testable callables that use `gpu_utils.model_context`.
+   compute. Agents orchestrate adapters (FunctionTools); adapters are plain,
+   testable callables that use `gpu_utils.model_context`.
  - Deterministic test harnesses: provide stubbed pipelines that produce
-  deterministic artifacts (seed-based PNGs, predictable pHash values).
+   deterministic artifacts (seed-based PNGs, predictable pHash values).
  - Duplicate detection: use perceptual hashing (pHash) and a simple LRU cache
-  or an SQLite-backed `RecentIndex` to dedupe recent artifacts; `images_agent`
-  should support `dedupe=True` semantics and persist recent-index state to
-  SQLite for the single-user workflow. Do not rely on Redis — this project is
-  explicitly single-user and uses SQLite as the canonical lightweight store.
+   or an SQLite-backed `RecentIndex` to dedupe recent artifacts; `images_agent`
+   should support `dedupe=True` semantics and persist recent-index state to
+   SQLite for the single-user workflow. Do not rely on Redis — this project is
+   explicitly single-user and uses SQLite as the canonical lightweight store.
 - OOM handling: adapters should normalize OOMs to `ModelOOMError` with
-  structured metadata (stage, suggested_shrink_hint, memory_snapshots).
+   structured metadata (stage, suggested_shrink_hint, memory_snapshots).
+
+### `gpu_utils.model_context` (canonical API & checklist)
+
+- Signature (copy into `src/sparkle_motion/gpu_utils.py`):
+
+   ```python
+   @contextmanager
+   def model_context(
+         model_key: str,
+         *,
+         weights: str | None = None,
+         offload: bool = True,
+         xformers: bool = True,
+         compile: bool = False,
+         device_map: Mapping[str, str] | None = None,
+         low_cpu_mem_usage: bool = True,
+         max_memory: Mapping[str, str] | None = None,
+         timeout_s: int | None = None,
+   ) -> Iterator[ModelContext]:
+         ...
+   ```
+
+- Parameter semantics: `model_key` is the telemetry identifier, `weights` selects the HF repo or local path, `device_map`/`max_memory` let adapters pass multi-GPU presets, and `timeout_s` enforces load deadlines. Provide defaults for SDXL (`sdxl/base-refiner`) and Wan (`wan2.1/flf2v`).
+- `ModelContext` returned by the manager should expose `pipeline`, `device_map`, `allocated_devices`, and `report_memory()` so adapters can emit consistent telemetry snapshots.
+- Cleanup checklist on exit (all adapters must rely on this): delete large references (`del pipeline`), `torch.cuda.synchronize()`, `torch.cuda.empty_cache()`, `gc.collect()`, release offload helpers, and emit a final `report_memory()` snapshot into `adk_helpers.write_memory_event()` with `step="cleanup"` metadata.
+   1. **Session bootstrap** – `SessionService.create_session` issues `run_id`, stores the idea payload, and pre-allocates artifact prefixes (mounted via `adk mount`).
+   2. **Script planning** – ScriptAgent loads schema URIs from `configs/schema_artifacts.yaml` and publishes the validated MoviePlan plus a memory event.
+   3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → qa` graph, emits manifest events, and supports resume via `start_stage` overrides.
+   4. **FunctionTool executions** – Hosted tools listen on `127.0.0.1:<port>` inside Colab, accept artifact IDs, emit telemetry, and publish new ArtifactRefs.
+   5. **QA & human gating** – `qa_qwen2vl` emits QAReport artifacts + policy decisions. Escalations use `event_actions.request_human_input` and block the workflow until reviewers respond.
+   6. **Observability** – Operators inspect ADK timelines/metrics and local logs; telemetry export stays disabled, but `run_events.json` can be generated from ADK data when needed.
+- OOM normalization: wrap CUDA `RuntimeError` messages containing "out of memory" in `ModelOOMError(model_key=..., stage='load'|'inference', attempted_device_map=..., peak_vram_mb=...)` so callers can adaptively shrink (`adaptive_shrink_factor=0.5`) or fall back to CPU.
+- Telemetry: emit events at `load_start`, `load_complete`, `inference_start`, `inference_end`, and `cleanup`. Each payload should include `plan_id`, `step_id`, `device_stats`, `max_memory`, `generator_seed` (when provided), and `attempt_index` so production_agent dashboards stay consistent.
+- Testing expectations: add `tests/unit/test_gpu_model_context.py` that fakes torch/nvml calls, asserts cleanup order (even on exceptions), and verifies OOM normalization; gated smoke (`SMOKE_ADK=1`) should instantiate a tiny diffusers model via this context to ensure telemetry wiring is correct.
 
 ---
 
