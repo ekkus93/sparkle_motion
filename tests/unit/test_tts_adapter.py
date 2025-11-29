@@ -78,6 +78,7 @@ def test_artifact_metadata_builder_populates_context(tmp_path: Path) -> None:
         score=0.87,
         breakdown={"quality": 0.8, "latency": 0.15, "cost": 0.05},
         reason="weighted",
+        estimated_cost_usd=0.001,
     )
     result = tts_agent.AdapterResult(
         path=tmp_path / "result.wav",

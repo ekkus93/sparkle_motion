@@ -62,7 +62,7 @@
   - [x] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
   - [x] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
 - [ ] `tts_agent`
-  - [ ] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
+  - [x] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
   - [ ] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
 
 ### Sequence of Work — `tts_agent`

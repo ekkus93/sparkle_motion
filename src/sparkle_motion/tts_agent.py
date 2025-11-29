@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import tempfile
 import time
 import uuid
@@ -38,6 +39,10 @@ class ProviderSelectionError(TTSError):
 
 class TTSRetryableError(TTSError):
     """Raised by adapters to request a retry with the same provider."""
+
+    def __init__(self, message: str, retry_after_s: Optional[float] = None) -> None:
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
 
 
 class TTSQuotaExceeded(TTSError):
@@ -153,6 +158,7 @@ class SelectionDecision:
     score: float
     breakdown: Mapping[str, float]
     reason: str
+    estimated_cost_usd: float
 
 
 @dataclass(frozen=True)
@@ -172,6 +178,23 @@ _ADAPTERS: Dict[str, AdapterCallable] = {}
 _TRUTHY = {"1", "true", "yes", "on"}
 _ARTIFACT_TYPE = "tts_audio"
 _POLICY_BLOCKLIST = {"weaponized", "forbidden", "terror", "bomb"}
+_RETRY_JITTER_FRACTION = 0.2
+
+
+def _random_uniform(a: float, b: float) -> float:
+    return random.uniform(a, b)
+
+
+def _compute_retry_delay(policy: RetryPolicy, attempt: int, override: Optional[float]) -> float:
+    attempt = max(attempt, 1)
+    base = override if override is not None else max(policy.backoff_s, 0.0) * attempt
+    if base <= 0:
+        return 0.0
+    jitter = base * _RETRY_JITTER_FRACTION
+    if jitter <= 0:
+        return base
+    delta = _random_uniform(-jitter, jitter)
+    return max(base + delta, 0.0)
 
 
 def register_adapter(name: str, adapter: AdapterCallable) -> None:
@@ -232,6 +255,7 @@ def synthesize(
     sleep = sleep_fn or time.sleep
     base_output_dir = output_dir or Path(tempfile.mkdtemp(prefix="tts_agent_"))
     base_output_dir.mkdir(parents=True, exist_ok=True)
+    text_chars = len(text)
 
     voice_id = _resolve_voice_id(voice_config, cfg)
     voice_profile = cfg.voices[voice_id]
@@ -249,6 +273,7 @@ def synthesize(
         max_cost_usd=max_cost_usd,
         provider_override=provider_override,
         enforce_fixture=enforced_fixture,
+        text_length=text_chars,
     )
     if not candidates:
         raise ProviderSelectionError("No providers available after applying constraints")
@@ -259,7 +284,7 @@ def synthesize(
             "plan_id": resolved_plan,
             "step_id": resolved_step,
             "run_id": resolved_run,
-            "text_chars": len(text),
+            "text_chars": text_chars,
             "voice_id": voice_id,
             "candidate_count": len(candidates),
         },
@@ -344,7 +369,8 @@ def synthesize(
                 if attempt >= attempts:
                     errors.append(f"provider {provider.provider_id} retry limit reached: {exc}")
                     break
-                sleep(max(policy.backoff_s, 0.0) * attempt)
+                delay = _compute_retry_delay(policy, attempt, exc.retry_after_s)
+                sleep(delay)
                 continue
             except Exception as exc:  # pragma: no cover - defensive fallback
                 last_exception = exc
@@ -365,11 +391,13 @@ def _build_candidate_list(
     max_cost_usd: Optional[float],
     provider_override: Optional[str],
     enforce_fixture: bool,
+    text_length: int,
 ) -> list[tuple[ProviderConfig, SelectionDecision]]:
     candidates: list[tuple[ProviderConfig, SelectionDecision]] = []
     weights = priority.weights
     override = provider_override.lower().strip() if provider_override else None
     required = {feat.lower() for feat in (required_features or [])}
+    text_length = max(text_length, 0)
 
     ordered_ids: list[str] = []
     if override:
@@ -398,11 +426,19 @@ def _build_candidate_list(
             continue
         if max_latency_s is not None and provider.estimated_latency_s > max_latency_s:
             continue
-        if max_cost_usd is not None and provider.estimated_cost_usd_per_1k_chars > max_cost_usd:
+        per_request_cost = provider.estimated_cost_usd_per_1k_chars * (text_length / 1000.0)
+        if max_cost_usd is not None and per_request_cost > max_cost_usd:
             continue
         score, breakdown = _score_provider(provider, weights)
-        reason = "override" if override and provider.provider_id.lower() == override else "weighted"
-        decision = SelectionDecision(provider.provider_id, score, breakdown, reason)
+        override_hit = override in {provider.provider_id.lower(), provider.fixture_alias.lower()} if override else False
+        reason = "override" if override_hit else "weighted"
+        decision = SelectionDecision(
+            provider_id=provider.provider_id,
+            score=score,
+            breakdown=breakdown,
+            reason=reason,
+            estimated_cost_usd=round(per_request_cost, 4),
+        )
         candidates.append((provider, decision))
 
     candidates.sort(key=lambda item: item[1].score, reverse=True)
@@ -523,6 +559,9 @@ def _build_artifact_metadata(
         "text_characters": len(total_text),
         "attempt": attempt,
         "score_breakdown": dict(selection.breakdown),
+        "selection_reason": selection.reason,
+        "selection_score": selection.score,
+        "estimated_cost_usd": selection.estimated_cost_usd,
         "adapter_metadata": dict(result.metadata),
     }
     metadata.setdefault("model_id", request.provider.display_name)
