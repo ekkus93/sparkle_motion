@@ -9,7 +9,10 @@ authors = [ { name = "ekkus93" } ]
 
 # Runtime dependencies are intentionally minimal here; optional features are provided via
 # `project.optional-dependencies` so maintainers can opt-in to ADK runtime packages.
-dependencies = []
+dependencies = [
+  "Pillow>=10.0.0",
+  "ImageHash>=4.3.1",
+]
 
 [project.optional-dependencies]
 # Optional dependencies for ADK runtime integration. Replace the package name/version

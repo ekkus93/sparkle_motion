@@ -69,12 +69,14 @@ def test_render_batches_preserve_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_render_dedupe_within_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    duplicate_payload = b"duplicate"
+    duplicate_payload = b"duplicate-0"
+    duplicate_payload_variant = b"duplicate-1"
+    dup_phash = "abcdabcdabcdabcd"
     responses = [[
-        {"data": b"unique-0", "metadata": {}},
-        {"data": duplicate_payload, "metadata": {}},
-        {"data": duplicate_payload, "metadata": {}},
-        {"data": b"unique-3", "metadata": {}},
+        {"data": b"unique-0", "metadata": {"phash": "1111111111111111"}},
+        {"data": duplicate_payload, "metadata": {"phash": dup_phash}},
+        {"data": duplicate_payload_variant, "metadata": {"phash": dup_phash}},
+        {"data": b"unique-3", "metadata": {"phash": "2222222222222222"}},
     ]]
 
     _install_fake_renderer(monkeypatch, responses)
@@ -92,8 +94,62 @@ def test_render_dedupe_within_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result[2]["metadata"].get("deduped") is True
     assert result[2]["duplicate_of"] == canonical
     assert "data" not in result[2]
-    digest = compute_hash(duplicate_payload)
-    assert recent.get(digest) == canonical
+    assert recent.get(dup_phash) == canonical
+
+
+def test_render_dedupe_threshold_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    near_match = "0000000000000000"
+    slight_variant = "000000000000000f"
+    responses = [
+        [
+            {"data": b"first", "metadata": {"phash": near_match}},
+            {"data": b"second", "metadata": {"phash": slight_variant}},
+        ],
+        [
+            {"data": b"first", "metadata": {"phash": near_match}},
+            {"data": b"second", "metadata": {"phash": slight_variant}},
+        ],
+    ]
+    _install_fake_renderer(monkeypatch, responses)
+
+    strict = images_agent.render(
+        "prompt",
+        {
+            "count": 2,
+            "dedupe": True,
+            "dedupe_phash_threshold": 0,
+        },
+    )
+    assert strict[1]["metadata"].get("deduped") is None
+    assert "duplicate_of" not in strict[1]
+
+    tolerant = images_agent.render(
+        "prompt",
+        {
+            "count": 2,
+            "dedupe": True,
+            "dedupe_phash_threshold": 16,
+        },
+    )
+    assert tolerant[1]["metadata"].get("deduped") is True
+    assert tolerant[1]["duplicate_of"] == tolerant[0]["uri"]
+
+
+def test_render_invalid_dedupe_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - should not run
+        raise AssertionError("adapter should not be called")
+
+    monkeypatch.setattr(images_agent, "render_images", fake_render)
+
+    with pytest.raises(ValueError):
+        images_agent.render(
+            "prompt",
+            {
+                "count": 1,
+                "dedupe": True,
+                "dedupe_phash_threshold": -1,
+            },
+        )
 
 
 def test_render_without_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
