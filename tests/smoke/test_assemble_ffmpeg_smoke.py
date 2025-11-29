@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import shutil
+from typing import TYPE_CHECKING
+
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.assemble_ffmpeg.entrypoint import make_app
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
-def test_assemble_ffmpeg_smoke(monkeypatch, tmp_path):
+
+def test_assemble_ffmpeg_smoke(monkeypatch, tmp_path, deterministic_media_assets: MediaAssets):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
 
     clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"clipdata")
+    shutil.copyfile(deterministic_media_assets.video, clip)
 
     app = make_app()
     with TestClient(app) as client:

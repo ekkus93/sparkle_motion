@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 import pytest
 
@@ -21,6 +22,9 @@ from sparkle_motion.production_agent import (
 from sparkle_motion.ratelimit import RateLimitDecision
 from sparkle_motion.schemas import CharacterSpec, DialogueLine, MoviePlan, ShotSpec
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
+
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,7 +34,9 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_videos_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_videos_agent(
+    monkeypatch: pytest.MonkeyPatch, deterministic_media_assets: MediaAssets
+) -> None:
     def _fake_render(
         start_frames: Iterable[Any],
         end_frames: Iterable[Any],
@@ -49,7 +55,7 @@ def _stub_videos_agent(monkeypatch: pytest.MonkeyPatch) -> None:
             base.mkdir(parents=True, exist_ok=True)
             target = base / f"{options.get('shot_id', 'clip')}.mp4"
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"FAKE_VIDEO")
+        shutil.copyfile(deterministic_media_assets.video, target)
         if on_progress:
             event = {
                 "plan_id": options.get("plan_id"),
@@ -67,7 +73,9 @@ def _stub_videos_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_tts_agent(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
+def _stub_tts_agent(
+    monkeypatch: pytest.MonkeyPatch, deterministic_media_assets: MediaAssets
+) -> List[Dict[str, Any]]:
     calls: List[Dict[str, Any]] = []
 
     def _fake_synthesize(text: str, voice_config: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
@@ -75,7 +83,7 @@ def _stub_tts_agent(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
         output_dir.mkdir(parents=True, exist_ok=True)
         step_label = (kwargs.get("step_id") or "tts").replace(":", "_")
         dest = output_dir / f"{step_label}.wav"
-        dest.write_bytes(b"FAKE_TTS")
+        shutil.copyfile(deterministic_media_assets.audio, dest)
         voice_id = (voice_config or {}).get("voice_id", "default")
         voice_payload = {
             "voice_id": voice_id,

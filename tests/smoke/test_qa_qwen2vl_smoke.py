@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import base64
+from typing import TYPE_CHECKING
 
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import make_app
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
-def test_qa_qwen2vl_smoke(monkeypatch):
+
+def test_qa_qwen2vl_smoke(monkeypatch, deterministic_media_assets: MediaAssets):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("DETERMINISTIC", "1")
 
@@ -26,7 +30,7 @@ def test_qa_qwen2vl_smoke(monkeypatch):
             "frames": [
                 {
                     "id": "frame1",
-                    "data_b64": base64.b64encode(b"smoke frame").decode("ascii"),
+                    "data_b64": base64.b64encode(deterministic_media_assets.image.read_bytes()).decode("ascii"),
                 }
             ],
         }

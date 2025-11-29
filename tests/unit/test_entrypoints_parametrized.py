@@ -1,8 +1,15 @@
+from __future__ import annotations
+
 import base64
 import importlib
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 import pytest
 from fastapi.testclient import TestClient
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 # Parametrized list of tool entrypoint modules to test
 MODULES = [
@@ -17,7 +24,12 @@ MODULES = [
 
 
 @pytest.mark.parametrize("module_path", MODULES)
-def test_entrypoint_contract(module_path: str, monkeypatch, tmp_path: Path):
+def test_entrypoint_contract(
+    module_path: str,
+    monkeypatch,
+    tmp_path: Path,
+    deterministic_media_assets: MediaAssets,
+):
     """Shared test: ensure each entrypoint exposes RequestModel, can respond to
     /health, /ready and /invoke and writes an artifact under ARTIFACTS_DIR.
     """
@@ -44,7 +56,7 @@ def test_entrypoint_contract(module_path: str, monkeypatch, tmp_path: Path):
     ready_json = r.json()
     assert "ready" in ready_json and "shutting_down" in ready_json
 
-    payload = _build_payload(module_path, tmp_path)
+    payload = _build_payload(module_path, tmp_path, deterministic_media_assets)
     r = client.post("/invoke", json=payload)
     assert r.status_code == 200, r.text
     j = r.json()
@@ -71,10 +83,10 @@ def test_entrypoint_missing_prompt_returns_400(module_path: str, monkeypatch, tm
     assert r.status_code in (400, 422), f"unexpected status: {r.status_code} / {r.text}"
 
 
-def _build_payload(module_path: str, tmp_path: Path) -> dict:
+def _build_payload(module_path: str, tmp_path: Path, assets: MediaAssets) -> dict:
     if module_path.endswith("assemble_ffmpeg.entrypoint"):
         clip = tmp_path / "assemble_clip.mp4"
-        clip.write_bytes(b"clip")
+        clip.write_bytes(assets.video.read_bytes())
         return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
     if module_path.endswith("videos_wan.entrypoint"):
         return {
@@ -88,12 +100,12 @@ def _build_payload(module_path: str, tmp_path: Path) -> dict:
     if module_path.endswith("qa_qwen2vl.entrypoint"):
         return {
             "prompt": "param test",
-            "frames": [_frame_payload(b"qa param frame")],
+            "frames": [_frame_payload_from_path(assets.image)],
         }
     if module_path.endswith("lipsync_wav2lip.entrypoint"):
         return {
-            "face": _frame_payload(b"face-bytes") | {"id": None},
-            "audio": _frame_payload(b"audio-bytes") | {"id": None},
+            "face": _frame_payload_from_path(assets.video, frame_id=None),
+            "audio": _frame_payload_from_path(assets.audio, frame_id=None),
             "metadata": {"suite": "param"},
         }
     return {"prompt": "param test"}
@@ -103,9 +115,16 @@ def _build_missing_payload(module_path: str) -> dict:
     if module_path.endswith("assemble_ffmpeg.entrypoint"):
         return {"clips": []}
     if module_path.endswith("qa_qwen2vl.entrypoint"):
-        return {"frames": [_frame_payload(b"missing prompt frame")]}
+        return {"frames": [_frame_payload_from_bytes(b"missing prompt frame")]}
     return {}
 
 
-def _frame_payload(data: bytes) -> dict:
-    return {"id": "frame", "data_b64": base64.b64encode(data).decode("ascii")}
+def _frame_payload_from_path(path: Path, frame_id: str | None = "frame") -> dict:
+    return _frame_payload_from_bytes(path.read_bytes(), frame_id)
+
+
+def _frame_payload_from_bytes(data: bytes, frame_id: str | None = "frame") -> dict:
+    payload = {"data_b64": base64.b64encode(data).decode("ascii")}
+    if frame_id is not None:
+        payload["id"] = frame_id
+    return payload

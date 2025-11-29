@@ -1,11 +1,18 @@
+from __future__ import annotations
+
+import shutil
 from pathlib import Path
 import tempfile
+from typing import TYPE_CHECKING
 
 from sparkle_motion.gpu_utils import model_context
 from sparkle_motion.adapters.diffusers_adapter import DiffusersAdapter
 from sparkle_motion.adapters.wav2lip_adapter import Wav2LipAdapter
 from sparkle_motion.adapters.wan_adapter import WanAdapter
 from sparkle_motion.adapters.tts_adapter import TTSAdapter
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 def test_model_context_basic():
@@ -43,12 +50,12 @@ def test_wan_adapter_produces_mp4(tmp_path: Path):
     assert res.stat().st_size > 0
 
 
-def test_wav2lip_and_tts_adapters(tmp_path: Path):
+def test_wav2lip_and_tts_adapters(tmp_path: Path, deterministic_media_assets: MediaAssets):
     wav_adapter = Wav2LipAdapter(options={"fixture_only": True})
     face = tmp_path / "face.mp4"
     audio = tmp_path / "audio.wav"
-    face.write_bytes(b"face")
-    audio.write_bytes(b"audio")
+    shutil.copyfile(deterministic_media_assets.video, face)
+    shutil.copyfile(deterministic_media_assets.audio, audio)
     out1 = tmp_path / "lip.mp4"
     wav_adapter.run(face, audio, out1)
     assert out1.exists()

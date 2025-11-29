@@ -73,3 +73,20 @@ Notes
   shims to a maintained portable implementation. The project currently
   defaults to the POSIX implementation to avoid adding a runtime
   dependency for test fixtures.
+
+Deterministic media assets
+--------------------------
+- `tests/fixtures/assets/sample_image.png` — 32×32 RGB gradient used for
+  image/QA tests.
+- `tests/fixtures/assets/sample_audio.wav` — 0.35 s mono sine wave at
+  16 kHz for audio/TTS flows.
+- `tests/fixtures/assets/sample_video.mp4` — Wan adapter fixture payload
+  (seeded) suitable for video/publish tests.
+- `tests/fixtures/assets/sample_plan.json` — tiny MoviePlan-style JSON
+  referencing the media assets above.
+
+To regenerate the media assets run (from repo root):
+
+```bash
+PYTHONPATH=src python scripts/generate_fixture_assets.py
+```

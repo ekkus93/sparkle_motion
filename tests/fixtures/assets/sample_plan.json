@@ -1,0 +1,14 @@
+{
+  "plan_id": "fixture-plan-001",
+  "title": "Fixture Demo Plan",
+  "shots": [
+    {
+      "shot_id": "shot-1",
+      "prompt": "A calm river at sunrise",
+      "num_frames": 16,
+      "audio_ref": "tests/fixtures/assets/sample_audio.wav",
+      "video_ref": "tests/fixtures/assets/sample_video.mp4",
+      "image_ref": "tests/fixtures/assets/sample_image.png"
+    }
+  ]
+}

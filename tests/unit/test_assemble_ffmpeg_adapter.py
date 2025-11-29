@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import sys
+import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from sparkle_motion.function_tools.assemble_ffmpeg import adapter
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
-def test_fixture_assembly_creates_file(tmp_path, monkeypatch):
+
+def test_fixture_assembly_creates_file(tmp_path, monkeypatch, deterministic_media_assets: MediaAssets):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     clip_path = tmp_path / "clip.mp4"
-    clip_path.write_bytes(b"clip")
+    shutil.copyfile(deterministic_media_assets.video, clip_path)
 
     result = adapter.assemble_movie(
         clips=[adapter.ClipSpec(uri=clip_path)],

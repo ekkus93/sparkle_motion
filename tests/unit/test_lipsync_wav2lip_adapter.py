@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sparkle_motion.function_tools.lipsync_wav2lip import adapter
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
-def test_run_wav2lip_fixture_produces_file(tmp_path: Path) -> None:
+
+def test_run_wav2lip_fixture_produces_file(tmp_path: Path, deterministic_media_assets: MediaAssets) -> None:
     face = tmp_path / "face.mp4"
     audio = tmp_path / "audio.wav"
-    face.write_bytes(b"face-bytes")
-    audio.write_bytes(b"audio-bytes")
+    shutil.copyfile(deterministic_media_assets.video, face)
+    shutil.copyfile(deterministic_media_assets.audio, audio)
     out_path = tmp_path / "out.mp4"
 
     result = adapter.run_wav2lip(face, audio, out_path)
@@ -21,13 +26,13 @@ def test_run_wav2lip_fixture_produces_file(tmp_path: Path) -> None:
     assert result.logs["stdout"].startswith("fixture")
 
 
-def test_build_subprocess_command_includes_flags(tmp_path: Path) -> None:
+def test_build_subprocess_command_includes_flags(tmp_path: Path, deterministic_media_assets: MediaAssets) -> None:
     checkpoint = tmp_path / "wav2lip.pth"
     checkpoint.write_bytes(b"ckpt")
     face = tmp_path / "face.mp4"
     audio = tmp_path / "audio.wav"
-    face.write_bytes(b"face")
-    audio.write_bytes(b"audio")
+    shutil.copyfile(deterministic_media_assets.video, face)
+    shutil.copyfile(deterministic_media_assets.audio, audio)
     opts = {
         "pads": (0, 10, 0, 0),
         "resize_factor": 2,

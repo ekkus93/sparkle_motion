@@ -1,14 +1,23 @@
+from __future__ import annotations
+
+import shutil
 from pathlib import Path
 import subprocess
 from unittest import mock
+from typing import TYPE_CHECKING
 
 from sparkle_motion.assemble import assemble_clips, FFmpegError
 
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
-def test_assemble_clips_creates_output(tmp_path: Path, monkeypatch):
+
+def test_assemble_clips_creates_output(
+    tmp_path: Path, monkeypatch, deterministic_media_assets: MediaAssets
+):
     # Create dummy clip file
     clip = tmp_path / "clip1.mp4"
-    clip.write_bytes(b"DUMMYCLIP")
+    shutil.copyfile(deterministic_media_assets.video, clip)
     out = tmp_path / "final.mp4"
 
     # Patch subprocess.run to simulate ffmpeg success
@@ -20,9 +29,9 @@ def test_assemble_clips_creates_output(tmp_path: Path, monkeypatch):
         assert res.stat().st_size > 0
 
 
-def test_assemble_ffmpeg_failure(monkeypatch, tmp_path: Path):
+def test_assemble_ffmpeg_failure(monkeypatch, tmp_path: Path, deterministic_media_assets: MediaAssets):
     clip = tmp_path / "c.mp4"
-    clip.write_bytes(b"x")
+    shutil.copyfile(deterministic_media_assets.video, clip)
     out = tmp_path / "o.mp4"
 
     class Fake:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +10,9 @@ from sparkle_motion.function_tools.qa_qwen2vl import adapter
 from sparkle_motion.function_tools.qa_qwen2vl import entrypoint as qa_entrypoint
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import make_app
 from sparkle_motion.schemas import QAReport, QAReportPerShot
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 def test_health_endpoint():
@@ -67,14 +70,14 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def test_invoke_happy_path_returns_report(qa_client):
+def test_invoke_happy_path_returns_report(qa_client, deterministic_media_assets: MediaAssets):
     client, calls = qa_client
     payload = {
         "prompt": "spotlight scene",
         "frames": [
             {
                 "id": "frame1",
-                "data_b64": _b64(b"fake frame bytes"),
+                "data_b64": _b64(deterministic_media_assets.image.read_bytes()),
             }
         ],
         "metadata": {"plan_id": "plan-123"},
@@ -87,7 +90,7 @@ def test_invoke_happy_path_returns_report(qa_client):
     assert data["report"]["summary"] == "All frames good"
     assert data["artifact_uri"].startswith("file://")
     assert calls["prompts"] == ["spotlight scene"]
-    assert calls["frames"] == [b"fake frame bytes"]
+    assert calls["frames"] == [deterministic_media_assets.image.read_bytes()]
     assert calls["opts"]["frame_ids"] == ["frame1"]
 
 

@@ -61,7 +61,7 @@
 - [x] `videos_agent`
   - [x] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
   - [x] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
-- [ ] `tts_agent`
+- [x] `tts_agent`
   - [x] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
   - [x] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
 
@@ -117,11 +117,11 @@
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 
 ### P2 — Robustness, tooling, and docs
-- [ ] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
-  - [ ] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_agent` + `videos_agent` dedupe paths.
+- [x] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
+  - [x] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_agent` + `videos_agent` dedupe paths.
 - [x] `src/sparkle_motion/ratelimit.py`
   - [x] Implement lightweight token-bucket/queue scaffolding with single-user bypass + TODO for multi-tenant enablement.
-- [ ] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.
+- [x] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.
 - [ ] `docs/gpu_utils.md` — document `model_context` usage, device presets, telemetry expectations, and troubleshooting.
 - [x] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
 - [x] `db/schema/recent_index.sql` and `src/sparkle_motion/db/sqlite.py` — persist RecentIndex/MemoryService tables + helper functions.

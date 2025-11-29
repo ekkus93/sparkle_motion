@@ -3,7 +3,12 @@ import base64
 import os
 from pathlib import Path
 import importlib
+from typing import TYPE_CHECKING
+
 from fastapi.testclient import TestClient
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 FUNCTION_TOOL_MODULES = [
@@ -17,7 +22,7 @@ FUNCTION_TOOL_MODULES = [
 ]
 
 
-def test_function_tools_basic_smoke(monkeypatch):
+def test_function_tools_basic_smoke(monkeypatch, deterministic_media_assets: MediaAssets):
     # Put tools into deterministic/fixture mode so they don't try to call external ADK
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("DETERMINISTIC", "1")
@@ -52,7 +57,7 @@ def test_function_tools_basic_smoke(monkeypatch):
         assert "ready" in j
 
         # invoke - basic payload
-        payload = _payload_for_module(mod_path, artifacts_dir)
+        payload = _payload_for_module(mod_path, artifacts_dir, deterministic_media_assets)
         r = client.post("/invoke", json=payload)
         assert r.status_code == 200, f"invoke failed for {mod_path}: {r.text}"
         j = r.json()
@@ -88,10 +93,10 @@ def test_function_tools_basic_smoke(monkeypatch):
             assert isinstance(j["telemetry"], dict)
 
 
-def _payload_for_module(module_path: str, artifacts_dir: Path) -> dict[str, object]:
+def _payload_for_module(module_path: str, artifacts_dir: Path, assets: MediaAssets) -> dict[str, object]:
     if module_path.endswith("assemble_ffmpeg.entrypoint"):
         clip = artifacts_dir / "smoke_clip.mp4"
-        clip.write_bytes(b"clip")
+        clip.write_bytes(assets.video.read_bytes())
         return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
     if module_path.endswith("videos_wan.entrypoint"):
         return {
@@ -108,14 +113,14 @@ def _payload_for_module(module_path: str, artifacts_dir: Path) -> dict[str, obje
             "frames": [
                 {
                     "id": "frame-smoke",
-                    "data_b64": base64.b64encode(b"qa fixture smoke frame").decode("ascii"),
+                    "data_b64": base64.b64encode(assets.image.read_bytes()).decode("ascii"),
                 }
             ],
         }
     if module_path.endswith("lipsync_wav2lip.entrypoint"):
         return {
-            "face": {"data_b64": base64.b64encode(b"face-bytes").decode("ascii")},
-            "audio": {"data_b64": base64.b64encode(b"audio-bytes").decode("ascii")},
+            "face": {"data_b64": base64.b64encode(assets.video.read_bytes()).decode("ascii")},
+            "audio": {"data_b64": base64.b64encode(assets.audio.read_bytes()).decode("ascii")},
             "metadata": {"suite": "smoke"},
         }
     return {"prompt": "unit-test prompt"}

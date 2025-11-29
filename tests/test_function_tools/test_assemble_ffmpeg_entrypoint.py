@@ -1,9 +1,14 @@
 from __future__ import annotations
+import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.assemble_ffmpeg.entrypoint import app
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 def test_health_endpoint():
@@ -13,12 +18,12 @@ def test_health_endpoint():
     assert r.json().get("status") == "ok"
 
 
-def test_invoke_fixture_path(tmp_path, monkeypatch):
+def test_invoke_fixture_path(tmp_path, monkeypatch, deterministic_media_assets: MediaAssets):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
 
     clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"clipdata")
+    shutil.copyfile(deterministic_media_assets.video, clip)
 
     client = TestClient(app)
     payload = {

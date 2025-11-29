@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List
 
 import pytest
 import yaml
 
 from sparkle_motion import adk_helpers, tts_agent
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 @pytest.fixture(autouse=True)
@@ -105,7 +109,9 @@ def _provider_entry(
     }
 
 
-def test_provider_fallback_on_quota(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
+def test_provider_fallback_on_quota(
+    tmp_path: Path, publish_backend: List[Dict[str, Any]], deterministic_media_assets: MediaAssets
+) -> None:
     providers = {
         "fixture-local": _provider_entry(
             adapter="fixture_adapter",
@@ -136,7 +142,7 @@ def test_provider_fallback_on_quota(tmp_path: Path, publish_backend: List[Dict[s
     def _fixture_adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
         call_sequence.append(request.provider.provider_id)
         dest = request.output_dir / "fixture.wav"
-        dest.write_bytes(b"RIFFDATA")
+        shutil.copyfile(deterministic_media_assets.audio, dest)
         return tts_agent.AdapterResult(
             path=dest,
             duration_s=0.5,
@@ -171,7 +177,9 @@ def test_provider_fallback_on_quota(tmp_path: Path, publish_backend: List[Dict[s
     assert voice_meta["provider_id"] == "fixture-local"
 
 
-def test_retryable_error_retries_before_success(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
+def test_retryable_error_retries_before_success(
+    tmp_path: Path, publish_backend: List[Dict[str, Any]], deterministic_media_assets: MediaAssets
+) -> None:
     providers = {
         "fixture-local": _provider_entry(
             adapter="retry_adapter",
@@ -192,7 +200,7 @@ def test_retryable_error_retries_before_success(tmp_path: Path, publish_backend:
         if attempts["count"] == 1:
             raise tts_agent.TTSRetryableError("transient")
         dest = request.output_dir / "retry.wav"
-        dest.write_bytes(b"RIFFDATA")
+        shutil.copyfile(deterministic_media_assets.audio, dest)
         return tts_agent.AdapterResult(
             path=dest,
             duration_s=0.25,
@@ -226,7 +234,9 @@ def test_retryable_error_retries_before_success(tmp_path: Path, publish_backend:
     assert published_meta["voice_metadata"]["provider_voice_id"] == "retry-voice"
 
 
-def test_retryable_error_honors_retry_after(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
+def test_retryable_error_honors_retry_after(
+    tmp_path: Path, publish_backend: List[Dict[str, Any]], deterministic_media_assets: MediaAssets
+) -> None:
     providers = {
         "fixture-local": _provider_entry(
             adapter="retry_after_adapter",
@@ -247,7 +257,7 @@ def test_retryable_error_honors_retry_after(tmp_path: Path, publish_backend: Lis
         if attempts["count"] == 1:
             raise tts_agent.TTSRetryableError("backoff", retry_after_s=1.75)
         dest = request.output_dir / "retry-after.wav"
-        dest.write_bytes(b"RIFFDATA")
+        shutil.copyfile(deterministic_media_assets.audio, dest)
         return tts_agent.AdapterResult(
             path=dest,
             duration_s=0.3,
@@ -276,7 +286,9 @@ def test_retryable_error_honors_retry_after(tmp_path: Path, publish_backend: Lis
     assert artifact["metadata"]["voice_metadata"]["provider_voice_id"] == "retry-voice"
 
 
-def test_max_cost_filters_providers(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
+def test_max_cost_filters_providers(
+    tmp_path: Path, publish_backend: List[Dict[str, Any]], deterministic_media_assets: MediaAssets
+) -> None:
     providers = {
         "expensive": _provider_entry(
             adapter="expensive_adapter",
@@ -304,7 +316,7 @@ def test_max_cost_filters_providers(tmp_path: Path, publish_backend: List[Dict[s
     def _recording_adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
         call_sequence.append(request.provider.provider_id)
         dest = request.output_dir / f"{request.provider.provider_id}.wav"
-        dest.write_bytes(b"RIFFDATA")
+        shutil.copyfile(deterministic_media_assets.audio, dest)
         return tts_agent.AdapterResult(
             path=dest,
             duration_s=0.25,

@@ -1,12 +1,19 @@
+from __future__ import annotations
+
+import shutil
 import pytest
 from fastapi.testclient import TestClient
 from importlib import import_module
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 
 mod = import_module("sparkle_motion.function_tools.assemble_ffmpeg.entrypoint")
 RequestModel = getattr(mod, "RequestModel")
 make_app = getattr(mod, "make_app")
+
+if TYPE_CHECKING:
+    from tests.conftest import MediaAssets
 
 
 def test_request_model_requires_clips():
@@ -16,12 +23,12 @@ def test_request_model_requires_clips():
         RequestModel(clips=[])
 
 
-def test_invoke_returns_metadata(monkeypatch, tmp_path):
+def test_invoke_returns_metadata(monkeypatch, tmp_path, deterministic_media_assets: MediaAssets):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
 
     clip = tmp_path / "clip.mp4"
-    clip.write_bytes(b"clipdata")
+    shutil.copyfile(deterministic_media_assets.video, clip)
 
     app = make_app()
     client = TestClient(app)
