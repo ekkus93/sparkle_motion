@@ -37,3 +37,8 @@ def test_qa_qwen2vl_smoke(monkeypatch):
             assert data.get("status") == "success"
             uri = data.get("artifact_uri")
             assert uri
+            metadata = data.get("metadata") or {}
+            assert metadata.get("frame_ids") == ["frame1"]
+            assert "frames_detail" in metadata and len(metadata["frames_detail"]) == 1
+            assert metadata.get("policy", {}).get("prompt_match_min") is not None
+            assert "options_snapshot" in metadata

@@ -79,7 +79,7 @@
 - [x] `function_tools/videos_wan`
   - [x] Added deterministic MP4 fixture + Wan2.1 adapter shim using `gpu_utils.model_context()` with cache TTL + env-driven device maps.
   - [x] FastAPI entrypoint now validates structured payloads, publishes `videos_wan_clip` artifacts (metadata: plan/run IDs, chunk stats, local path), and honors `SMOKE_VIDEOS` / `SMOKE_ADAPTERS` / `VIDEOS_WAN_FIXTURE_ONLY` gating.
-- [ ] `function_tools/tts_chatterbox`
+- [x] `function_tools/tts_chatterbox`
   - [x] Add fixture implementation producing deterministic WAV bytes + metadata.
     - Implemented sine-wave fixture synthesis in `function_tools/tts_chatterbox/adapter.py` with deterministic seed + metadata (duration, sample rate, bit depth, watermark flag) for reproducible tests.
     - Entry point now emits WAV artifacts via `adk_helpers.publish_artifact()` and includes engine metadata plus local-path references for downstream agents.
@@ -89,8 +89,10 @@
   - [x] Author deterministic unit and entrypoint tests for the adapter.
     - Added `tests/unit/test_tts_chatterbox_adapter.py` covering fixture determinism, metadata contents, and adapter invocation plumbing.
     - Added `tests/test_function_tools/test_tts_chatterbox_entrypoint.py` verifying `/invoke` happy-path responses, artifact URIs, and local-path metadata under fixture mode.
-- [ ] `function_tools/qa_qwen2vl`
-  - [ ] Implement `inspect_frames(frames, prompts) -> QAReport` stub plus hooks for real Qwen-2-VL invocation later.
+- [x] `function_tools/qa_qwen2vl`
+  - Implemented adapter + FastAPI entrypoint with deterministic fixtures, Qwen2-VL invocation hooks, telemetry, and artifact publishing.
+  - CLI payload builder plus shared smoke/unit tests now cover prompt/frame validation, policy metadata, and human-review fallbacks.
+  - [x] Implement `inspect_frames(frames, prompts) -> QAReport` with structured Qwen2-VL inference, JSON parsing, and GPU model-context integration.
 - [x] `function_tools/assemble_ffmpeg`
   - [x] Implemented adapter with deterministic MP4 fixture + optional ffmpeg concat path, safe `run_command` wrapper, metadata (engine, plan_id, command tails) and FastAPI entrypoint publishing `video_final` artifacts.
 - [ ] `function_tools/lipsync_wav2lip`
@@ -104,11 +106,12 @@
 - [x] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
 - [x] `tests/unit/test_images_agent.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
 - [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
-- [ ] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
+- [x] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
 - [ ] `tests/unit/test_images_adapter.py`
 - [x] `tests/unit/test_videos_adapter.py` (fixture + env gating now covered by `tests/unit/test_videos_wan_adapter.py`)
-- [ ] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
-- [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
+- [x] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
+- [x] `tests/unit/test_qa_qwen2vl.py` — validate QA adapter structured parsing using mocked Qwen responses.
+- [ ] `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 
 ### P2 — Robustness, tooling, and docs

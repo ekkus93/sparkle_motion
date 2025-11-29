@@ -60,6 +60,13 @@ def test_function_tools_basic_smoke(monkeypatch):
         # expect an artifact_uri pointing to a file:// for fixture mode
         uri = j.get("artifact_uri") or j.get("artifactUri")
         assert uri is not None and uri.startswith("file://"), f"unexpected artifact uri for {mod_path}: {uri}"
+        if mod_path.endswith("qa_qwen2vl.entrypoint"):
+            metadata = j.get("metadata") or {}
+            assert metadata.get("frame_ids") == ["frame-smoke"], "missing frame_ids metadata"
+            assert "frames_detail" in metadata and len(metadata["frames_detail"]) == 1
+            policy = metadata.get("policy") or {}
+            assert policy.get("prompt_match_min") is not None
+            assert "options_snapshot" in metadata
         # optional checks when fixture mode writes files
         try:
             path = Path(uri[len("file://"):])
@@ -104,5 +111,11 @@ def _payload_for_module(module_path: str, artifacts_dir: Path) -> dict[str, obje
                     "data_b64": base64.b64encode(b"qa fixture smoke frame").decode("ascii"),
                 }
             ],
+        }
+    if module_path.endswith("lipsync_wav2lip.entrypoint"):
+        return {
+            "face": {"data_b64": base64.b64encode(b"face-bytes").decode("ascii")},
+            "audio": {"data_b64": base64.b64encode(b"audio-bytes").decode("ascii")},
+            "metadata": {"suite": "smoke"},
         }
     return {"prompt": "unit-test prompt"}

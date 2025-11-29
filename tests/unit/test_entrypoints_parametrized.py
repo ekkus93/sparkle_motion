@@ -90,6 +90,12 @@ def _build_payload(module_path: str, tmp_path: Path) -> dict:
             "prompt": "param test",
             "frames": [_frame_payload(b"qa param frame")],
         }
+    if module_path.endswith("lipsync_wav2lip.entrypoint"):
+        return {
+            "face": _frame_payload(b"face-bytes") | {"id": None},
+            "audio": _frame_payload(b"audio-bytes") | {"id": None},
+            "metadata": {"suite": "param"},
+        }
     return {"prompt": "param test"}
 
 

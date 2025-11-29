@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.qa_qwen2vl import adapter
+from sparkle_motion.function_tools.qa_qwen2vl import entrypoint as qa_entrypoint
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import make_app
 from sparkle_motion.schemas import QAReport, QAReportPerShot
 
@@ -87,6 +88,7 @@ def test_invoke_happy_path_returns_report(qa_client):
     assert data["artifact_uri"].startswith("file://")
     assert calls["prompts"] == ["spotlight scene"]
     assert calls["frames"] == [b"fake frame bytes"]
+    assert calls["opts"]["frame_ids"] == ["frame1"]
 
 
 def test_invoke_requires_prompt(qa_client):
@@ -134,4 +136,51 @@ def test_invoke_rejects_missing_file(qa_client, tmp_path):
     response = client.post("/invoke", json=payload)
     assert response.status_code == 400
     assert "not found" in response.json()["detail"]
+
+
+def test_invoke_respects_download_limits(qa_client):
+    client, _ = qa_client
+    oversized = b"x" * 2048
+    payload = {
+        "prompt": "ok",
+        "frames": [
+            {
+                "id": "frame1",
+                "data_b64": _b64(oversized),
+            }
+        ],
+        "options": {"max_download_bytes": 1024},
+    }
+    response = client.post("/invoke", json=payload)
+    assert response.status_code == 400
+    assert "max_download_bytes" in response.json()["detail"]
+
+
+def test_invoke_fetches_http_uri(monkeypatch, qa_client):
+    client, calls = qa_client
+    fetch_calls: Dict[str, Any] = {}
+
+    def _fake_fetch(uri: str, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
+        fetch_calls["uri"] = uri
+        fetch_calls["idx"] = idx
+        fetch_calls["max_bytes"] = max_bytes
+        fetch_calls["timeout_s"] = timeout_s
+        return b"http-bytes"
+
+    monkeypatch.setattr(qa_entrypoint, "_fetch_remote_bytes", _fake_fetch)
+
+    payload = {
+        "prompt": "remote",
+        "frames": [
+            {
+                "id": "frame-http",
+                "uri": "https://example.com/frame.png",
+            }
+        ],
+    }
+    response = client.post("/invoke", json=payload)
+    assert response.status_code == 200
+    assert calls["frames"] == [b"http-bytes"]
+    assert calls["opts"]["frame_ids"] == ["frame-http"]
+    assert fetch_calls["uri"].startswith("https://example.com")
 

@@ -3,8 +3,8 @@ import tempfile
 
 from sparkle_motion.gpu_utils import model_context
 from sparkle_motion.adapters.diffusers_adapter import DiffusersAdapter
-from sparkle_motion.adapters.wan_adapter import WanAdapter
 from sparkle_motion.adapters.wav2lip_adapter import Wav2LipAdapter
+from sparkle_motion.adapters.wan_adapter import WanAdapter
 from sparkle_motion.adapters.tts_adapter import TTSAdapter
 
 
@@ -44,9 +44,13 @@ def test_wan_adapter_produces_mp4(tmp_path: Path):
 
 
 def test_wav2lip_and_tts_adapters(tmp_path: Path):
-    wav_adapter = Wav2LipAdapter()
+    wav_adapter = Wav2LipAdapter(options={"fixture_only": True})
+    face = tmp_path / "face.mp4"
+    audio = tmp_path / "audio.wav"
+    face.write_bytes(b"face")
+    audio.write_bytes(b"audio")
     out1 = tmp_path / "lip.mp4"
-    wav_adapter.run(Path("in.mp4"), Path("in.wav"), out1)
+    wav_adapter.run(face, audio, out1)
     assert out1.exists()
 
     tts = TTSAdapter()

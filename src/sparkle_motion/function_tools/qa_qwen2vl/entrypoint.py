@@ -7,10 +7,12 @@ import logging
 import os
 import time
 import uuid
+import urllib.error
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Mapping, Tuple
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -24,6 +26,9 @@ from sparkle_motion.function_tools.qa_qwen2vl import adapter
 
 LOG = logging.getLogger("qa_qwen2vl.entrypoint")
 LOG.setLevel(logging.INFO)
+
+DEFAULT_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+DEFAULT_DOWNLOAD_TIMEOUT_S = 10.0
 
 
 def _safe_send_telemetry(event: str, payload: dict[str, Any]) -> None:
@@ -70,6 +75,14 @@ class OptionsModel(BaseModel):
     policy_path: str | None = None
     fixture_seed: int | None = None
     model_id: str | None = None
+    force_real_engine: bool | None = None
+    dtype: str | None = None
+    attention: str | None = None
+    min_pixels: int | None = Field(default=None, ge=64, le=4096)
+    max_pixels: int | None = Field(default=None, ge=64, le=6144)
+    cache_ttl_s: float | None = Field(default=None, ge=60.0, le=7200.0)
+    max_download_bytes: int | None = Field(default=None, ge=1024, le=50 * 1024 * 1024)
+    download_timeout_s: float | None = Field(default=None, ge=1.0, le=120.0)
     metadata: Dict[str, Any] | None = None
 
 
@@ -91,6 +104,12 @@ class RequestModel(BaseModel):
         if not has_prompt:
             raise ValueError("provide prompt either globally or per frame")
         return self
+
+
+def _options_to_dict(options: OptionsModel | None) -> Dict[str, Any]:
+    if not options:
+        return {}
+    return options.model_dump(exclude_none=True)
 
 
 class ResponseModel(BaseModel):
@@ -175,8 +194,11 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
-            frames, prompts = _materialize_frames(req)
-            adapter_opts = _build_adapter_opts(req)
+            options_dict = _options_to_dict(req.options)
+            download_limits = _download_limits(options_dict)
+            frames, prompts, frame_ids = _materialize_frames(req, download_limits=download_limits)
+            adapter_opts = _build_adapter_opts(req, options_dict)
+            adapter_opts["frame_ids"] = frame_ids
             try:
                 result = adapter.inspect_frames(frames, prompts, opts=adapter_opts)
             except adapter.QAWiringError as exc:
@@ -217,41 +239,88 @@ def _ensure_ready(app: FastAPI) -> None:
     raise HTTPException(status_code=503, detail="tool not ready")
 
 
-def _materialize_frames(req: RequestModel) -> tuple[list[bytes], list[str]]:
+def _materialize_frames(req: RequestModel, *, download_limits: Tuple[int, float]) -> tuple[list[bytes], list[str], list[str]]:
+    max_bytes, timeout_s = download_limits
     frames: list[bytes] = []
     prompts: list[str] = []
+    frame_ids: list[str] = []
     default_prompt = (req.prompt or "").strip()
     for idx, frame in enumerate(req.frames):
         prompt = (frame.prompt or default_prompt).strip()
         if not prompt:
             raise HTTPException(status_code=400, detail=f"frame[{idx}] missing prompt")
-        frames.append(_decode_frame(frame, idx))
+        frame_id = (frame.id or f"frame_{idx:04d}").strip() or f"frame_{idx:04d}"
+        frames.append(_decode_frame(frame, idx, max_bytes=max_bytes, timeout_s=timeout_s))
         prompts.append(prompt)
-    return frames, prompts
+        frame_ids.append(frame_id)
+    return frames, prompts, frame_ids
 
 
-def _decode_frame(frame: FramePayload, idx: int) -> bytes:
+def _download_limits(options: Mapping[str, Any]) -> Tuple[int, float]:
+    max_bytes = int(options.get("max_download_bytes") or os.environ.get("QA_QWEN2VL_MAX_DOWNLOAD_BYTES") or DEFAULT_MAX_DOWNLOAD_BYTES)
+    timeout_s = float(options.get("download_timeout_s") or os.environ.get("QA_QWEN2VL_DOWNLOAD_TIMEOUT_S") or DEFAULT_DOWNLOAD_TIMEOUT_S)
+    max_bytes = max(1024, max_bytes)
+    timeout_s = max(1.0, timeout_s)
+    return max_bytes, timeout_s
+
+
+def _decode_frame(frame: FramePayload, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
     if frame.data_base64:
         try:
-            return base64.b64decode(frame.data_base64, validate=True)
+            data = base64.b64decode(frame.data_base64, validate=True)
         except binascii.Error as exc:
             raise HTTPException(status_code=400, detail=f"frame[{idx}] data_base64 invalid") from exc
+        if len(data) > max_bytes:
+            raise HTTPException(status_code=400, detail=f"frame[{idx}] exceeds max_download_bytes ({len(data)} > {max_bytes})")
+        return data
     if frame.uri:
-        return _read_frame_uri(frame.uri, idx)
+        return _read_frame_uri(frame.uri, idx, max_bytes=max_bytes, timeout_s=timeout_s)
     raise HTTPException(status_code=400, detail=f"frame[{idx}] missing data")
 
 
-def _read_frame_uri(uri: str, idx: int) -> bytes:
+def _read_frame_uri(uri: str, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
     parsed = urlparse(uri)
     if parsed.scheme in ("", "file"):
         path = Path(parsed.path if parsed.scheme else uri).expanduser()
         if not path.exists():
             raise HTTPException(status_code=400, detail=f"frame[{idx}] not found: {path}")
+        size = path.stat().st_size
+        if size > max_bytes:
+            raise HTTPException(status_code=400, detail=f"frame[{idx}] exceeds max_download_bytes ({size} > {max_bytes})")
         return path.read_bytes()
+    if parsed.scheme in ("http", "https"):
+        return _fetch_remote_bytes(uri, idx, max_bytes=max_bytes, timeout_s=timeout_s)
     raise HTTPException(status_code=400, detail=f"frame[{idx}] unsupported uri scheme {parsed.scheme}")
 
 
-def _build_adapter_opts(req: RequestModel) -> Dict[str, Any]:
+def _fetch_remote_bytes(uri: str, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
+    request = urllib.request.Request(uri, headers={"User-Agent": "sparkle-motion-qa/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # nosec - controlled destination
+            length = getattr(response, "length", None)
+            if length and length > max_bytes:
+                raise HTTPException(status_code=400, detail=f"frame[{idx}] exceeds max_download_bytes ({length} > {max_bytes})")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                budget = max(1, min(65536, max_bytes - total))
+                chunk = response.read(budget)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=400, detail=f"frame[{idx}] exceeds max_download_bytes ({total} > {max_bytes})")
+                chunks.append(chunk)
+            return b"".join(chunks)
+    except HTTPException:
+        raise
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=400, detail=f"frame[{idx}] download failed: {exc.reason}") from exc
+    except Exception as exc:  # pragma: no cover - unexpected network issues
+        raise HTTPException(status_code=400, detail=f"frame[{idx}] download failed: {exc}") from exc
+
+
+def _build_adapter_opts(req: RequestModel, options_dict: Dict[str, Any]) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "plan_id": req.plan_id,
         "run_id": req.run_id,
@@ -259,19 +328,14 @@ def _build_adapter_opts(req: RequestModel) -> Dict[str, Any]:
         "movie_title": req.movie_title,
         "metadata": dict(req.metadata or {}),
     }
-    if req.options:
-        if req.options.fixture_only is not None:
-            opts["fixture_only"] = req.options.fixture_only
-        if req.options.max_new_tokens is not None:
-            opts["max_new_tokens"] = req.options.max_new_tokens
-        if req.options.policy_path:
-            opts["policy_path"] = req.options.policy_path
-        if req.options.fixture_seed is not None:
-            opts["fixture_seed"] = req.options.fixture_seed
-        if req.options.model_id:
-            opts["model_id"] = req.options.model_id
-        if req.options.metadata:
-            opts.setdefault("metadata", {}).update(req.options.metadata)
+    options_copy = dict(options_dict)
+    options_metadata = options_copy.pop("metadata", None)
+    if isinstance(options_metadata, dict):
+        opts.setdefault("metadata", {}).update(options_metadata)
+    for key, value in options_copy.items():
+        if key in {"max_download_bytes", "download_timeout_s"}:
+            continue
+        opts[key] = value
     return opts
 
 

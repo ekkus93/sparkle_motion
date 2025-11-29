@@ -1,4 +1,6 @@
 from __future__ import annotations
+import base64
+
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.lipsync_wav2lip.entrypoint import app
@@ -16,7 +18,10 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
 
     client = TestClient(app)
-    payload = {"prompt": "test prompt"}
+    payload = {
+        "face": {"data_b64": base64.b64encode(b"face-bytes").decode("ascii")},
+        "audio": {"data_b64": base64.b64encode(b"audio-bytes").decode("ascii")},
+    }
     r = client.post("/invoke", json=payload)
     assert r.status_code == 200
     data = r.json()

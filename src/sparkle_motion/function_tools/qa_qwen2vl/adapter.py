@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -24,6 +25,13 @@ BANNED_KEYWORDS = {"weapon", "blood", "violent", "nudity", "gore", "nsfw", "hate
 DEFAULT_MODEL_ID = "Qwen/Qwen2-VL-7B-Instruct"
 REPO_ROOT = Path(__file__).resolve().parents[3].parent
 DEFAULT_POLICY_PATH = REPO_ROOT / "configs" / "qa_policy.yaml"
+QWEN_RESPONSE_INSTRUCTION = (
+    "You are a safety QA reviewer for animation workflows. Compare each frame to the provided prompt "
+    "and respond ONLY with strict JSON using this schema: {\"prompt_match\": float 0-1, \"finger_issues\": bool, "
+    "\"finger_issue_ratio\": float 0-1, \"safety_violation\": bool, \"missing_audio_detected\": bool, "
+    "\"artifact_notes\": array of short strings, \"issues\": array of short strings}."
+    " Do not include prose, markdown fences, or explanations outside the JSON object."
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,12 @@ class QAWiringError(RuntimeError):
     """Raised when real Qwen inference cannot be executed."""
 
 
+@dataclass(frozen=True)
+class EngineDecision:
+    use_real: bool
+    reason: str
+
+
 def inspect_frames(
     frames: Sequence[bytes],
     prompts: Sequence[str],
@@ -71,11 +85,29 @@ def inspect_frames(
     if not frames:
         raise ValueError("frames must be non-empty")
     options = dict(opts or {})
+    frame_ids = _normalize_frame_ids(options.pop("frame_ids", None), len(frames))
+    options_snapshot = _snapshot_options(options)
     prompts_list = _normalize_prompts(prompts, len(frames), options.get("prompt"))
     policy = _load_policy(options.get("policy_path"))
-    analyses, engine = _analyze_frames(frames, prompts_list, policy, options)
+    analyses, engine, engine_details, fallback_reason = _collect_analyses(
+        frames,
+        prompts_list,
+        frame_ids,
+        options,
+    )
     report = _build_report(analyses, policy, options)
-    metadata = _build_metadata(analyses, report, policy, options, engine)
+    metadata = _build_metadata(
+        analyses,
+        report,
+        policy,
+        options,
+        engine,
+        engine_details,
+        fallback_reason,
+        prompts_list,
+        frame_ids,
+        options_snapshot,
+    )
     artifact_path = _persist_report(report, metadata)
     artifact = adk_helpers.publish_artifact(
         local_path=artifact_path,
@@ -85,6 +117,8 @@ def inspect_frames(
         run_id=options.get("run_id"),
     )
     artifact_uri = artifact["uri"]
+    metadata["artifact_uri"] = artifact_uri
+    _write_report_payload(artifact_path, report, metadata)
     _log_memory_event(report, metadata, artifact_uri, options)
     human_task_id = None
     if report.decision == "escalate":
@@ -96,6 +130,7 @@ def inspect_frames(
             "frames": len(analyses),
             "artifact_uri": artifact_uri,
             "fixture": metadata.get("engine") == "qwen_fixture",
+            "fallback_reason": fallback_reason,
         },
     )
     return QAInspectionResult(
@@ -120,44 +155,109 @@ def _normalize_prompts(prompts: Sequence[str], frame_count: int, default_prompt:
     return [p or "unspecified scene" for p in prompts]
 
 
-def _analyze_frames(
+def _normalize_frame_ids(frame_ids: Optional[Sequence[str]], frame_count: int) -> list[str]:
+    if not frame_ids:
+        return [f"frame_{idx:04d}" for idx in range(frame_count)]
+    if len(frame_ids) != frame_count:
+        raise ValueError("frame_ids length must match frames length")
+    normalized: list[str] = []
+    for idx, frame_id in enumerate(frame_ids):
+        trimmed = (frame_id or "").strip()
+        normalized.append(trimmed or f"frame_{idx:04d}")
+    return normalized
+
+
+def _collect_analyses(
     frames: Sequence[bytes],
     prompts: Sequence[str],
-    policy: PolicyThresholds,
+    frame_ids: Sequence[str],
     options: Mapping[str, Any],
-) -> tuple[list[FrameAnalysis], str]:
-    use_real = _should_use_real_engine(options.get("fixture_only"))
-    if use_real:
+) -> tuple[list[FrameAnalysis], str, dict[str, Any], Optional[str]]:
+    decision = _decide_engine(options)
+    fallback_reason: Optional[str] = None
+    engine_details: dict[str, Any] = {}
+    if decision.use_real:
         try:
-            responses = _run_qwen(frames, prompts, options)
-            analyses = [_analysis_from_text(idx, prompt, resp) for idx, (prompt, resp) in enumerate(zip(prompts, responses))]
-            return analyses, "qwen2vl"
+            responses, engine_details = _run_qwen(frames, prompts, options, frame_ids)
+            analyses = [
+                _analysis_from_text(idx, frame_id, prompt, resp)
+                for idx, (frame_id, prompt, resp) in enumerate(zip(frame_ids, prompts, responses))
+            ]
+            engine_details.setdefault("engine_reason", decision.reason)
+            return analyses, "qwen2vl", engine_details, None
         except Exception as exc:  # pragma: no cover - real path optional
-            LOG.warning("Real Qwen inference failed; falling back to fixture: %s", exc)
+            fallback_reason = f"real_engine_error:{exc.__class__.__name__}"
+            LOG.warning("Real Qwen inference failed; falling back to fixture", exc_info=True)
+            telemetry.emit_event(
+                "qa_qwen2vl.real_engine_failed",
+                {"reason": fallback_reason, "frames": len(frames)},
+            )
+
     seed = int(options.get("fixture_seed") or 0)
     rng = random.Random(seed)
     analyses: list[FrameAnalysis] = []
-    for idx, (prompt, data) in enumerate(zip(prompts, frames)):
-        analyses.append(_fixture_analysis(idx, prompt, data, rng))
-    return analyses, "qwen_fixture"
+    for idx, (frame_id, prompt, data) in enumerate(zip(frame_ids, prompts, frames)):
+        analyses.append(_fixture_analysis(idx, frame_id, prompt, data, rng))
+    engine_details = {"fixture_seed": seed, "engine_reason": decision.reason}
+    if fallback_reason is None:
+        fallback_reason = decision.reason
+    return analyses, "qwen_fixture", engine_details, fallback_reason
 
 
-def _should_use_real_engine(force_fixture: Any) -> bool:
-    if isinstance(force_fixture, str):
-        if force_fixture.strip().lower() in TRUTHY:
-            return False
-    elif force_fixture is True:
-        return False
+def _decide_engine(options: Mapping[str, Any]) -> EngineDecision:
+    force_fixture = options.get("fixture_only")
+    if isinstance(force_fixture, str) and force_fixture.strip().lower() in TRUTHY:
+        return EngineDecision(False, "fixture_only_option")
+    if force_fixture is True:
+        return EngineDecision(False, "fixture_only_option")
+
     env = os.environ
     if env.get("ADK_USE_FIXTURE", "0").lower() in TRUTHY:
-        return False
+        return EngineDecision(False, "adk_fixture_env")
     if env.get("QA_QWEN2VL_FIXTURE_ONLY", "0").lower() in TRUTHY:
-        return False
-    flags = ("SMOKE_QA", "SMOKE_ADAPTERS", "SMOKE_ADK")
-    return any(env.get(flag, "0").lower() in TRUTHY for flag in flags)
+        return EngineDecision(False, "env_fixture_only")
+
+    force_real = options.get("force_real_engine")
+    if force_real is None:
+        force_real = env.get("QA_QWEN2VL_FORCE_REAL")
+    if _coerce_bool(force_real):
+        return EngineDecision(True, "force_real_flag")
+
+    if env.get("SMOKE_QA", "0").lower() in TRUTHY:
+        return EngineDecision(True, "smoke_qa")
+
+    return EngineDecision(False, "real_engine_disabled")
 
 
-def _fixture_analysis(idx: int, prompt: str, data: bytes, rng: random.Random) -> FrameAnalysis:
+def _snapshot_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    whitelist = {
+        "model_id",
+        "max_new_tokens",
+        "policy_path",
+        "fixture_seed",
+        "fixture_only",
+        "force_real_engine",
+        "dtype",
+        "attention",
+        "min_pixels",
+        "max_pixels",
+        "cache_ttl_s",
+    }
+    snapshot: dict[str, Any] = {}
+    for key in whitelist:
+        if key in options and options[key] is not None:
+            snapshot[key] = options[key]
+    return snapshot
+
+
+def _safe_frame_filename(frame_id: str, idx: int) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]", "_", frame_id).strip("._")
+    if not slug:
+        slug = f"frame_{idx:04d}"
+    return slug[:48]
+
+
+def _fixture_analysis(idx: int, frame_id: str, prompt: str, data: bytes, rng: random.Random) -> FrameAnalysis:
     digest = hashlib.sha256(data + prompt.encode("utf-8") + idx.to_bytes(2, "big")).hexdigest()
     prompt_match = ((int(digest[:4], 16) % 1000) / 1000.0)
     finger_ratio = ((int(digest[4:8], 16) % 100) / 100.0)
@@ -168,7 +268,6 @@ def _fixture_analysis(idx: int, prompt: str, data: bytes, rng: random.Random) ->
         artifact_notes.append("noticeable artifact near subject boundary")
     missing_audio = False
     finger_issues = finger_ratio > 0.5
-    frame_id = f"frame_{idx:04d}"
     return FrameAnalysis(
         index=idx,
         frame_id=frame_id,
@@ -182,7 +281,10 @@ def _fixture_analysis(idx: int, prompt: str, data: bytes, rng: random.Random) ->
     )
 
 
-def _analysis_from_text(idx: int, prompt: str, response: str) -> FrameAnalysis:
+def _analysis_from_text(idx: int, frame_id: str, prompt: str, response: str) -> FrameAnalysis:
+    structured = _parse_structured_response(response)
+    if structured:
+        return _analysis_from_structured(idx, frame_id, prompt, structured)
     text = response.lower()
     prompt_match = 0.9 if "matches" in text else 0.7
     if "deviates" in text or "mismatch" in text:
@@ -196,7 +298,7 @@ def _analysis_from_text(idx: int, prompt: str, response: str) -> FrameAnalysis:
     missing_audio = "audio" in text and "missing" in text
     return FrameAnalysis(
         index=idx,
-        frame_id=f"frame_{idx:04d}",
+        frame_id=frame_id,
         prompt=prompt,
         prompt_match=round(prompt_match, 4),
         finger_issues=finger_issues,
@@ -207,7 +309,89 @@ def _analysis_from_text(idx: int, prompt: str, response: str) -> FrameAnalysis:
     )
 
 
-def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[str, Any]) -> list[str]:  # pragma: no cover - heavy path
+def _analysis_from_structured(idx: int, frame_id: str, prompt: str, payload: Mapping[str, Any]) -> FrameAnalysis:
+    prompt_match = _clamp_float(payload.get("prompt_match") or payload.get("prompt_match_score"), default=0.75)
+    finger_ratio = _clamp_float(payload.get("finger_issue_ratio"), default=0.1)
+    finger_issues = _coerce_bool(payload.get("finger_issues"))
+    safety_violation = _coerce_bool(payload.get("safety_violation"))
+    missing_audio = _coerce_bool(payload.get("missing_audio_detected") or payload.get("missing_audio"))
+    artifact_notes = _string_list(payload.get("artifact_notes"))
+    if not artifact_notes:
+        artifact_notes = _string_list(payload.get("issues"))
+    if not artifact_notes and _coerce_bool(payload.get("artifact_flag")):
+        artifact_notes = ["model flagged a potential artifact"]
+    return FrameAnalysis(
+        index=idx,
+        frame_id=frame_id,
+        prompt=prompt,
+        prompt_match=prompt_match,
+        finger_issues=finger_issues or finger_ratio > 0.5,
+        finger_issue_ratio=finger_ratio,
+        safety_violation=safety_violation,
+        missing_audio_detected=missing_audio,
+        artifact_notes=artifact_notes,
+    )
+
+
+def _parse_structured_response(response: str) -> Mapping[str, Any] | None:
+    if not response:
+        return None
+    text = response.strip()
+    if not text:
+        return None
+    if "```" in text:
+        segments = [seg.strip() for seg in re.split(r"```(?:json)?", text) if seg.strip()]
+        if segments:
+            text = segments[-1]
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    candidate = match.group(0)
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, Mapping) else None
+
+
+def _clamp_float(value: Any, *, default: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return round(default, 4)
+    return round(max(lo, min(hi, as_float)), 4)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in TRUTHY
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Sequence):
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                trimmed = item.strip()
+                if trimmed:
+                    result.append(trimmed)
+        return result
+    return []
+
+
+def _run_qwen(
+    frames: Sequence[bytes],
+    prompts: Sequence[str],
+    options: Mapping[str, Any],
+    frame_ids: Sequence[str],
+) -> tuple[list[str], dict[str, Any]]:  # pragma: no cover - heavy path
     try:
         import torch
         from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
@@ -216,11 +400,11 @@ def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[
         raise QAWiringError("transformers[qwen2-vl] and qwen-vl-utils are required for real inference") from exc
 
     model_id = options.get("model_id") or os.environ.get("QA_QWEN2VL_MODEL", DEFAULT_MODEL_ID)
-    dtype_name = os.environ.get("QA_QWEN2VL_DTYPE", "auto")
-    attn_impl = os.environ.get("QA_QWEN2VL_ATTN", "flash_attention_2")
+    dtype_name = options.get("dtype") or os.environ.get("QA_QWEN2VL_DTYPE", "auto")
+    attn_impl = options.get("attention") or os.environ.get("QA_QWEN2VL_ATTN", "flash_attention_2")
     max_new_tokens = int(options.get("max_new_tokens") or os.environ.get("QA_QWEN2VL_MAX_TOKENS", 160))
-    min_pixels = int(os.environ.get("QA_QWEN2VL_PIXELS_MIN", 256))
-    max_pixels = int(os.environ.get("QA_QWEN2VL_PIXELS_MAX", 1024))
+    min_pixels = int(options.get("min_pixels") or os.environ.get("QA_QWEN2VL_PIXELS_MIN", 256))
+    max_pixels = int(options.get("max_pixels") or os.environ.get("QA_QWEN2VL_PIXELS_MAX", 1024))
 
     def _loader():
         torch_dtype = getattr(torch, dtype_name, torch.bfloat16 if dtype_name == "auto" else torch.float16)
@@ -237,8 +421,17 @@ def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[
         )
         return _QwenRuntime(model=model, processor=processor)
 
-    cache_ttl = float(os.environ.get("QA_QWEN2VL_CACHE_TTL", 900))
+    cache_ttl = float(options.get("cache_ttl_s") or os.environ.get("QA_QWEN2VL_CACHE_TTL", 900))
     responses: list[str] = []
+    engine_details = {
+        "model_id": model_id,
+        "dtype": dtype_name,
+        "attention": attn_impl,
+        "max_new_tokens": max_new_tokens,
+        "min_pixels": min_pixels,
+        "max_pixels": max_pixels,
+        "cache_ttl_s": cache_ttl,
+    }
 
     with gpu_utils.model_context(
         f"qa_qwen2vl::{model_id}",
@@ -249,8 +442,9 @@ def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[
     ) as ctx:
         runtime: _QwenRuntime = ctx.pipeline
         with tempfile.TemporaryDirectory(prefix="qa_qwen2vl_") as tmp:
-            for idx, (frame_bytes, prompt) in enumerate(zip(frames, prompts)):
-                frame_path = Path(tmp) / f"frame_{idx:04d}.png"
+            for idx, (frame_bytes, prompt, frame_id) in enumerate(zip(frames, prompts, frame_ids)):
+                safe_name = _safe_frame_filename(frame_id, idx)
+                frame_path = Path(tmp) / f"{safe_name}.png"
                 frame_path.write_bytes(frame_bytes)
                 message = [
                     {
@@ -260,10 +454,8 @@ def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[
                             {
                                 "type": "text",
                                 "text": (
-                                    "You are a safety QA reviewer. Given the provided prompt and frame, "
-                                    "answer whether the frame matches the prompt, any safety issues, and"
-                                    " mention artifacts if present. Prompt: "
-                                    f"{prompt}"
+                                    f"{QWEN_RESPONSE_INSTRUCTION}\nPrompt: {prompt}\n"
+                                    "Return JSON immediately with no additional narrative."
                                 ),
                             },
                         ],
@@ -282,7 +474,7 @@ def _run_qwen(frames: Sequence[bytes], prompts: Sequence[str], options: Mapping[
                 trimmed = output[:, inputs["input_ids"].shape[-1] :]
                 decoded = runtime.processor.batch_decode(trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 responses.append(decoded[0])
-    return responses
+    return responses, engine_details
 
 
 @dataclass
@@ -348,21 +540,35 @@ def _build_metadata(
     policy: PolicyThresholds,
     options: Mapping[str, Any],
     engine: str,
+    engine_details: Mapping[str, Any],
+    fallback_reason: Optional[str],
+    prompts: Sequence[str],
+    frame_ids: Sequence[str],
+    options_snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
+    prompt_list = list(prompts)
     metadata: dict[str, Any] = {
         "engine": engine,
+        "engine_details": dict(engine_details),
         "plan_id": options.get("plan_id"),
         "run_id": options.get("run_id"),
         "step_id": options.get("step_id"),
         "frames": len(analyses),
         "decision": report.decision,
         "issues_found": report.issues_found,
+        "options_snapshot": dict(options_snapshot),
+        "frame_ids": list(frame_ids),
+        "prompt_preview": prompt_list[: min(len(prompt_list), 3)],
+        "artifact_uri": None,
         "policy": {
             "prompt_match_min": policy.prompt_match_min,
             "max_finger_issue_ratio": policy.max_finger_issue_ratio,
             "allow_missing_audio": policy.allow_missing_audio,
+            "min_audio_peak_db": policy.min_audio_peak_db,
         },
     }
+    if fallback_reason:
+        metadata["fallback_reason"] = fallback_reason
     frame_meta: list[dict[str, Any]] = []
     for analysis in analyses:
         frame_meta.append(
@@ -386,12 +592,16 @@ def _persist_report(report: QAReport, metadata: Mapping[str, Any]) -> Path:
     target_dir = _artifact_dir()
     filename = f"qa_report_{int(time.time())}_{hashlib.sha1(json.dumps(metadata, sort_keys=True).encode('utf-8')).hexdigest()[:8]}.json"
     path = target_dir / filename
+    _write_report_payload(path, report, metadata)
+    return path
+
+
+def _write_report_payload(path: Path, report: QAReport, metadata: Mapping[str, Any]) -> None:
     payload = {
         "report": report.model_dump(mode="json"),
         "metadata": metadata,
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
 
 
 def _artifact_dir() -> Path:
