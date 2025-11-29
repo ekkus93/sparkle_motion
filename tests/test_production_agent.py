@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 import pytest
+
+import sparkle_motion.production_agent as production_agent
 
 from sparkle_motion.images_agent import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
@@ -23,6 +25,43 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SMOKE_ADAPTERS", raising=False)
     monkeypatch.delenv("SMOKE_TTS", raising=False)
     monkeypatch.delenv("SMOKE_LIPSYNC", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_videos_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_render(
+        start_frames: Iterable[Any],
+        end_frames: Iterable[Any],
+        prompt: str,
+        opts: Optional[Mapping[str, Any]] = None,
+        *,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        _adapter: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        options = dict(opts or {})
+        output_path_value = options.get("output_path")
+        if output_path_value:
+            target = Path(output_path_value)
+        else:
+            base = Path(options.get("output_dir") or os.getcwd())
+            base.mkdir(parents=True, exist_ok=True)
+            target = base / f"{options.get('shot_id', 'clip')}.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"FAKE_VIDEO")
+        if on_progress:
+            event = {
+                "plan_id": options.get("plan_id"),
+                "step_id": options.get("step_id"),
+                "chunk_index": 0,
+                "progress": 0.5,
+            }
+            on_progress(event)
+        return {
+            "uri": f"file://{target.name}",
+            "metadata": {"source_path": str(target), "prompt": prompt, "frames": len(list(start_frames))},
+        }
+
+    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _fake_render)
 
 
 @pytest.fixture
@@ -117,6 +156,47 @@ def test_retry_behavior(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan,
     assert image_records[0].attempts == 2
 
 
+def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    shot = sample_plan.shots[0]
+    plan_id = "plan-meta"
+    run_id = "run-456"
+    monkeypatch.setenv("VIDEOS_AGENT_DEFAULT_FPS", "12")
+    expected_path = tmp_path / "video" / f"{shot.id}.mp4"
+
+    captured: Dict[str, Any] = {}
+
+    def _capture(
+        start_frames: Iterable[bytes],
+        end_frames: Iterable[bytes],
+        prompt: str,
+        opts: Optional[Mapping[str, Any]] = None,
+        *,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        _adapter: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        captured["start_frames"] = list(start_frames)
+        captured["end_frames"] = list(end_frames)
+        captured["prompt"] = prompt
+        captured["opts"] = dict(opts or {})
+        return {"uri": f"file://{expected_path}", "metadata": {"source_path": str(expected_path)}}
+
+    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
+
+    result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id)
+
+    assert result_path == expected_path
+    assert captured["start_frames"][0] == shot.start_frame_prompt.encode("utf-8")
+    assert captured["end_frames"][0] == shot.end_frame_prompt.encode("utf-8")
+    assert captured["prompt"] == shot.visual_description
+    opts = captured["opts"]
+    assert opts["plan_id"] == plan_id
+    assert opts["run_id"] == run_id
+    assert opts["shot_id"] == shot.id
+    assert opts["output_path"].endswith(f"{shot.id}.mp4")
+    expected_frames = int(round(shot.duration_sec * 12))
+    assert opts["num_frames"] == expected_frames
+
+
 def test_progress_callback_invoked(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
     seen: List[StepExecutionRecord] = []
@@ -127,6 +207,27 @@ def test_progress_callback_invoked(monkeypatch: pytest.MonkeyPatch, sample_plan:
     execute_plan(sample_plan, mode="run", progress_callback=on_progress)
     assert seen
     assert all(isinstance(record, StepExecutionRecord) for record in seen)
+
+
+def test_video_progress_forwarded(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    seen: List[StepExecutionRecord] = []
+
+    def on_progress(record: StepExecutionRecord) -> None:
+        seen.append(record)
+
+    execute_plan(sample_plan, mode="run", progress_callback=on_progress)
+
+    progress_records = [
+        record
+        for record in seen
+        if record.step_type == "video" and record.status == "running" and "videos_agent_progress" in record.meta
+    ]
+    assert progress_records, "Expected chunk progress records from videos_agent"
+    event_meta = progress_records[0].meta["videos_agent_progress"]
+    assert event_meta["chunk_index"] == 0
+    assert event_meta["progress"] == 0.5
 
 
 def _enable_full_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

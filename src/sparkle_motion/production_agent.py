@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Option
 
 from pydantic import ValidationError
 
-from . import adk_helpers, observability, telemetry
+from . import adk_helpers, observability, telemetry, videos_agent
 from .images_agent import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
 from .schemas import MoviePlan, ShotSpec
@@ -365,7 +365,7 @@ def _execute_shot(
         gate_flag=cfg.adapters_flag,
         cfg=cfg,
         progress_callback=progress_callback,
-        action=lambda: _render_video_clip(shot, output_dir),
+        action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, progress_callback),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
 
@@ -517,16 +517,52 @@ def _synthesize_dialogue(shot: ShotSpec, output_dir: Path) -> Path:
     return dest
 
 
-def _render_video_clip(shot: ShotSpec, output_dir: Path) -> Path:
-    dest = output_dir / "video" / f"{shot.id}.mp4"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+def _render_video_clip(
+    shot: ShotSpec,
+    output_dir: Path,
+    plan_id: str,
+    run_id: str,
+    progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
+) -> Path:
+    video_dir = output_dir / "video"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    dest = video_dir / f"{shot.id}.mp4"
+
+    fps = _default_video_fps()
+    num_frames = _estimate_frame_count(shot.duration_sec, fps)
+    prompt_parts = [shot.visual_description or "", shot.motion_prompt or ""]
+    prompt = " | ".join(part for part in prompt_parts if part) or f"Shot {shot.id}"
+
+    start_frames = [_encode_prompt_bytes(shot.start_frame_prompt)] if shot.start_frame_prompt else []
+    end_frames = [_encode_prompt_bytes(shot.end_frame_prompt)] if shot.end_frame_prompt else []
+
+    opts = {
+        "num_frames": num_frames,
+        "plan_id": plan_id,
+        "step_id": f"{shot.id}:video",
+        "run_id": run_id,
+        "output_path": str(dest),
+        "output_dir": str(video_dir),
         "shot_id": shot.id,
-        "duration_sec": shot.duration_sec,
-        "description": shot.visual_description,
     }
-    dest.write_bytes(json.dumps(payload).encode("utf-8"))
-    return dest
+
+    on_progress = None
+    if progress_callback:
+        on_progress = _video_progress_forwarder(
+            plan_id=plan_id,
+            step_id=f"{shot.id}:video",
+            progress_callback=progress_callback,
+        )
+
+    artifact = videos_agent.render_video(start_frames, end_frames, prompt, opts, on_progress=on_progress)
+    metadata = artifact.get("metadata") or {}
+    source_path = metadata.get("source_path")
+    local_path = Path(source_path) if source_path else dest
+    if not local_path.exists():
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if source_path is None:
+            local_path.write_bytes(json.dumps({"shot_id": shot.id, "plan_id": plan_id}).encode("utf-8"))
+    return local_path
 
 
 def _lipsync_clip(shot: ShotSpec, output_dir: Path) -> Path:
@@ -599,6 +635,50 @@ def _now_iso() -> str:
 
 def _to_iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _default_video_fps() -> int:
+    try:
+        value = int(os.environ.get("VIDEOS_AGENT_DEFAULT_FPS", "16"))
+    except ValueError:
+        value = 16
+    return max(1, value)
+
+
+def _estimate_frame_count(duration_sec: float, fps: int) -> int:
+    frames = int(round(duration_sec * fps))
+    if frames <= 0:
+        frames = fps
+    return max(1, frames)
+
+
+def _encode_prompt_bytes(value: str) -> bytes:
+    return value.encode("utf-8")
+
+
+def _video_progress_forwarder(
+    *,
+    plan_id: str,
+    step_id: str,
+    progress_callback: Callable[[StepExecutionRecord], None],
+) -> Callable[[videos_agent.CallbackEvent], None]:
+    def _forward(event: videos_agent.CallbackEvent) -> None:
+        record = StepExecutionRecord(
+            plan_id=plan_id,
+            step_id=step_id,
+            step_type="video",
+            status="running",
+            start_time=_now_iso(),
+            end_time=_now_iso(),
+            duration_s=0.0,
+            attempts=0,
+            meta={
+                "videos_agent_progress": dict(event),
+            },
+        )
+        progress_callback(record)
+
+    return _forward
 
 
 __all__ = [
