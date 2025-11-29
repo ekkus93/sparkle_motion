@@ -1,36 +1,71 @@
 from __future__ import annotations
-from typing import Any, Literal
-import re
-from pathlib import Path
-import os
-import json
-import logging
-import uuid
-import time
+
 import asyncio
-from threading import Lock
+import logging
+import os
+import time
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError, model_validator
+
+from sparkle_motion import adk_factory, adk_helpers, gpu_utils, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
-from sparkle_motion import adk_factory, observability, telemetry
+from sparkle_motion.function_tools.images_sdxl import adapter
 
 LOG = logging.getLogger("images_sdxl.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
+class ArtifactPayload(BaseModel):
+    artifact_uri: str
+    metadata: Dict[str, Any]
+
+
 class RequestModel(BaseModel):
-    # TODO: adjust fields for real schema
-    prompt: str
+    prompt: str = Field(min_length=1)
+    negative_prompt: str | None = None
+    prompt_2: str | None = None
+    negative_prompt_2: str | None = None
+    metadata: Dict[str, Any] | None = None
+    plan_id: str | None = None
+    run_id: str | None = None
+    batch_start: int = Field(default=0, ge=0)
+    count: int = Field(default=1, ge=1, le=8)
+    seed: int | None = None
+    width: int = Field(default=1024, ge=64, le=2048)
+    height: int = Field(default=1024, ge=64, le=2048)
+    steps: int = Field(default=30, ge=1, le=200)
+    cfg_scale: float = Field(default=7.5, ge=0.0, le=30.0)
+    sampler: str = Field(default="ddim", min_length=1)
+    denoising_start: float | None = Field(default=None, ge=0.0, le=1.0)
+    denoising_end: float | None = Field(default=None, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_prompt_and_dims(self) -> "RequestModel":
+        prompt = self.prompt.strip()
+        if not prompt:
+            raise ValueError("prompt must be non-empty")
+        self.prompt = prompt
+        if self.width % 8 or self.height % 8:
+            raise ValueError("width and height must be divisible by 8")
+        if self.denoising_start is not None and self.denoising_end is not None:
+            if self.denoising_end <= self.denoising_start:
+                raise ValueError("denoising_end must be greater than denoising_start")
+        return self
 
 
 class ResponseModel(BaseModel):
     status: Literal["success", "error"]
-    artifact_uri: str | None
     request_id: str
+    artifact_uri: str | None
+    artifacts: List[ArtifactPayload]
 
 
 def make_app() -> FastAPI:
@@ -135,80 +170,18 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
-            # minimal validation
-            if not getattr(req, "prompt", None):
-                raise HTTPException(status_code=400, detail="prompt required")
-
-            deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
-            artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
-            os.makedirs(artifacts_dir, exist_ok=True)
-
-            def _slugify(s: str) -> str:
-                s = s.strip()
-                s = re.sub(r"\s+", "_", s)
-                s = re.sub(r"[^A-Za-z0-9._-]", "", s)
-                return s[:80] or "artifact"
-
-            safe_name = _slugify(getattr(req, "prompt", "artifact"))
-            filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
-            local_path = os.path.join(artifacts_dir, filename)
+            payloads = _render_and_publish(req, request_id=request_id)
+            artifact_uri = payloads[0].artifact_uri if payloads else None
             try:
-                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
-            except Exception:
-                try:
-                    payload = json.dumps(req.dict(), ensure_ascii=False)
-                except Exception as e:
-                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
-                    raise HTTPException(status_code=500, detail="failed to serialize request")
-
-            try:
-                with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-            except Exception as e:
-                LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
-                raise HTTPException(status_code=500, detail="failed to persist artifact")
-
-            # publish using the shared ADK helpers if available, with safe fallbacks
-            artifact_uri = None
-            artifact_name = Path(local_path).name
-            try:
-                import sparkle_motion.adk_helpers as ah
-            except Exception:
-                ah = None
-
-            if ah is not None:
-                try:
-                    sdk_res = ah.probe_sdk()
-                    if sdk_res:
-                        adk_module, client = sdk_res
-                        try:
-                            artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
-                        except Exception:
-                            artifact_uri = None
-
-                    if not artifact_uri:
-                        try:
-                            artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
-                        except Exception:
-                            artifact_uri = None
-                except Exception:
-                    artifact_uri = None
-
-            # In test/fixture mode prefer a local file:// URI so tests can assert on files
-            if artifact_uri and os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            if not artifact_uri:
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            try:
-                send_telemetry("invoke.completed", {"tool": "images_sdxl", "request_id": request_id, "artifact_uri": artifact_uri})
+                send_telemetry(
+                    "invoke.completed",
+                    {"tool": "images_sdxl", "request_id": request_id, "artifact_uri": artifact_uri, "count": len(payloads)},
+                )
             except Exception:
                 pass
 
-            # FastAPI expects a serializable dict for response validation.
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
-            return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
+            response = ResponseModel(status="success", request_id=request_id, artifact_uri=artifact_uri, artifacts=payloads)
+            return response.model_dump()
         finally:
             with app.state.lock:
                 app.state.inflight = max(0, app.state.inflight - 1)
@@ -217,3 +190,84 @@ def make_app() -> FastAPI:
 
 
 app = make_app()
+
+
+def _render_and_publish(req: RequestModel, *, request_id: str) -> List[ArtifactPayload]:
+    try:
+        render_results = adapter.render_images(
+            req.prompt,
+            {
+                "negative_prompt": req.negative_prompt,
+                "prompt_2": req.prompt_2,
+                "negative_prompt_2": req.negative_prompt_2,
+                "metadata": req.metadata,
+                "count": req.count,
+                "seed": req.seed,
+                "width": req.width,
+                "height": req.height,
+                "steps": req.steps,
+                "cfg_scale": req.cfg_scale,
+                "sampler": req.sampler,
+                "batch_start": req.batch_start,
+                "denoising_start": req.denoising_start,
+                "denoising_end": req.denoising_end,
+            },
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=_serialize_validation_errors(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except gpu_utils.GpuBusyError as exc:  # pragma: no cover - requires GPU contention
+        raise HTTPException(status_code=503, detail="gpu busy") from exc
+
+    artifacts: List[ArtifactPayload] = []
+    for idx, result in enumerate(render_results):
+        metadata = _build_metadata(req, result.metadata, request_id=request_id, index=req.batch_start + idx)
+        artifact_ref = _publish_image(result.path, metadata=metadata, run_id=req.run_id)
+        uri = artifact_ref["uri"]
+        if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and uri.startswith("artifact://"):
+            uri = f"file://{result.path.resolve()}"
+        payload = ArtifactPayload(artifact_uri=uri, metadata=dict(artifact_ref.get("metadata", metadata)))
+        artifacts.append(payload)
+    return artifacts
+
+
+def _publish_image(path: Path, *, metadata: Dict[str, Any], run_id: Optional[str]) -> adk_helpers.ArtifactRef:
+    try:
+        return adk_helpers.publish_artifact(
+            local_path=path,
+            artifact_type="image_frame",
+            metadata=metadata,
+            media_type="image/png",
+            run_id=run_id,
+        )
+    except adk_helpers.ArtifactPublishError as exc:
+        LOG.error("artifact publish failed", extra={"path": str(path), "error": str(exc)})
+        raise HTTPException(status_code=502, detail="artifact publish failed") from exc
+
+
+def _build_metadata(req: RequestModel, base: Dict[str, Any], *, request_id: str, index: int) -> Dict[str, Any]:
+    metadata = dict(req.metadata or {})
+    metadata.update(base)
+    metadata.setdefault("request_id", request_id)
+    metadata.setdefault("plan_id", req.plan_id)
+    metadata.setdefault("run_id", req.run_id)
+    metadata.setdefault("index", index)
+    metadata.setdefault("count", req.count)
+    metadata.setdefault("prompt", req.prompt)
+    metadata.setdefault("negative_prompt", req.negative_prompt)
+    metadata.setdefault("width", req.width)
+    metadata.setdefault("height", req.height)
+    metadata.setdefault("sampler", req.sampler)
+    metadata.setdefault("steps", req.steps)
+    metadata.setdefault("cfg_scale", req.cfg_scale)
+    metadata.setdefault("batch_start", req.batch_start)
+    metadata.setdefault("tool", "images_sdxl")
+    return metadata
+
+
+def _serialize_validation_errors(exc: ValidationError) -> List[Dict[str, Any]]:
+    return [
+        {"loc": ".".join(str(part) for part in err["loc"]), "msg": err["msg"], "type": err["type"]}
+        for err in exc.errors()
+    ]
