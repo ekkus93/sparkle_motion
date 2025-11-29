@@ -106,4 +106,52 @@ Troubleshooting:
 - Missing `torch`/`diffusers` wheels trigger a logged warning and automatic
 	fallback to the deterministic fixture so tests still pass, but no real GPU
 	validation occurs.
+
+GPU-backed Wan 2.1 smoke tests
+------------------------------
+The `videos_wan` FunctionTool mirrors the SDXL setup: fixture MP4s by default
+so development is GPU-free, and the real Wan2.1 I2V pipeline is enabled only
+when explicitly requested. To validate the real pipeline on GPU hardware
+(Colab, A100, etc.):
+
+1. **Install the Wan runtime extras** (diffusers with Wan support + CUDA
+	wheels). Adjust versions to match your CUDA runtime.
+
+	```bash
+	pip install -r requirements-ml.txt diffusers==0.30.2 torch==2.4.1 --extra-index-url https://download.pytorch.org/whl/cu121
+	```
+
+2. **Export the env vars** so the adapter leaves fixture mode but still
+	publishes artifacts via the local shim:
+
+	```bash
+	export PYTHONPATH=.:src
+	export ADK_USE_FIXTURE=1                 # keep ADK shim local
+	export SMOKE_VIDEOS=1                   # enable Wan adapter
+	export VIDEOS_WAN_FIXTURE_ONLY=0        # ensure real pipeline is used
+	export VIDEOS_WAN_MODEL="Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers"
+	export VIDEOS_WAN_DEVICE_PRESET="a100-80gb"   # or set VIDEOS_WAN_DEVICE_MAP JSON
+	```
+
+	Optional knobs:
+	- `VIDEOS_WAN_CACHE_TTL` — seconds to keep the Wan weights warm inside
+	  `gpu_utils.model_context`.
+	- `VIDEOS_WAN_DEVICE` — explicit torch device (defaults to `cuda`).
+
+3. **Run the focused suites** to exercise both the adapter and entrypoint:
+
+	```bash
+	pytest -q \
+	  tests/unit/test_videos_wan_adapter.py \
+	  tests/unit/test_videos_wan_models.py \
+	  tests/unit/test_entrypoints_parametrized.py \
+	  tests/smoke/test_function_tools_smoke.py -k videos_wan
+	```
+
+Troubleshooting mirrors SDXL:
+- A `503` with `{"detail":"gpu busy"}` means another process has the GPU lock;
+  wait for it to finish.
+- Missing WAN weights or incompatible wheels fall back to the deterministic
+  fixture, so the tests still pass but no GPU work occurs (check logs for the
+  fallback notice).
 # sparkle_motion

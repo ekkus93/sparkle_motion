@@ -1,4 +1,5 @@
 from __future__ import annotations
+import base64
 import os
 from pathlib import Path
 import importlib
@@ -85,4 +86,23 @@ def _payload_for_module(module_path: str, artifacts_dir: Path) -> dict[str, obje
         clip = artifacts_dir / "smoke_clip.mp4"
         clip.write_bytes(b"clip")
         return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
+    if module_path.endswith("videos_wan.entrypoint"):
+        return {
+            "prompt": "unit-test prompt",
+            "num_frames": 12,
+            "fps": 6,
+            "width": 320,
+            "height": 240,
+            "metadata": {"suite": "smoke"},
+        }
+    if module_path.endswith("qa_qwen2vl.entrypoint"):
+        return {
+            "prompt": "unit-test prompt",
+            "frames": [
+                {
+                    "id": "frame-smoke",
+                    "data_b64": base64.b64encode(b"qa fixture smoke frame").decode("ascii"),
+                }
+            ],
+        }
     return {"prompt": "unit-test prompt"}

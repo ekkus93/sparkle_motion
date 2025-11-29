@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import make_app
@@ -19,7 +21,15 @@ def test_qa_qwen2vl_smoke(monkeypatch):
         jr = r.json()
         assert isinstance(jr.get("ready"), bool)
 
-        payload = {"prompt": "smoke test qa"}
+        payload = {
+            "prompt": "smoke test qa",
+            "frames": [
+                {
+                    "id": "frame1",
+                    "data_b64": base64.b64encode(b"smoke frame").decode("ascii"),
+                }
+            ],
+        }
         r = client.post("/invoke", json=payload)
         assert r.status_code in {200, 400, 422, 503}
         if r.status_code == 200:

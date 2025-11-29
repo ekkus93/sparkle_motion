@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import yaml
@@ -151,6 +152,8 @@ def _safe_stage_id(stage_id: Optional[str], idx: int) -> str:
 
 def _build_stage_payload(stage: Dict[str, Any], stage_outputs: Dict[str, Dict[str, Any]], sid_slug: str) -> Dict[str, Any]:
     tool_id = stage.get("tool_id") or ""
+    tool_name = tool_id.split(":", 1)[0].lower() if tool_id else ""
+    stage_name = (stage.get("id") or "").lower()
     if _is_production_stage(stage, tool_id):
         plan_payload = _extract_movie_plan(stage_outputs)
         if plan_payload is None:
@@ -158,6 +161,8 @@ def _build_stage_payload(stage: Dict[str, Any], stage_outputs: Dict[str, Dict[st
             print(f"Warning: No MoviePlan detected from previous stages; using fallback plan for stage {sid_slug}")
         mode = stage.get("mode") or "run"
         return {"plan": plan_payload, "mode": mode}
+    if stage_name == "qa" or tool_name == "qa_qwen2vl":
+        return _build_qa_stage_payload(sid_slug, stage_outputs)
     return {"prompt": f"operator-run:{sid_slug}"}
 
 
@@ -165,6 +170,52 @@ def _is_production_stage(stage: Dict[str, Any], tool_id: str) -> bool:
     stage_id = (stage.get("id") or "").lower()
     tool_name = tool_id.split(":", 1)[0].lower() if tool_id else ""
     return stage_id == "production" or tool_name == "production_agent"
+
+
+def _build_qa_stage_payload(sid_slug: str, stage_outputs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    frames = _extract_frames_for_qa(stage_outputs)
+    if not frames:
+        frames = [_default_qa_frame_bytes()]
+    payload_frames = [
+        {
+            "id": f"{sid_slug}-frame-{idx:04d}",
+            "data_b64": _encode_b64(data),
+        }
+        for idx, data in enumerate(frames)
+    ]
+    return {"prompt": f"operator-run:{sid_slug}", "frames": payload_frames}
+
+
+def _extract_frames_for_qa(stage_outputs: Dict[str, Dict[str, Any]]) -> List[bytes]:
+    production = stage_outputs.get("production") or {}
+    payload = production.get("artifact_payload") or {}
+    frames: List[bytes] = []
+    if isinstance(payload, dict):
+        # Heuristic: look for embedded base64 preview fields or raw data bytes
+        candidates = payload.get("shots") or payload.get("frames")
+        if isinstance(candidates, list):
+            for shot in candidates:
+                if not isinstance(shot, dict):
+                    continue
+                data_b64 = shot.get("preview_b64") or shot.get("data_b64")
+                if isinstance(data_b64, str):
+                    try:
+                        frames.append(base64.b64decode(data_b64))
+                        continue
+                    except Exception:
+                        pass
+                raw = shot.get("raw_bytes")
+                if isinstance(raw, str):
+                    frames.append(raw.encode("utf-8"))
+    return frames
+
+
+def _default_qa_frame_bytes() -> bytes:
+    return b"sparkle-motion-qa-fixture-frame"
+
+
+def _encode_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 def _extract_movie_plan(stage_outputs: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:

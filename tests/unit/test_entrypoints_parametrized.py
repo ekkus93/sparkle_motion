@@ -1,3 +1,4 @@
+import base64
 import importlib
 from pathlib import Path
 import pytest
@@ -75,10 +76,30 @@ def _build_payload(module_path: str, tmp_path: Path) -> dict:
         clip = tmp_path / "assemble_clip.mp4"
         clip.write_bytes(b"clip")
         return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
+    if module_path.endswith("videos_wan.entrypoint"):
+        return {
+            "prompt": "param test",
+            "num_frames": 8,
+            "fps": 4,
+            "width": 320,
+            "height": 240,
+            "metadata": {"suite": "param"},
+        }
+    if module_path.endswith("qa_qwen2vl.entrypoint"):
+        return {
+            "prompt": "param test",
+            "frames": [_frame_payload(b"qa param frame")],
+        }
     return {"prompt": "param test"}
 
 
 def _build_missing_payload(module_path: str) -> dict:
     if module_path.endswith("assemble_ffmpeg.entrypoint"):
         return {"clips": []}
+    if module_path.endswith("qa_qwen2vl.entrypoint"):
+        return {"frames": [_frame_payload(b"missing prompt frame")]}
     return {}
+
+
+def _frame_payload(data: bytes) -> dict:
+    return {"id": "frame", "data_b64": base64.b64encode(data).decode("ascii")}

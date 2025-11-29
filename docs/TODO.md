@@ -3,13 +3,15 @@
 
 > **USER DIRECTIVE (2025-11-26):** This file is local-only per your directive — do NOT stage/commit/push `resources/TODO.md` without explicit authorization. Also avoid adding CI/Actions/PR recommendations here unless explicitly requested.
 
-## Snapshot (2025-11-28)
+## Snapshot (2025-11-30)
 
 - Script + Production agents are live end-to-end: `script_agent.generate_plan()` persists validated MoviePlans, `production_agent.execute_plan()` is wired through the WorkflowAgent/tool registry, and the new production-agent FunctionTool entrypoint plus CLI/tests are green.
-- `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (202 passed / 1 skipped) is clean after the API change.
+- `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (241 passed / 1 skipped) remains green after the latest adapter additions.
 - Schema + QA artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs, QA policy bundle lives under `artifacts/qa_policy/v1/`), so downstream modules consume typed resolvers via `schema_registry`.
-- Runtime profile remains single-user/Colab-local; the remaining P0 work is concentrated on media agents (`images|tts`) plus their adapters, dedupe/rate-limit scaffolding, and deterministic fixtures outlined below. Videos agent orchestration/tests are now complete and publishing artifacts via `videos_agent.render_video()`.
+- Runtime profile remains single-user/Colab-local; remaining P0 work is concentrated on the TTS agent plus dedupe/rate-limit scaffolding. Videos agent orchestration/tests are complete and publishing artifacts via `videos_agent.render_video()`.
 - Production agent + `tts_agent` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
+- `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for QA automation.
+- `videos_wan` FunctionTool now routes through the Wan adapter with deterministic fixtures by default, publishes `videos_wan_clip` artifacts, and surfaces chunk metadata/telemetry with smoke-flag gating for real GPU runs.
 
 ## Priority legend
 
@@ -74,9 +76,9 @@
 - [x] `function_tools/images_sdxl`
   - [x] Built deterministic PNG fixture (seeded by prompt/index) plus SDXL pipeline gated by `SMOKE_IMAGES`/`SMOKE_ADAPTERS` and `gpu_utils.model_context()`.
   - [x] Emits metadata (seed, dimensions, sampler, steps, phash, device) and entrypoint publishes artifacts via `adk_helpers`; README documents GPU smoke instructions.
-- [ ] `function_tools/videos_wan`
-  - [ ] Provide chunked render stub + metadata; wrap real Wan2.1 pipeline inside `model_context()` and ensure CUDA cleanup.
-  - [ ] Support `SMOKE_ADAPTERS` flag to toggle heavy loads.
+- [x] `function_tools/videos_wan`
+  - [x] Added deterministic MP4 fixture + Wan2.1 adapter shim using `gpu_utils.model_context()` with cache TTL + env-driven device maps.
+  - [x] FastAPI entrypoint now validates structured payloads, publishes `videos_wan_clip` artifacts (metadata: plan/run IDs, chunk stats, local path), and honors `SMOKE_VIDEOS` / `SMOKE_ADAPTERS` / `VIDEOS_WAN_FIXTURE_ONLY` gating.
 - [ ] `function_tools/tts_chatterbox`
   - [x] Add fixture implementation producing deterministic WAV bytes + metadata.
     - Implemented sine-wave fixture synthesis in `function_tools/tts_chatterbox/adapter.py` with deterministic seed + metadata (duration, sample rate, bit depth, watermark flag) for reproducible tests.
@@ -103,7 +105,9 @@
 - [x] `tests/unit/test_images_agent.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
 - [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
 - [ ] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
-- [ ] `tests/unit/test_images_adapter.py`, `tests/unit/test_videos_adapter.py`, `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
+- [ ] `tests/unit/test_images_adapter.py`
+- [x] `tests/unit/test_videos_adapter.py` (fixture + env gating now covered by `tests/unit/test_videos_wan_adapter.py`)
+- [ ] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
 - [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 

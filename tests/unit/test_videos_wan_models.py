@@ -1,7 +1,8 @@
-import pytest
-
-from fastapi.testclient import TestClient
 from importlib import import_module
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
 
 
 mod = import_module("sparkle_motion.function_tools.videos_wan.entrypoint")
@@ -16,16 +17,42 @@ def test_request_model_requires_prompt():
         RequestModel()
 
 
-def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path):
+def test_invoke_produces_artifact_and_metadata(monkeypatch, tmp_path):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
-    monkeypatch.setenv("DETERMINISTIC", "1")
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
 
     app = make_app()
     client = TestClient(app)
 
-    resp = client.post("/invoke", json={"prompt": "smoke"})
+    payload = {
+        "prompt": "pilot chunk",
+        "num_frames": 12,
+        "fps": 6,
+        "width": 320,
+        "height": 240,
+        "metadata": {"shot": "shot-1"},
+    }
+    resp = client.post("/invoke", json=payload)
     assert resp.status_code == 200
-    j = resp.json()
-    assert j.get("status") == "success"
-    assert j.get("artifact_uri", "").startswith("file://")
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["artifact_uri"].startswith("file://")
+    meta = data["metadata"]
+    assert meta["shot"] == "shot-1"
+    local_path = Path(meta["local_path"])
+    assert local_path.exists()
+
+
+def test_invoke_missing_frame_path_returns_400(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADK_USE_FIXTURE", "1")
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+
+    app = make_app()
+    client = TestClient(app)
+
+    payload = {
+        "prompt": "chunk",
+        "start_frame_uri": str(tmp_path / "missing.png"),
+    }
+    resp = client.post("/invoke", json=payload)
+    assert resp.status_code == 400

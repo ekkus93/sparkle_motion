@@ -64,6 +64,23 @@ additional terminals and launch each tool with its own port number.
   `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1`; this mirrors the `options.fixture_only`
   field on the `/invoke` request body.
 
+### Videos flow
+
+- `videos_wan` now routes `/invoke` requests through the Wan2.1 adapter. The
+  adapter defaults to a deterministic MP4 fixture so CI and Colab users can
+  stay GPU-free while still exercising the metadata envelope (`plan_id`,
+  `chunk_index`, seeds, and option snapshots).
+- Enable the real Wan pipeline with `SMOKE_VIDEOS=1` (or
+  `SMOKE_ADAPTERS=1/SMOKE_ADK=1`). The adapter honors
+  `VIDEOS_WAN_MODEL/VIDEOS_WAN_DEVICE_PRESET/VIDEOS_WAN_DEVICE_MAP` and keeps
+  the weights warm via `gpu_utils.model_context`. Set
+  `VIDEOS_WAN_FIXTURE_ONLY=1` (or request `options.fixture_only=true`) to
+  force the deterministic path even when smoke flags are present.
+- Artifacts are published as `videos_wan_clip` MP4s alongside metadata from
+  the adapter (engine, dimensions, chunk stats) plus entrypoint annotations
+  (`request_id`, `plan_id`, `step_id`, `run_id`). Local fixture runs always
+  resolve `artifact_uri` to `file://…` for easy assertion in unit/smoke tests.
+
 ## Tool metadata
 
 Deployment metadata shared with ADK lives in `configs/tool_registry.yaml`. That
