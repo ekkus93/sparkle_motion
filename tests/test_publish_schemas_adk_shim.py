@@ -68,9 +68,19 @@ def run_publish_with_shim(tmp_path: Path, mode: str):
     env["MODE"] = mode
     # put shim bin at front of PATH
     env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
-    # ensure python can import scripts/ module
-    cmd = [sys.executable, str(Path.cwd() / "scripts" / "publish_schemas.py"),
-      "--schemas-dir", str(schemas), "--artifacts-config", str(cfg), "--project", "sdkproj", "--confirm", "--use-cli"]
+    cmd = [
+      sys.executable,
+      "-m",
+      "sparkle_motion.scripts.publish_schemas",
+      "--schemas-dir",
+      str(schemas),
+      "--artifacts-config",
+      str(cfg),
+      "--project",
+      "sdkproj",
+      "--confirm",
+      "--use-cli",
+    ]
 
     proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert proc.returncode == 0, proc.stdout + "\n" + proc.stderr

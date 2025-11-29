@@ -200,6 +200,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
   - `tts_chatterbox` (FunctionTool adapter): compute-bound adapter that performs heavy TTS work (model load, synthesis, wav export). Implement as an ADK FunctionTool so the agent can call it; keep model lifecycle inside a guarded context manager to ensure safe load/unload.
   - Fallbacks: prefer ADK-managed TTS providers when available; fall back to local Coqui TTS for developer workflows. Entrypoints that instantiate agents must call `adk_helpers.require_adk()` or use `adk_helpers.probe_sdk(non_fatal=True)` where appropriate.
   - Metadata: publish duration, sample_rate, voice_id, format, seed (if applicable), and runtime info (model id, inference device, synth time). Publish WAV artifacts via `adk_helpers.publish_artifact()`.
+  - Per-line synthesis: `production_agent` calls `tts_agent.synthesize()` once per dialogue line and records each WAV in `line_artifacts` alongside metadata (voice_id, provider voice id, duration_s, watermarked flag) so lipsync, QA, and assemble stages can trace every clip. Fixture mode (when `SMOKE_TTS`/`SMOKE_ADAPTERS` are unset) must still emit deterministic per-line artifacts.
   - Tests: unit tests for decision logic and metadata/format validation; integration smoke tests gated by `SMOKE_TTS=1` that exercise a small real or fixture TTS provider.
   - Estimate: 2–4 days
   - Notes: runtime dependency or manifest changes must follow the `proposals/pyproject_adk.diff` process and require explicit approval before editing `pyproject.toml` or pushing runtime changes.
@@ -223,6 +224,21 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
        - `balanced`: weighted scoring of quality (0.5), latency (0.25), cost (0.25).
     4. If top candidate reports transient overload/unavailable, fall back to next candidate. If no provider meets constraints, return `ProviderSelectionError` with suggested relaxations.
   - Telemetry: record `selected_provider`, `score_breakdown`, `estimated_cost_usd`, `estimated_latency_s`, and `reason` in selection metadata.
+
+  Provider catalog (`configs/tts_providers.yaml`)
+
+  - Structure:
+    - `version`: config schema version (current `v1`).
+    - `priority_profiles`: named scoring weights for `quality|latency|cost`; `tts_agent` loads these to compute a weighted score.
+    - `providers`: keyed by provider id; each entry specifies `display_name`, `tier` (`tier1|tier2|fixture`), adapter id, `fixture_alias`, defaults (voice, latency, cost, `quality_score`), capabilities (`features`, `languages`), per-provider `rate_limits` and `retry_policy`, plus a `watermarking` flag consumed by metadata tests.
+    - `voices`: logical voices exposed to MoviePlans; each voice includes description, default audio settings, and a `provider_preferences` list mapping to provider-specific voice ids so the agent can fall back cleanly.
+    - `rate_caps`: tier-wide caps (`daily_requests`, `concurrent_jobs`) referenced by the agent when honoring plan-level resource hints.
+  - Current provider ids:
+    - `chatterbox-pro` (tier1): Resemble/Chatterbox production path, watermark-on, supports `voice_clone|multilingual|emotional_range` with moderate latency/cost.
+    - `adk-edge` (tier2): ADK-managed edge deployment (lower latency, watermark off) for multilingual + style control use cases.
+    - `fixture-local` (fixture): deterministic WAV stub used whenever `SMOKE_TTS`/`SMOKE_ADAPTERS` are disabled; zero cost/high throughput guardrail.
+  - Fixture aliases are consumed by tests and the FunctionTool entrypoint so local runs can force a deterministic provider (`fixture-chatterbox` / `fixture-tts`).
+  - When adding providers, update both `providers` and `voices` sections so MoviePlan `voice_id`s stay portable; docs must describe new tiers/features before code depends on them.
 
   Voice mapping API & metadata
 

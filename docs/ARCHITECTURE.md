@@ -381,7 +381,10 @@ provenance.
 	disabled to keep everything local; optional `run_events.json` files are still
 	generated from ADK data for debugging.
 - **Determinism** – WorkflowAgent enforces seed propagation and records them
-	in session metadata so reruns and audits reference the same inputs.
+	in session metadata so reruns and audits reference the same inputs. Replay
+	relies on `production_agent` writing one `line_artifacts` record per dialogue
+	line so downstream lipsync/QA stages (and operators) can chase the exact WAV
+	that was synthesized.
 
 ## Short-term operational decisions (what changed)
 
@@ -580,7 +583,12 @@ drive the immediate workstream and the TODO list.
 		optional fixture stubs when `SMOKE_TTS` is unset. Publish WAV artifacts via
 		`adk_helpers.publish_artifact()` including metadata (duration, sample_rate,
 		voice_id, provider voice id, model_id, device, synth_time_s,
-		watermarked flag, selected provider score breakdown).
+		watermarked flag, selected provider score breakdown). `production_agent`
+		synthesizes one clip per script line and records the outputs as
+		`line_artifacts` so lipsync, QA, and assemble stages can chase every
+		utterance end-to-end. Fixture mode (default when `SMOKE_TTS`/`SMOKE_ADAPTERS`
+		are unset) must continue generating deterministic per-line WAVs and
+		metadata for local replay.
 	- Env vars: `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`,
 		`TTS_PRIORITY_PROFILE`, `TTS_PROVIDER_ALLOWLIST`, `SMOKE_TTS`.
 	- Dependencies (proposal): `chatterbox-tts`, `torch`, `torchaudio`, and any

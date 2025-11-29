@@ -35,7 +35,7 @@ Side-effects:
 | `script` | Normalize `MoviePlan`, ensure every shot has an `AssetRefsShot` entry (no heavy model). | `MoviePlan.shots`, `MoviePlan.characters` | Creates `asset_refs.shots[shot_id]` dictionaries with empty `start_frame`, `end_frame`, `raw_clip`, `dialogue_audio`, `final_video_clip`. | `{"shots_initialized": <int>}` plus an `adapter` label (`"script_stub"`). |
 | `images` | Call SDXL (or fallback) to render keyframe PNGs. | `ShotSpec.start_frame_prompt`, `ShotSpec.end_frame_prompt`, optional `MoviePlan.metadata["seed"].` | Populates `start_frame`/`end_frame` paths per shot. | `{"frames_written": <int>, "adapter": "sdxl"}` and optionally `seed` used. |
 | `videos` | Call Wan / video adapter to create motion clips. | Newly written keyframe paths, `ShotSpec.motion_prompt`, `ShotSpec.duration_sec`. | Updates `raw_clip` per shot. | `{"clips_written": <int>, "adapter": "wan"}`. |
-| `tts` | Generate dialogue WAVs via TTS adapter. | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores a list of WAV paths in `dialogue_audio`. | `{"lines_synthesized": <int>, "voice_model": "polyglot-v1"}`. |
+| `tts` | Generate dialogue WAVs via TTS adapter (per-line synthesis). | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores ordered per-line WAV paths in `dialogue_audio` and Step metadata for downstream tooling. | `{"lines_synthesized": <int>, "voice_model": "polyglot-v1", "line_artifacts": [...]}`. |
 | `lipsync` | Wav2Lip (or stub) to merge audio + raw video. | `raw_clip`, `dialogue_audio`. | Writes `final_video_clip` per shot. | `{"clips_synced": <int>, "adapter": "wav2lip"}`. |
 | `assemble` | Concatenate final clips, add BGM, output movie. | `final_video_clip` entries, `MoviePlan.metadata` (e.g., frame rate). | May record top-level extras such as `asset_refs.extras["final_movie"] = str(path)`. | `{"final_path": "movie_final.mp4", "duration": 12.4, "video_codec": "mpeg4", "audio_codec": "aac"}`. |
 | `qa` | Run automated QA, persist report, and evaluate policy gates. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json` and `qa_actions.json` (gating summary); `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>, "decision": "approve", "qa_policy_action": "approve"}`. |
@@ -81,6 +81,20 @@ These abstractions keep the runner faithful to ADK patterns while remaining ligh
   `run_events.json` timeline. This test runs quickly (<1s) and serves as a CI
   gate before wiring heavier adapters or Colab workflows.
 
+#### Operator playbook — inspecting `line_artifacts`
+
+1. Fetch memory events: `python -m sparkle_motion.tools.memory_dump --run-id <id>` (or `adk memory-events list --run-id <id>`) to stream the structured events emitted by `production_agent`.
+2. Filter for `event_type == "tts.line_synthesized"` (or check
+  `StepExecutionRecord.meta['tts']['line_artifacts']` inside the
+  `stage_progress` events). Each payload includes `line_index`, `voice_id`,
+  `provider_id`, `artifact_uri`, `duration_s`, `sample_rate`, and the
+  `watermarked` flag.
+3. To trace a specific dialogue line, copy its `artifact_uri` into
+  `adk artifacts download <uri>` (or open the local `runs/<run_id>/audio/...`
+  path) and compare against downstream lipsync/QA entries. Because we write one
+  record per line, the ordering matches the original script text and stays
+  deterministic even when runs are resumed mid-stage.
+
 #### Stage deep-dive
 
 Below is the canonical contract for each stage. When multiple adapters exist (e.g., SDXL vs. fallback), they must satisfy the same observable behavior and metadata.
@@ -104,9 +118,10 @@ Below is the canonical contract for each stage. When multiple adapters exist (e.
 - **Notes**: Should propagate reference to the keyframes used for traceability.
 
 ##### `tts`
-- **Reads**: `ShotSpec.dialogue` text and per-character `voice_profile`.
-- **Writes**: WAV files per line under `run_dir/audio/<shot_id>/<line>.wav` and list stored in `dialogue_audio`.
-- **Metadata**: `lines_synthesized`, `voice_model`, `characters_processed`.
+- **Reads**: `ShotSpec.dialogue` text plus per-character `voice_profile`. The production agent resolves line-level `voice_config` using the plan’s `characters.voice_profile` map and passes it through to `tts_agent.synthesize()`.
+- **Writes**: WAV files per line under `run_dir/audio/<shot_id>/<line>.wav`, publishes each clip via `adk_helpers.publish_artifact(artifact_type="tts_audio")`, and stores the resulting list (ordered to match dialogue indexes) in `asset_refs.shots[shot_id].dialogue_audio`.
+- **Metadata**: `StepExecutionRecord.meta["tts"]` now records `line_artifacts` (line index, provider_id, voice_id, artifact_uri, duration, sample_rate, bit_depth, watermark flag) plus aggregate duration and `dialogue_paths`. Stages that depend on dialogue (lipsync, QA) should rely on those metadata entries instead of re-reading the filesystem.
+- **Env gating**: Real adapters only execute when `SMOKE_TTS=1` (or `SMOKE_ADAPTERS=1`) is set; otherwise the fixture adapter produces deterministic WAV placeholders. This keeps Colab/CI runs inexpensive while still emitting artifact metadata that matches production structure.
 
 ##### `lipsync`
 - **Reads**: `raw_clip` and `dialogue_audio` lists for each shot.

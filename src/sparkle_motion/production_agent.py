@@ -6,14 +6,14 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Union
 
 from pydantic import ValidationError
 
-from . import adk_helpers, observability, telemetry, videos_agent
+from . import adk_helpers, observability, telemetry, videos_agent, tts_agent
 from .images_agent import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
-from .schemas import MoviePlan, ShotSpec
+from .schemas import DialogueLine, MoviePlan, ShotSpec
 
 
 class ProductionAgentError(RuntimeError):
@@ -85,6 +85,21 @@ class StepExecutionRecord:
         }
 
 
+@dataclass(frozen=True)
+class StepResult:
+    path: Optional[Path] = None
+    paths: Optional[Sequence[Path]] = None
+    artifact_uri: Optional[str] = None
+    model_id: Optional[str] = None
+    device: Optional[str] = None
+    memory_hint_mb: Optional[int] = None
+    logs_uri: Optional[str] = None
+    meta: Optional[Mapping[str, Any]] = None
+
+
+StepActionReturn = Optional[Union[Path, StepResult, str]]
+
+
 class StepRateLimitError(StepExecutionError):
     """Base error for rate-limit conditions with attached record."""
 
@@ -137,7 +152,7 @@ class ProductionResult(list):
 class _ShotArtifacts:
     shot_id: str
     frames_path: Optional[Path] = None
-    dialogue_path: Optional[Path] = None
+    dialogue_paths: List[Path] = field(default_factory=list)
     video_path: Optional[Path] = None
     lipsync_path: Optional[Path] = None
 
@@ -167,6 +182,8 @@ def execute_plan(
     records: List[StepExecutionRecord] = []
     shot_artifacts: List[_ShotArtifacts] = []
 
+    voice_profiles = _character_voice_map(model)
+
     try:
         for shot in model.shots:
             artifacts = _execute_shot(
@@ -177,6 +194,7 @@ def execute_plan(
                 cfg=cfg,
                 progress_callback=progress_callback,
                 records=records,
+                voice_profiles=voice_profiles,
             )
             shot_artifacts.append(artifacts)
     except StepRateLimitError:
@@ -184,7 +202,7 @@ def execute_plan(
         raise
 
     try:
-        final_record, final_path = _run_step(
+        final_record, final_result = _run_step(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{plan_id}:assemble",
@@ -202,7 +220,7 @@ def execute_plan(
         raise
 
     artifact_ref = adk_helpers.publish_artifact(
-        local_path=final_path,
+        local_path=final_result.path,
         artifact_type=cfg.artifact_type,
         metadata={"plan_id": plan_id, "shot_count": len(model.shots)},
     )
@@ -308,6 +326,34 @@ def _resolve_output_dir(run_id: str, plan_id: str) -> Path:
     return dest
 
 
+def _character_voice_map(plan: MoviePlan) -> Mapping[str, Mapping[str, Any]]:
+    voices: Dict[str, Mapping[str, Any]] = {}
+    for character in plan.characters:
+        if character.voice_profile:
+            voices[character.id] = dict(character.voice_profile)
+    return voices
+
+
+def _voice_config_for_shot(shot: ShotSpec, voice_profiles: Mapping[str, Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    for line in shot.dialogue:
+        profile = voice_profiles.get(line.character_id)
+        if profile:
+            return dict(profile)
+    return None
+
+
+def _voice_config_for_character(
+    character_id: Optional[str],
+    voice_profiles: Mapping[str, Mapping[str, Any]],
+    fallback: Optional[Mapping[str, Any]],
+) -> Optional[Mapping[str, Any]]:
+    if character_id:
+        profile = voice_profiles.get(character_id)
+        if profile:
+            return dict(profile)
+    return dict(fallback) if fallback else None
+
+
 def _execute_shot(
     shot: ShotSpec,
     *,
@@ -317,22 +363,23 @@ def _execute_shot(
     cfg: ProductionAgentConfig,
     progress_callback: Optional[Callable[[StepExecutionRecord], None]],
     records: List[StepExecutionRecord],
+    voice_profiles: Mapping[str, Mapping[str, Any]],
 ) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
     def _append_record(record: StepExecutionRecord) -> None:
         records.append(record)
 
-    def _run_with_tracking(**kwargs: Any) -> Path:
+    def _run_with_tracking(**kwargs: Any) -> StepResult:
         try:
-            record, path = _run_step(**kwargs)
+            record, step_result = _run_step(**kwargs)
         except StepRateLimitError as exc:
             _append_record(exc.record)
             raise
         _append_record(record)
-        return path
+        return step_result
 
-    artifacts.frames_path = _run_with_tracking(
+    frames_result = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:images",
@@ -343,9 +390,10 @@ def _execute_shot(
         action=lambda: _render_frames(shot, output_dir),
         meta={"shot_id": shot.id},
     )
+    artifacts.frames_path = frames_result.path
 
     if shot.dialogue:
-        artifacts.dialogue_path = _run_with_tracking(
+        tts_result = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:tts",
@@ -353,11 +401,22 @@ def _execute_shot(
             gate_flag=cfg.tts_flag,
             cfg=cfg,
             progress_callback=progress_callback,
-            action=lambda: _synthesize_dialogue(shot, output_dir),
-            meta={"shot_id": shot.id, "lines": len(shot.dialogue)},
+            action=lambda: _synthesize_dialogue(
+                shot,
+                output_dir,
+                plan_id=plan_id,
+                run_id=run_id,
+                voice_profiles=voice_profiles,
+            ),
+            meta={
+                "shot_id": shot.id,
+                "lines": len(shot.dialogue),
+                "characters": sorted({line.character_id for line in shot.dialogue if line.character_id}),
+            },
         )
+        artifacts.dialogue_paths = list(tts_result.paths or ([tts_result.path] if tts_result.path else []))
 
-    artifacts.video_path = _run_with_tracking(
+    video_result = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:video",
@@ -368,9 +427,10 @@ def _execute_shot(
         action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, progress_callback),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
+    artifacts.video_path = video_result.path
 
-    if shot.is_talking_closeup and artifacts.dialogue_path and artifacts.video_path:
-        artifacts.lipsync_path = _run_with_tracking(
+    if shot.is_talking_closeup and artifacts.dialogue_paths and artifacts.video_path:
+        lipsync_result = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:lipsync",
@@ -381,6 +441,7 @@ def _execute_shot(
             action=lambda: _lipsync_clip(shot, output_dir),
             meta={"shot_id": shot.id},
         )
+        artifacts.lipsync_path = lipsync_result.path
 
     return artifacts
 
@@ -393,10 +454,22 @@ def _run_step(
     step_type: str,
     gate_flag: Optional[str],
     cfg: ProductionAgentConfig,
-    action: Callable[[], Optional[Path]],
+    action: Callable[[], StepActionReturn],
     meta: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
-) -> tuple[StepExecutionRecord, Optional[Path]]:
+) -> tuple[StepExecutionRecord, StepResult]:
+
+    def _normalize_step_result(value: StepActionReturn) -> StepResult:
+        if isinstance(value, StepResult):
+            return value
+        if value is None:
+            return StepResult()
+        if isinstance(value, Path):
+            return StepResult(path=value)
+        if isinstance(value, str):
+            return StepResult(path=Path(value))
+        raise TypeError(f"Unsupported step action return type: {type(value)!r}")
+
     should_execute = gate_flag is None or _flag_enabled(gate_flag)
     start = _now_iso()
     start_dt = datetime.now(timezone.utc)
@@ -407,6 +480,8 @@ def _run_step(
     rate_limit_state: Optional[str] = None
     meta_payload: Dict[str, Any] = dict(meta or {})
 
+    step_result = StepResult()
+
     if not should_execute:
         status = "simulated"
     else:
@@ -414,7 +489,8 @@ def _run_step(
         for attempt in range(1, max(cfg.max_attempts, 1) + 1):
             attempts = attempt
             try:
-                artifact_path = action()
+                step_result = _normalize_step_result(action())
+                artifact_path = step_result.path or (step_result.paths[0] if step_result.paths else None)
                 status = "succeeded"
                 break
             except RateLimitQueued as exc:
@@ -443,6 +519,8 @@ def _run_step(
 
     end_dt = datetime.now(timezone.utc)
     duration = (end_dt - start_dt).total_seconds()
+    artifact_uri = step_result.artifact_uri or (str(artifact_path) if artifact_path else None)
+    meta_payload.update(dict(step_result.meta or {}))
     record = StepExecutionRecord(
         plan_id=plan_id,
         step_id=step_id,
@@ -452,20 +530,24 @@ def _run_step(
         end_time=_to_iso(end_dt),
         duration_s=duration,
         attempts=attempts,
-        artifact_uri=str(artifact_path) if artifact_path else None,
+        model_id=step_result.model_id,
+        device=step_result.device,
+        memory_hint_mb=step_result.memory_hint_mb,
+        logs_uri=step_result.logs_uri,
+        artifact_uri=artifact_uri,
         error_type=error_type,
         meta=meta_payload,
     )
     _emit_step_record(run_id, record, progress_callback)
     if should_execute:
         if status == "succeeded":
-            return record, artifact_path
+            return record, step_result
         if rate_limit_state == "queued":
             raise StepQueuedError(f"{step_id} queued by rate limiter", record=record)
         if rate_limit_state == "exceeded":
             raise StepRateLimitExceededError(f"{step_id} hit rate limit", record=record)
         raise StepExecutionError(f"{step_id} failed after {attempts} attempts")
-    return record, artifact_path
+    return record, step_result
 
 
 def _emit_step_record(
@@ -509,12 +591,95 @@ def _render_frames(shot: ShotSpec, output_dir: Path) -> Path:
     return dest
 
 
-def _synthesize_dialogue(shot: ShotSpec, output_dir: Path) -> Path:
-    text = "\n".join(line.text for line in shot.dialogue)
-    dest = output_dir / "audio" / f"{shot.id}.wav"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(("RIFF" + text).encode("utf-8"))
-    return dest
+def _synthesize_dialogue(
+    shot: ShotSpec,
+    output_dir: Path,
+    *,
+    plan_id: str,
+    run_id: str,
+    voice_profiles: Mapping[str, Mapping[str, Any]],
+) -> StepResult:
+    valid_lines: List[tuple[int, DialogueLine]] = [
+        (idx, line)
+        for idx, line in enumerate(shot.dialogue)
+        if line.text and line.text.strip()
+    ]
+    if not valid_lines:
+        raise ProductionAgentError(f"Shot {shot.id} dialogue is empty")
+
+    audio_dir = output_dir / "audio" / shot.id
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    default_voice_config = _voice_config_for_shot(shot, voice_profiles)
+
+    line_entries: List[Dict[str, Any]] = []
+    line_paths: List[Path] = []
+    total_duration = 0.0
+    primary_metadata: Optional[Dict[str, Any]] = None
+    primary_artifact_uri: Optional[str] = None
+
+    for idx, line in valid_lines:
+        text = line.text.strip()
+        voice_config = _voice_config_for_character(line.character_id, voice_profiles, default_voice_config)
+        step_label = f"{shot.id}:tts:{idx:02d}"
+        artifact = tts_agent.synthesize(
+            text,
+            voice_config=voice_config,
+            plan_id=plan_id,
+            step_id=step_label,
+            run_id=run_id,
+            output_dir=audio_dir,
+        )
+        metadata = dict(artifact.get("metadata") or {})
+        source_path_value = metadata.get("source_path")
+        local_path = Path(source_path_value) if source_path_value else audio_dir / f"{shot.id}-{idx:02d}.wav"
+        line_paths.append(local_path)
+        duration = metadata.get("duration_s")
+        if isinstance(duration, (int, float)):
+            total_duration += float(duration)
+
+        entry: Dict[str, Any] = {
+            "line_index": idx,
+            "character_id": line.character_id,
+            "path": str(local_path),
+            "artifact_uri": artifact.get("uri"),
+            "provider_id": metadata.get("provider_id"),
+            "voice_id": metadata.get("voice_id"),
+            "duration_s": metadata.get("duration_s"),
+            "sample_rate": metadata.get("sample_rate"),
+            "bit_depth": metadata.get("bit_depth"),
+            "watermarked": metadata.get("watermarked"),
+        }
+        adapter_meta = metadata.get("adapter_metadata")
+        if isinstance(adapter_meta, Mapping):
+            entry["adapter_metadata"] = dict(adapter_meta)
+        line_entries.append(entry)
+
+        if primary_metadata is None:
+            primary_metadata = metadata
+            primary_artifact_uri = artifact.get("uri")
+
+    score_breakdown = (primary_metadata or {}).get("score_breakdown")
+    score_meta = dict(score_breakdown) if isinstance(score_breakdown, Mapping) else {}
+    tts_meta: Dict[str, Any] = {
+        "line_artifacts": line_entries,
+        "lines_synthesized": len(line_entries),
+        "dialogue_paths": [str(path) for path in line_paths],
+        "total_duration_s": round(total_duration, 3),
+        "provider_id": (primary_metadata or {}).get("provider_id"),
+        "voice_id": (primary_metadata or {}).get("voice_id"),
+        "score_breakdown": score_meta,
+    }
+    return StepResult(
+        path=audio_dir,
+        paths=tuple(line_paths),
+        artifact_uri=primary_artifact_uri,
+        model_id=(primary_metadata or {}).get("model_id"),
+        meta={
+            "tts": tts_meta,
+            "dialogue_paths": [str(path) for path in line_paths],
+            "lines": len(line_entries),
+        },
+    )
 
 
 def _render_video_clip(
@@ -581,7 +746,7 @@ def _assemble_plan(plan: MoviePlan, shots: Sequence[_ShotArtifacts], output_dir:
             {
                 "shot_id": art.shot_id,
                 "frames": str(art.frames_path) if art.frames_path else None,
-                "dialogue": str(art.dialogue_path) if art.dialogue_path else None,
+                "dialogue": [str(path) for path in art.dialogue_paths] if art.dialogue_paths else None,
                 "video": str(art.video_path) if art.video_path else None,
                 "lipsync": str(art.lipsync_path) if art.lipsync_path else None,
             }

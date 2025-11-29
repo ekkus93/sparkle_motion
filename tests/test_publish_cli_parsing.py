@@ -1,5 +1,6 @@
 from types import SimpleNamespace
-from scripts.publish_schemas import publish_with_cli
+
+from sparkle_motion.scripts.publish_schemas import publish_with_cli
 
 
 def make_proc(stdout: str = "", stderr: str = "", returncode: int = 0):

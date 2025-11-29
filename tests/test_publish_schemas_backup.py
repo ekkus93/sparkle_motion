@@ -5,7 +5,7 @@ import yaml
 
 
 def run_script(args, input_bytes=None, cwd=None):
-    cmd = [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts" / "publish_schemas.py")] + args
+    cmd = [sys.executable, "-m", "sparkle_motion.scripts.publish_schemas", *args]
     proc = subprocess.run(cmd, input=input_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     return proc
 

@@ -1,0 +1,124 @@
+version: v1
+priority_profiles:
+  balanced:
+    weights:
+      quality: 0.5
+      latency: 0.25
+      cost: 0.25
+  cost:
+    weights:
+      quality: 0.2
+      latency: 0.2
+      cost: 0.6
+  latency:
+    weights:
+      quality: 0.2
+      latency: 0.6
+      cost: 0.2
+  quality:
+    weights:
+      quality: 0.7
+      latency: 0.15
+      cost: 0.15
+providers:
+  chatterbox-pro:
+    display_name: Resemble Chatterbox Pro
+    tier: tier1
+    adapter: tts_chatterbox
+    fixture_alias: fixture-chatterbox
+    default_voice: emma
+    estimated_latency_s: 4.5
+    estimated_cost_usd_per_1k_chars: 0.025
+    quality_score: 0.93
+    features:
+      - voice_clone
+      - multilingual
+      - emotional_range
+    languages:
+      - en-US
+      - en-GB
+      - es-ES
+      - fr-FR
+    rate_limits:
+      per_minute: 18
+      burst: 6
+    retry_policy:
+      max_retries: 3
+      backoff_s: 1.5
+    watermarking: true
+  adk-edge:
+    display_name: ADK Managed Edge TTS
+    tier: tier2
+    adapter: tts_chatterbox
+    fixture_alias: fixture-chatterbox
+    default_voice: emma
+    estimated_latency_s: 3.0
+    estimated_cost_usd_per_1k_chars: 0.018
+    quality_score: 0.88
+    features:
+      - multilingual
+      - style_control
+    languages:
+      - en-US
+      - es-ES
+      - pt-BR
+    rate_limits:
+      per_minute: 30
+      burst: 10
+    retry_policy:
+      max_retries: 2
+      backoff_s: 1.0
+    watermarking: false
+  fixture-local:
+    display_name: Deterministic Fixture Stub
+    tier: fixture
+    adapter: tts_fixture
+    fixture_alias: fixture-tts
+    default_voice: emma
+    estimated_latency_s: 0.3
+    estimated_cost_usd_per_1k_chars: 0.0
+    quality_score: 0.4
+    features:
+      - deterministic
+    languages:
+      - en-US
+    rate_limits:
+      per_minute: 120
+      burst: 60
+    retry_policy:
+      max_retries: 0
+      backoff_s: 0.0
+    watermarking: false
+voices:
+  emma:
+    description: Neutral North American narration voice.
+    default_sample_rate: 24000
+    default_bit_depth: 16
+    provider_preferences:
+      - provider: chatterbox-pro
+        provider_voice_id: cbx_emma_v1
+      - provider: adk-edge
+        provider_voice_id: adk_voice_en_f1
+      - provider: fixture-local
+        provider_voice_id: fixture_emma
+  diego:
+    description: Warm Latin American Spanish voice.
+    default_sample_rate: 22050
+    default_bit_depth: 16
+    provider_preferences:
+      - provider: adk-edge
+        provider_voice_id: adk_voice_es_m1
+      - provider: chatterbox-pro
+        provider_voice_id: cbx_diego_v1
+      - provider: fixture-local
+        provider_voice_id: fixture_diego
+rate_caps:
+  tier1:
+    daily_requests: 1200
+    concurrent_jobs: 6
+  tier2:
+    daily_requests: 800
+    concurrent_jobs: 4
+  fixture:
+    daily_requests: 10000
+    concurrent_jobs: 20

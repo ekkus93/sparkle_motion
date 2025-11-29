@@ -32,6 +32,23 @@ Prometheus-style health endpoints at `/healthz` and the ADK `/invoke`
 endpoint. To run multiple tools simultaneously (e.g., for local testing), open
 additional terminals and launch each tool with its own port number.
 
+### TTS flow
+
+- `tts_chatterbox` now mirrors the production per-line synthesis flow: the
+  FunctionTool receives a dialogue line at a time, calls `tts_agent.synthesize`,
+  and publishes each clip as a `tts_audio` artifact with metadata covering
+  `provider_id`, `voice_id`, sample rate, bit depth, duration, and a
+  `watermarked` indicator. The orchestrator records these entries under
+  `StepExecutionRecord.meta["tts"]["line_artifacts"]` so downstream stages can
+  trace every WAV.
+- Set `SMOKE_TTS=1` (or `SMOKE_ADAPTERS=1`) when you want the real adapter to
+  run. Leaving both unset keeps the fixture adapter active, which emits
+  deterministic WAVs with the same metadata schema—recommended for Colab/CI.
+- The adapter should continue to respect `ADK_USE_FIXTURE=1`, but that flag no
+  longer controls whether per-line artifacts are published; even fixture mode
+  must return the full metadata envelope so policy gates and QA have consistent
+  observability.
+
 ## Tool metadata
 
 Deployment metadata shared with ADK lives in `configs/tool_registry.yaml`. That

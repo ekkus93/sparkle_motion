@@ -7,17 +7,19 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 import pytest
 
 import sparkle_motion.production_agent as production_agent
+from sparkle_motion import tts_agent
 
 from sparkle_motion.images_agent import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
     ProductionResult,
+    StepExecutionError,
     StepExecutionRecord,
     StepQueuedError,
     StepRateLimitExceededError,
     execute_plan,
 )
 from sparkle_motion.ratelimit import RateLimitDecision
-from sparkle_motion.schemas import DialogueLine, MoviePlan, ShotSpec
+from sparkle_motion.schemas import CharacterSpec, DialogueLine, MoviePlan, ShotSpec
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +64,47 @@ def _stub_videos_agent(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _fake_render)
+
+
+@pytest.fixture(autouse=True)
+def _stub_tts_agent(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
+    calls: List[Dict[str, Any]] = []
+
+    def _fake_synthesize(text: str, voice_config: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+        output_dir = Path(kwargs.get("output_dir") or Path.cwd())
+        output_dir.mkdir(parents=True, exist_ok=True)
+        step_label = (kwargs.get("step_id") or "tts").replace(":", "_")
+        dest = output_dir / f"{step_label}.wav"
+        dest.write_bytes(b"FAKE_TTS")
+        metadata = {
+            "source_path": str(dest),
+            "model_id": "fixture-tts",
+            "provider_id": "fixture-local",
+            "voice_id": (voice_config or {}).get("voice_id", "default"),
+            "duration_s": 0.5,
+            "sample_rate": 22050,
+            "bit_depth": 16,
+            "watermarked": False,
+            "score_breakdown": {"quality": 1.0},
+        }
+        calls.append(
+            {
+                "text": text,
+                "voice_config": voice_config,
+                "plan_id": kwargs.get("plan_id"),
+                "step_id": kwargs.get("step_id"),
+                "run_id": kwargs.get("run_id"),
+            }
+        )
+        return {
+            "uri": dest.as_uri(),
+            "storage": "local",
+            "artifact_type": "tts_audio",
+            "metadata": metadata,
+        }
+
+    monkeypatch.setattr("sparkle_motion.tts_agent.synthesize", _fake_synthesize)
+    return calls
 
 
 @pytest.fixture
@@ -272,3 +315,123 @@ def test_rate_limit_exceeded_sets_record(monkeypatch: pytest.MonkeyPatch, sample
     assert record.status == "failed"
     rl = record.meta.get("rate_limit")
     assert rl and rl["status"] == "rejected"
+
+
+def test_tts_step_records_metadata(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    result = execute_plan(sample_plan, mode="run")
+    tts_records = [record for record in result.steps if record.step_type == "tts"]
+    assert tts_records, "Expected TTS stage execution"
+    record = tts_records[0]
+    assert record.model_id == "fixture-tts"
+    tts_meta = record.meta["tts"]
+    assert tts_meta["provider_id"] == "fixture-local"
+    assert record.artifact_uri and record.artifact_uri.startswith("file://")
+    assert record.meta["lines"] == len(sample_plan.shots[0].dialogue)
+    assert tts_meta["lines_synthesized"] == len(sample_plan.shots[0].dialogue)
+    assert len(tts_meta["line_artifacts"]) == len(sample_plan.shots[0].dialogue)
+    assert record.meta["dialogue_paths"]
+
+
+def test_voice_profile_forwarded_to_tts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _stub_tts_agent: List[Dict[str, Any]],
+) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    plan = MoviePlan(
+        title="Voices",
+        metadata={"plan_id": "plan-voices"},
+        characters=[
+            CharacterSpec(id="hero", name="Hero", voice_profile={"voice_id": "hero_voice"}),
+            CharacterSpec(id="narrator", name="Narrator", voice_profile={"voice_id": "narrator_voice"}),
+        ],
+        shots=[
+            ShotSpec(
+                id="shot-voice",
+                visual_description="Conversation",
+                duration_sec=3,
+                dialogue=[
+                    DialogueLine(character_id="hero", text="It is my turn to speak."),
+                    DialogueLine(character_id="narrator", text="Now I will reply."),
+                ],
+                start_frame_prompt="hero start",
+                end_frame_prompt="hero end",
+                is_talking_closeup=True,
+            )
+        ],
+    )
+
+    execute_plan(plan, mode="run")
+    assert len(_stub_tts_agent) == 2, "Expected one synthesis call per dialogue line"
+    first_voice = _stub_tts_agent[0]["voice_config"]
+    second_voice = _stub_tts_agent[1]["voice_config"]
+    assert first_voice and first_voice.get("voice_id") == "hero_voice"
+    assert second_voice and second_voice.get("voice_id") == "narrator_voice"
+
+
+def test_multiple_dialogue_lines_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    plan = MoviePlan(
+        title="Two Lines",
+        metadata={"plan_id": "plan-multi"},
+        shots=[
+            ShotSpec(
+                id="shot-multi",
+                visual_description="Back-and-forth",
+                duration_sec=3,
+                dialogue=[
+                    DialogueLine(character_id="a", text="First line."),
+                    DialogueLine(character_id="b", text="Second line."),
+                ],
+                start_frame_prompt="start",
+                end_frame_prompt="end",
+                is_talking_closeup=True,
+            )
+        ],
+    )
+
+    result = execute_plan(plan, mode="run")
+    tts_records = [record for record in result.steps if record.step_type == "tts" and record.step_id.endswith(":tts")]
+    assert tts_records, "Expected TTS stage execution"
+    record = tts_records[0]
+    dialogue_paths = record.meta["dialogue_paths"]
+    assert len(dialogue_paths) == 2
+    assert len(record.meta["tts"]["line_artifacts"]) == 2
+
+
+def test_tts_policy_violation_raises(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "sparkle_motion.tts_agent.synthesize",
+        lambda *_, **__: (_ for _ in ()).throw(tts_agent.TTSPolicyViolation("blocked")),
+    )
+    records: List[StepExecutionRecord] = []
+
+    with pytest.raises(StepExecutionError):
+        execute_plan(sample_plan, mode="run", progress_callback=records.append)
+
+    assert records, "Expected progress records when policy error occurs"
+    assert records[-1].step_type == "tts"
+    assert records[-1].status == "failed"
+    assert records[-1].error_type == "TTSPolicyViolation"
+
+
+def test_tts_quota_error_surfaces(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+
+    def _raise_quota(*_: object, **__: object) -> None:
+        raise tts_agent.TTSQuotaExceeded("quota hit")
+
+    monkeypatch.setattr("sparkle_motion.tts_agent.synthesize", _raise_quota)
+    records: List[StepExecutionRecord] = []
+
+    with pytest.raises(StepExecutionError):
+        execute_plan(sample_plan, mode="run", progress_callback=records.append)
+
+    assert records[-1].step_type == "tts"
+    assert records[-1].status == "failed"
+    assert records[-1].error_type == "TTSQuotaExceeded"

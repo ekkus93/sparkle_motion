@@ -8,7 +8,8 @@
 - Script + Production agents are live end-to-end: `script_agent.generate_plan()` persists validated MoviePlans, `production_agent.execute_plan()` is wired through the WorkflowAgent/tool registry, and the new production-agent FunctionTool entrypoint plus CLI/tests are green.
 - `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (202 passed / 1 skipped) is clean after the API change.
 - Schema + QA artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs, QA policy bundle lives under `artifacts/qa_policy/v1/`), so downstream modules consume typed resolvers via `schema_registry`.
-- Runtime profile remains single-user/Colab-local; the remaining P0 work is concentrated on media agents (`images|videos|tts`) plus their adapters, dedupe/rate-limit scaffolding, and deterministic fixtures outlined below.
+- Runtime profile remains single-user/Colab-local; the remaining P0 work is concentrated on media agents (`images|tts`) plus their adapters, dedupe/rate-limit scaffolding, and deterministic fixtures outlined below. Videos agent orchestration/tests are now complete and publishing artifacts via `videos_agent.render_video()`.
+- Production agent + `tts_agent` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
 
 ## Priority legend
 
@@ -48,16 +49,25 @@
 - [x] `production_agent` (`src/sparkle_motion/production_agent.py`)
   - [x] Implement `execute_plan(plan, mode='dry'|'run')` plus `StepExecutionRecord` dataclass and progress hooks.
   - [x] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
-- [ ] `images_agent` orchestration
-  - [ ] Enforce batching (`max_images_per_call`), per-step dedupe flag, and per-plan ordering guarantees.
-  - [ ] Integrate QA pre-check via `qa_qwen2vl.inspect_frames()` when reference images provided.
-  - [ ] Hook rate limiter/queue interface (stub-friendly) to unblock future multi-user rollout.
-- [ ] `videos_agent`
-  - [ ] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
-  - [ ] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
+- [x] `images_agent` orchestration
+  - [x] Enforce batching (`max_images_per_call`), per-step dedupe flag, and per-plan ordering guarantees.
+  - [x] Integrate QA pre-check via `qa_qwen2vl.inspect_frames()` when reference images provided.
+  - [x] Hook rate limiter/queue interface (stub-friendly) to unblock future multi-user rollout.
+- [x] `videos_agent`
+  - [x] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
+  - [x] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
 - [ ] `tts_agent`
   - [ ] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
   - [ ] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
+
+### Sequence of Work — `tts_agent`
+
+1. Finalize `configs/tts_providers.yaml` (provider ids, tiering flags, rate caps, fixture aliases) and document the selection contract inside `docs/IMPLEMENTATION_TASKS.md`.
+2. Implement `sparkle_motion/tts_agent.py` with provider scoring, bounded retries, VoiceMetadata emission, and `adk_helpers.publish_artifact()` integrations plus structured telemetry.
+3. Flesh out `function_tools/tts_chatterbox/entrypoint.py`: add deterministic WAV fixture pipeline, gate the real adapter behind `SMOKE_TTS`, and ensure both paths share a metadata builder.
+4. Author `tests/unit/test_tts_agent.py` and `tests/unit/test_tts_adapter.py` covering provider selection, retry downgrades, fixture determinism, and artifact metadata.
+5. Wire the new agent into `production_agent.execute_plan()` (progress callbacks, StepExecutionRecord updates) and broaden `tests/test_production_agent.py` coverage for the TTS stage.
+6. [x] Update docs (`docs/TODO.md`, `docs/ORCHESTRATOR.md`, function tool READMEs) to reflect the new TTS flow, env vars, and artifact publishing expectations. (See `docs/ORCHESTRATOR.md#tts`, `function_tools/README.md#tts-flow`, and this snapshot for the authoritative contract.)
 
 #### FunctionTools / adapters
 - [ ] `function_tools/images_sdxl`
@@ -82,15 +92,17 @@
 - [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
 - [x] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
 - [x] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
-- [ ] `tests/unit/test_images_agent.py`, `tests/unit/test_videos_agent.py`, `tests/unit/test_tts_agent.py` — exercise batching, chunking, dedupe, QA integration, provider selection using stubs.
+- [x] `tests/unit/test_images_agent.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
+- [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
+- [ ] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
 - [ ] `tests/unit/test_images_adapter.py`, `tests/unit/test_videos_adapter.py`, `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
 - [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_assemble_ffmpeg.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
 
 ### P2 — Robustness, tooling, and docs
 - [ ] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
   - [ ] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_agent` + `videos_agent` dedupe paths.
-- [ ] `src/sparkle_motion/ratelimit.py`
-  - [ ] Implement lightweight token-bucket/queue scaffolding with single-user bypass + TODO for multi-tenant enablement.
+- [x] `src/sparkle_motion/ratelimit.py`
+  - [x] Implement lightweight token-bucket/queue scaffolding with single-user bypass + TODO for multi-tenant enablement.
 - [ ] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.
 - [ ] `docs/gpu_utils.md` — document `model_context` usage, device presets, telemetry expectations, and troubleshooting.
 - [ ] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
@@ -114,6 +126,7 @@
   - `export SPARKLE_DB_PATH="$(pwd)/artifacts/sparkle.db"`
   - `export ADK_USE_FIXTURE=1` (fixture-only mode for FunctionTools)
   - `export IMAGES_MAX_PER_CALL_DEFAULT=8`
+  - `export SMOKE_TTS=1` to allow the real TTS adapter to run; leave unset (or `0`) to force fixture WAVs. Combine with `SMOKE_ADAPTERS=1` when running the full adapter stack locally.
 - Useful helpers to build while implementing tasks:
   - `db/schema/recent_index.sql` — RecentIndex + memory_events DDL referenced by dedupe + telemetry tasks.
   - `src/sparkle_motion/db/sqlite.py` — `get_conn()` / `ensure_schema()` wrappers shared by dedupe + telemetry tests.
