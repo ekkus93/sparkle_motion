@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Option
 from pydantic import ValidationError
 
 from . import adk_helpers, observability, telemetry
+from .images_agent import RateLimitExceeded, RateLimitQueued
+from .ratelimit import RateLimitDecision
 from .schemas import MoviePlan, ShotSpec
 
 
@@ -83,6 +85,22 @@ class StepExecutionRecord:
         }
 
 
+class StepRateLimitError(StepExecutionError):
+    """Base error for rate-limit conditions with attached record."""
+
+    def __init__(self, message: str, *, record: StepExecutionRecord) -> None:
+        super().__init__(message)
+        self.record = record
+
+
+class StepQueuedError(StepRateLimitError):
+    """Raised when a step is queued due to rate limiting."""
+
+
+class StepRateLimitExceededError(StepRateLimitError):
+    """Raised when a step exhausts rate-limit budget immediately."""
+
+
 @dataclass(frozen=True)
 class SimulationStep:
     step_id: str
@@ -149,30 +167,39 @@ def execute_plan(
     records: List[StepExecutionRecord] = []
     shot_artifacts: List[_ShotArtifacts] = []
 
-    for shot in model.shots:
-        shot_records, artifacts = _execute_shot(
-            shot,
+    try:
+        for shot in model.shots:
+            artifacts = _execute_shot(
+                shot,
+                plan_id=plan_id,
+                run_id=run_id,
+                output_dir=output_dir,
+                cfg=cfg,
+                progress_callback=progress_callback,
+                records=records,
+            )
+            shot_artifacts.append(artifacts)
+    except StepRateLimitError:
+        _record_summary_event(run_id, plan_id, "run", records)
+        raise
+
+    try:
+        final_record, final_path = _run_step(
             plan_id=plan_id,
             run_id=run_id,
-            output_dir=output_dir,
+            step_id=f"{plan_id}:assemble",
+            step_type="assemble",
+            gate_flag=None,
             cfg=cfg,
             progress_callback=progress_callback,
+            action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
+            meta={"shot_count": len(model.shots)},
         )
-        records.extend(shot_records)
-        shot_artifacts.append(artifacts)
-
-    final_record, final_path = _run_step(
-        plan_id=plan_id,
-        run_id=run_id,
-        step_id=f"{plan_id}:assemble",
-        step_type="assemble",
-        gate_flag=None,
-        cfg=cfg,
-        progress_callback=progress_callback,
-        action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
-        meta={"shot_count": len(model.shots)},
-    )
-    records.append(final_record)
+        records.append(final_record)
+    except StepRateLimitError as exc:
+        records.append(exc.record)
+        _record_summary_event(run_id, plan_id, "run", records)
+        raise
 
     artifact_ref = adk_helpers.publish_artifact(
         local_path=final_path,
@@ -289,11 +316,23 @@ def _execute_shot(
     output_dir: Path,
     cfg: ProductionAgentConfig,
     progress_callback: Optional[Callable[[StepExecutionRecord], None]],
-) -> tuple[List[StepExecutionRecord], _ShotArtifacts]:
-    records: List[StepExecutionRecord] = []
+    records: List[StepExecutionRecord],
+) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
-    record, path = _run_step(
+    def _append_record(record: StepExecutionRecord) -> None:
+        records.append(record)
+
+    def _run_with_tracking(**kwargs: Any) -> Path:
+        try:
+            record, path = _run_step(**kwargs)
+        except StepRateLimitError as exc:
+            _append_record(exc.record)
+            raise
+        _append_record(record)
+        return path
+
+    artifacts.frames_path = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:images",
@@ -304,11 +343,9 @@ def _execute_shot(
         action=lambda: _render_frames(shot, output_dir),
         meta={"shot_id": shot.id},
     )
-    records.append(record)
-    artifacts.frames_path = path
 
     if shot.dialogue:
-        record, path = _run_step(
+        artifacts.dialogue_path = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:tts",
@@ -319,10 +356,8 @@ def _execute_shot(
             action=lambda: _synthesize_dialogue(shot, output_dir),
             meta={"shot_id": shot.id, "lines": len(shot.dialogue)},
         )
-        records.append(record)
-        artifacts.dialogue_path = path
 
-    record, path = _run_step(
+    artifacts.video_path = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:video",
@@ -333,11 +368,9 @@ def _execute_shot(
         action=lambda: _render_video_clip(shot, output_dir),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
-    records.append(record)
-    artifacts.video_path = path
 
     if shot.is_talking_closeup and artifacts.dialogue_path and artifacts.video_path:
-        record, path = _run_step(
+        artifacts.lipsync_path = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:lipsync",
@@ -348,10 +381,8 @@ def _execute_shot(
             action=lambda: _lipsync_clip(shot, output_dir),
             meta={"shot_id": shot.id},
         )
-        records.append(record)
-        artifacts.lipsync_path = path
 
-    return records, artifacts
+    return artifacts
 
 
 def _run_step(
@@ -371,8 +402,10 @@ def _run_step(
     start_dt = datetime.now(timezone.utc)
     attempts = 0
     artifact_path: Optional[Path] = None
-    status: Literal["succeeded", "failed", "simulated"]
+    status: Literal["queued", "succeeded", "failed", "simulated"]
     error_type: Optional[str] = None
+    rate_limit_state: Optional[str] = None
+    meta_payload: Dict[str, Any] = dict(meta or {})
 
     if not should_execute:
         status = "simulated"
@@ -383,6 +416,18 @@ def _run_step(
             try:
                 artifact_path = action()
                 status = "succeeded"
+                break
+            except RateLimitQueued as exc:
+                status = "queued"  # type: ignore[assignment]
+                error_type = exc.__class__.__name__
+                meta_payload["rate_limit"] = _rate_limit_meta(exc.decision)
+                rate_limit_state = "queued"
+                break
+            except RateLimitExceeded as exc:
+                status = "failed"
+                error_type = exc.__class__.__name__
+                meta_payload["rate_limit"] = _rate_limit_meta(exc.decision)
+                rate_limit_state = "exceeded"
                 break
             except StepTransientError:
                 if attempt >= cfg.max_attempts:
@@ -402,17 +447,23 @@ def _run_step(
         plan_id=plan_id,
         step_id=step_id,
         step_type=step_type,
-        status=status,
+        status=status,  # type: ignore[arg-type]
         start_time=start,
         end_time=_to_iso(end_dt),
         duration_s=duration,
         attempts=attempts,
         artifact_uri=str(artifact_path) if artifact_path else None,
         error_type=error_type,
-        meta=meta or {},
+        meta=meta_payload,
     )
     _emit_step_record(run_id, record, progress_callback)
-    if should_execute and status != "succeeded":
+    if should_execute:
+        if status == "succeeded":
+            return record, artifact_path
+        if rate_limit_state == "queued":
+            raise StepQueuedError(f"{step_id} queued by rate limiter", record=record)
+        if rate_limit_state == "exceeded":
+            raise StepRateLimitExceededError(f"{step_id} hit rate limit", record=record)
         raise StepExecutionError(f"{step_id} failed after {attempts} attempts")
     return record, artifact_path
 
@@ -432,6 +483,17 @@ def _emit_step_record(
         )
     except adk_helpers.MemoryWriteError:
         pass
+
+
+def _rate_limit_meta(decision: RateLimitDecision) -> Dict[str, Any]:
+    return {
+        "status": decision.status,
+        "tokens": decision.tokens,
+        "retry_after_s": decision.retry_after_s,
+        "eta_epoch_s": decision.eta_epoch_s,
+        "ttl_deadline_s": decision.ttl_deadline_s,
+        "reason": decision.reason,
+    }
 
 
 def _render_frames(shot: ShotSpec, output_dir: Path) -> Path:
@@ -544,6 +606,9 @@ __all__ = [
     "ProductionAgentError",
     "PlanPolicyViolation",
     "StepExecutionError",
+    "StepRateLimitError",
+    "StepQueuedError",
+    "StepRateLimitExceededError",
     "StepExecutionRecord",
     "SimulationReport",
     "ProductionResult",

@@ -13,11 +13,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from sparkle_motion import observability, telemetry
+from sparkle_motion.queue_runner import QueueTicket, enqueue_plan
 from sparkle_motion.production_agent import (
     ProductionAgentError,
     ProductionResult,
     SimulationReport,
     StepExecutionRecord,
+    StepQueuedError,
     execute_plan,
 )
 
@@ -37,12 +39,25 @@ class RequestModel(BaseModel):
         return self
 
 
+class QueueInfo(BaseModel):
+    ticket_id: str
+    plan_id: str
+    plan_title: str
+    step_id: str
+    eta_seconds: float
+    eta_epoch_s: float
+    attempt: int
+    max_attempts: int
+    message: str
+
+
 class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
+    status: Literal["success", "error", "queued"]
     request_id: str
     artifact_uris: List[str] = Field(default_factory=list)
     steps: List[Dict[str, Any]] = Field(default_factory=list)
     simulation_report: Optional[Dict[str, Any]] = None
+    queue: Optional[QueueInfo] = None
 
 
 app = FastAPI(title="production_agent Entrypoint")
@@ -68,6 +83,18 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
 
     try:
         result = execute_plan(plan_payload, mode=req.mode)
+    except StepQueuedError as exc:
+        LOG.warning(
+            "production_agent.execute_plan queued",
+            extra={"request_id": request_id, "step_id": exc.record.step_id},
+        )
+        try:
+            ticket = enqueue_plan(plan_payload=plan_payload, mode=req.mode, queued_record=exc.record)
+        except ValueError as enqueue_error:  # pragma: no cover - defensive
+            raise HTTPException(status_code=500, detail=str(enqueue_error)) from enqueue_error
+        payload = _queued_response(request_id, ticket)
+        _emit_events(req.mode, payload)
+        return payload
     except ProductionAgentError as exc:
         LOG.exception("production_agent.execute_plan failed", extra={"request_id": request_id})
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -119,6 +146,26 @@ def _simulation_report_to_dict(report: Optional[SimulationReport]) -> Optional[D
         "policy_decisions": list(report.policy_decisions),
         "steps": [asdict(step) for step in report.steps],
     }
+
+
+def _queued_response(request_id: str, ticket: QueueTicket) -> Dict[str, Any]:
+    info = QueueInfo(
+        ticket_id=ticket.ticket_id,
+        plan_id=ticket.plan_id,
+        plan_title=ticket.plan_title,
+        step_id=ticket.step_id,
+        eta_seconds=ticket.eta_seconds(),
+        eta_epoch_s=ticket.eta_epoch_s,
+        attempt=ticket.attempt,
+        max_attempts=ticket.max_attempts,
+        message=ticket.message,
+    )
+    response = ResponseModel(
+        status="queued",
+        request_id=request_id,
+        queue=info,
+    )
+    return response.model_dump() if hasattr(response, "model_dump") else response.dict()
 
 
 def _emit_events(mode: str, payload: Dict[str, Any]) -> None:

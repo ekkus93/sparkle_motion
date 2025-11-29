@@ -5,10 +5,10 @@
 
 ## Snapshot (2025-11-28)
 
-- `docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, and `docs/SCHEMA_ARTIFACTS.md` are now aligned; `docs/IMPLEMENTATION_TASKS.md` remains the authoritative engineering backlog.
-- Runtime is still single-user/Colab-local; rate-limiter + queue semantics are intentionally deferred until we add multi-user capacity.
-- Schema artifact URIs are cataloged but not yet verified against ADK ArtifactService because no ADK environment is connected.
-- Next steps: execute the Implementation Tasks below; no runtime code was changed during the documentation alignment, so everything listed here is still outstanding.
+- Script + Production agents are live end-to-end: `script_agent.generate_plan()` persists validated MoviePlans, `production_agent.execute_plan()` is wired through the WorkflowAgent/tool registry, and the new production-agent FunctionTool entrypoint plus CLI/tests are green.
+- `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (202 passed / 1 skipped) is clean after the API change.
+- Schema + QA artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs, QA policy bundle lives under `artifacts/qa_policy/v1/`), so downstream modules consume typed resolvers via `schema_registry`.
+- Runtime profile remains single-user/Colab-local; the remaining P0 work is concentrated on media agents (`images|videos|tts`) plus their adapters, dedupe/rate-limit scaffolding, and deterministic fixtures outlined below.
 
 ## Priority legend
 

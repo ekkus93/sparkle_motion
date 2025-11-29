@@ -1,42 +1,211 @@
 from __future__ import annotations
+
+from typing import Any, Dict, List
+
 import pytest
 
 from sparkle_motion import images_agent
+from sparkle_motion.ratelimit import RateLimitDecision, RateLimiter
+from sparkle_motion.utils.dedupe import RecentIndex, compute_hash
 
 
-def test_batch_split_and_ordering():
-    prompt = "make a test image"
-    opts = {"count": 20, "max_images_per_call": 8, "seed": 42}
-    artifacts = images_agent.render(prompt, opts)
-    assert len(artifacts) == 20
+class _ScriptedLimiter(RateLimiter):
+    def __init__(self, decisions: List[RateLimitDecision]) -> None:
+        self._decisions = decisions
+        self.calls: List[Dict[str, Any]] = []
 
-    # global_index metadata should be ascending
-    indices = [a["metadata"]["global_index"] for a in artifacts]
-    assert indices == list(range(20))
+    def allow(self, tokens: int = 1) -> bool:
+        if not self._decisions:
+            return True
+        return self._decisions[0].allowed
 
-
-def test_deduplicate_within_plan():
-    # prompt contains 'duplicate' to trigger adapter duplicate behavior
-    prompt = "duplicate test"
-    opts = {"count": 4, "max_images_per_call": 4, "seed": 1, "dedupe": True}
-    artifacts = images_agent.render(prompt, opts)
-    assert len(artifacts) == 4
-
-    uris = [a.get("uri") for a in artifacts]
-    # duplicates created by adapter are canonicalized to same inmem:// hash
-    assert uris[0] == uris[2]
+    def request(self, tokens: int = 1, *, queue_allowed: bool = False, ttl_s: float = 600.0) -> RateLimitDecision:
+        self.calls.append({"tokens": tokens, "queue_allowed": queue_allowed, "ttl_s": ttl_s})
+        if not self._decisions:
+            return RateLimitDecision(status="allowed", tokens=tokens)
+        return self._decisions.pop(0)
 
 
-def test_qa_called(monkeypatch):
+def _install_fake_renderer(monkeypatch: pytest.MonkeyPatch, responses: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    calls: List[Dict[str, Any]] = []
+
+    def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - helper
+        call_index = len(calls)
+        calls.append({"count": opts["count"], "batch_start": opts.get("batch_start", 0)})
+        return responses[call_index]
+
+    monkeypatch.setattr(images_agent, "render_images", fake_render)
+    return calls
+
+
+def test_render_batches_preserve_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses: List[List[Dict[str, Any]]] = []
+    counts = [3, 3, 3, 1]
+    start = 0
+    for batch_size in counts:
+        batch: List[Dict[str, Any]] = []
+        for offset in range(batch_size):
+            absolute = start + offset
+            batch.append({"data": f"item-{absolute}".encode(), "metadata": {"value": absolute}})
+        responses.append(batch)
+        start += batch_size
+
+    calls = _install_fake_renderer(monkeypatch, responses)
+
+    result = images_agent.render("prompt", {"count": 10, "max_images_per_call": 3})
+
+    assert [call["count"] for call in calls] == counts
+    assert len(result) == 10
+    for idx, artifact in enumerate(result):
+        meta = artifact["metadata"]
+        assert meta["global_index"] == idx
+        assert meta["batch_index"] == idx // 3
+        expected_item_index = idx % 3 if idx < 9 else 0
+        assert meta["item_index"] == expected_item_index
+        assert meta["batch_start"] in {0, 3, 6, 9}
+        assert artifact.get("data") is not None
+
+
+def test_render_dedupe_within_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    duplicate_payload = b"duplicate"
+    responses = [[
+        {"data": b"unique-0", "metadata": {}},
+        {"data": duplicate_payload, "metadata": {}},
+        {"data": duplicate_payload, "metadata": {}},
+        {"data": b"unique-3", "metadata": {}},
+    ]]
+
+    _install_fake_renderer(monkeypatch, responses)
+    recent = RecentIndex()
+
+    result = images_agent.render(
+        "prompt",
+        {"count": 4, "max_images_per_call": 8, "dedupe": True, "recent_index": recent},
+    )
+
+    assert len(result) == 4
+    # First duplicate establishes canonical entry (not marked deduped)
+    canonical = result[1]["uri"]
+    assert result[1]["metadata"].get("deduped") is None
+    assert result[2]["metadata"].get("deduped") is True
+    assert result[2]["duplicate_of"] == canonical
+    assert "data" not in result[2]
+    digest = compute_hash(duplicate_payload)
+    assert recent.get(digest) == canonical
+
+
+def test_render_without_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[
+        {"data": b"blob", "metadata": {}},
+        {"data": b"blob", "metadata": {}},
+    ]]
+    _install_fake_renderer(monkeypatch, responses)
+
+    result = images_agent.render("prompt", {"count": 2, "max_images_per_call": 2, "dedupe": False})
+
+    assert len(result) == 2
+    for artifact in result:
+        assert artifact["data"] == b"blob"
+        assert "duplicate_of" not in artifact
+        assert artifact["metadata"].get("deduped") is None
+
+
+def test_qa_called(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[{"data": b"qadata", "metadata": {}}]]
+    _install_fake_renderer(monkeypatch, responses)
+
     called = {"count": 0}
 
-    def fake_inspect(frames, prompts):
+    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
         called["count"] += 1
-        return {"ok": True}
+        assert frames and frames[0] == b"qadata"
+        return {"ok": True, "frames": [{"decision": "ok"}]}
 
-    monkeypatch.setattr("function_tools.qa_qwen2vl.entrypoint.inspect_frames", fake_inspect)
-    prompt = "qa test"
-    opts = {"count": 2, "qa": True}
-    artifacts = images_agent.render(prompt, opts)
+    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+
+    result = images_agent.render("prompt", {"count": 1, "qa": True})
+
     assert called["count"] == 1
-    assert len(artifacts) == 2
+    assert len(result) == 1
+    assert result[0]["metadata"].get("qa_status") == "ok"
+
+
+def test_reference_images_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = {"adapter": 0}
+
+    def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - should not run
+        called["adapter"] += 1
+        return []
+
+    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
+        assert len(frames) == 1
+        return {"reject": True, "reason": "nsfw"}
+
+    monkeypatch.setattr(images_agent, "render_images", fake_render)
+    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+
+    with pytest.raises(images_agent.PlanPolicyViolation):
+        images_agent.render(
+            "prompt",
+            {
+                "count": 1,
+                "qa": True,
+                "reference_images": [b"img"],
+            },
+        )
+
+    assert called["adapter"] == 0
+
+
+def test_post_render_qa_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[
+        {"data": b"qadata-0", "metadata": {}},
+        {"data": b"qadata-1", "metadata": {}},
+    ]]
+    _install_fake_renderer(monkeypatch, responses)
+
+    call_count = {"value": 0}
+
+    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
+        call_count["value"] += 1
+        assert len(frames) == 2
+        return {"frames": [{"decision": "reject"}], "reason": "nsfw"}
+
+    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+
+    with pytest.raises(images_agent.PlanPolicyViolation):
+        images_agent.render("prompt", {"count": 2, "qa": True})
+
+    assert call_count["value"] == 1
+
+
+def test_rate_limit_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[{"data": b"blob", "metadata": {}}]]
+    _install_fake_renderer(monkeypatch, responses)
+    decision = RateLimitDecision(status="queued", tokens=1, retry_after_s=1.0, eta_epoch_s=42.0)
+    limiter = _ScriptedLimiter([decision])
+
+    with pytest.raises(images_agent.RateLimitQueued) as exc:
+        images_agent.render("prompt", {"count": 1, "rate_limiter": limiter})
+
+    assert exc.value.decision == decision
+    assert limiter.calls[0]["queue_allowed"] is True
+
+
+def test_rate_limit_reject_without_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[{"data": b"blob", "metadata": {}}]]
+    _install_fake_renderer(monkeypatch, responses)
+    decision = RateLimitDecision(status="rejected", tokens=1, retry_after_s=0.5)
+    limiter = _ScriptedLimiter([decision])
+
+    with pytest.raises(images_agent.RateLimitExceeded):
+        images_agent.render(
+            "prompt",
+            {
+                "count": 1,
+                "rate_limiter": limiter,
+                "queue_allowed": False,
+            },
+        )
+
+    assert limiter.calls[0]["queue_allowed"] is False

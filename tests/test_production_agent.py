@@ -6,12 +6,15 @@ from typing import Dict, List
 
 import pytest
 
+from sparkle_motion.images_agent import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
-    ProductionAgentConfig,
     ProductionResult,
     StepExecutionRecord,
+    StepQueuedError,
+    StepRateLimitExceededError,
     execute_plan,
 )
+from sparkle_motion.ratelimit import RateLimitDecision
 from sparkle_motion.schemas import DialogueLine, MoviePlan, ShotSpec
 
 
@@ -124,3 +127,47 @@ def test_progress_callback_invoked(monkeypatch: pytest.MonkeyPatch, sample_plan:
     execute_plan(sample_plan, mode="run", progress_callback=on_progress)
     assert seen
     assert all(isinstance(record, StepExecutionRecord) for record in seen)
+
+
+def _enable_full_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+
+
+def test_rate_limit_queue_sets_record(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    decision = RateLimitDecision(status="queued", tokens=2, retry_after_s=3.0, eta_epoch_s=10.0, ttl_deadline_s=20.0, reason="rate")
+
+    def _raise_queue(*_: object, **__: object) -> Path:
+        raise RateLimitQueued("queued", decision)
+
+    monkeypatch.setattr("sparkle_motion.production_agent._render_frames", _raise_queue)
+
+    with pytest.raises(StepQueuedError) as excinfo:
+        execute_plan(sample_plan, mode="run")
+
+    record = excinfo.value.record
+    assert record.status == "queued"
+    assert record.step_id.endswith(":images")
+    rl = record.meta.get("rate_limit")
+    assert rl and rl["status"] == "queued"
+
+
+def test_rate_limit_exceeded_sets_record(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    decision = RateLimitDecision(status="rejected", tokens=2, retry_after_s=0.5, eta_epoch_s=5.0, ttl_deadline_s=15.0, reason="maxed")
+
+    def _raise_exceeded(*_: object, **__: object) -> Path:
+        raise RateLimitExceeded("rejected", decision)
+
+    monkeypatch.setattr("sparkle_motion.production_agent._render_frames", _raise_exceeded)
+
+    with pytest.raises(StepRateLimitExceededError) as excinfo:
+        execute_plan(sample_plan, mode="run")
+
+    record = excinfo.value.record
+    assert record.status == "failed"
+    rl = record.meta.get("rate_limit")
+    assert rl and rl["status"] == "rejected"
