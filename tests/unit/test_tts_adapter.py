@@ -103,3 +103,7 @@ def test_artifact_metadata_builder_populates_context(tmp_path: Path) -> None:
     assert metadata["score_breakdown"]["quality"] == pytest.approx(0.8)
     assert metadata["model_id"] == request.provider.display_name
     assert metadata["attempt"] == 2
+    voice_meta = metadata["voice_metadata"]
+    assert voice_meta["display_name"] == "Narrator"
+    assert voice_meta["provider_voice_id"] == "fixture-voice"
+    assert voice_meta["language_codes"] == ["en"]

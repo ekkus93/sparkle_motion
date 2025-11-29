@@ -166,6 +166,9 @@ def test_provider_fallback_on_quota(tmp_path: Path, publish_backend: List[Dict[s
     assert published_meta["score_breakdown"]
     assert published_meta["selection_reason"] == "weighted"
     assert published_meta["estimated_cost_usd"] == pytest.approx(0.0)
+    voice_meta = published_meta["voice_metadata"]
+    assert voice_meta["voice_id"] == "narrator"
+    assert voice_meta["provider_id"] == "fixture-local"
 
 
 def test_retryable_error_retries_before_success(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
@@ -220,6 +223,7 @@ def test_retryable_error_retries_before_success(tmp_path: Path, publish_backend:
     assert published_meta["adapter_metadata"]["attempt"] == 2
     assert artifact["metadata"]["attempt"] == 2
     assert published_meta["estimated_cost_usd"] >= 0
+    assert published_meta["voice_metadata"]["provider_voice_id"] == "retry-voice"
 
 
 def test_retryable_error_honors_retry_after(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
@@ -269,6 +273,7 @@ def test_retryable_error_honors_retry_after(tmp_path: Path, publish_backend: Lis
     assert attempts["count"] == 2
     assert sleeps == pytest.approx([1.75])
     assert artifact["metadata"]["attempt"] == 2
+    assert artifact["metadata"]["voice_metadata"]["provider_voice_id"] == "retry-voice"
 
 
 def test_max_cost_filters_providers(tmp_path: Path, publish_backend: List[Dict[str, Any]]) -> None:
@@ -325,3 +330,4 @@ def test_max_cost_filters_providers(tmp_path: Path, publish_backend: List[Dict[s
     assert call_sequence == ["economy"]
     assert artifact["metadata"]["provider_id"] == "economy"
     assert artifact["metadata"]["estimated_cost_usd"] <= 0.001
+    assert artifact["metadata"]["voice_metadata"]["provider_id"] == "economy"

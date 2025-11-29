@@ -197,6 +197,24 @@ def _compute_retry_delay(policy: RetryPolicy, attempt: int, override: Optional[f
     return max(base + delta, 0.0)
 
 
+def _voice_metadata_payload(voice: VoiceMetadata) -> Dict[str, Any]:
+    return {
+        "voice_id": voice.voice_id,
+        "provider_id": voice.provider_id,
+        "provider_voice_id": voice.provider_voice_id,
+        "description": voice.description,
+        "display_name": voice.display_name,
+        "language_codes": list(voice.language_codes),
+        "features": list(voice.features),
+        "sample_rate": voice.sample_rate,
+        "bit_depth": voice.bit_depth,
+        "watermarking": voice.watermarking,
+        "estimated_cost_usd_per_1k_chars": voice.estimated_cost_usd_per_1k_chars,
+        "estimated_latency_s": voice.estimated_latency_s,
+        "quality_score": voice.quality_score,
+    }
+
+
 def register_adapter(name: str, adapter: AdapterCallable) -> None:
     """Register or replace an adapter callable for a provider adapter id."""
 
@@ -286,6 +304,9 @@ def synthesize(
             "run_id": resolved_run,
             "text_chars": text_chars,
             "voice_id": voice_id,
+            "voice_description": voice_profile.description,
+            "voice_default_sample_rate": voice_profile.default_sample_rate,
+            "voice_default_bit_depth": voice_profile.default_bit_depth,
             "candidate_count": len(candidates),
         },
     )
@@ -330,6 +351,7 @@ def synthesize(
                     attempt=attempt,
                     total_text=text,
                 )
+                voice_payload = metadata.get("voice_metadata") or {}
                 artifact = adk_helpers.publish_artifact(
                     local_path=result.path,
                     artifact_type=_ARTIFACT_TYPE,
@@ -344,6 +366,7 @@ def synthesize(
                         "voice_id": resolved_voice.voice_id,
                         "artifact_uri": artifact.get("uri"),
                         "score_breakdown": dict(selection.breakdown),
+                        "voice_metadata": dict(voice_payload),
                     },
                 )
                 telemetry.emit_event(
@@ -354,6 +377,7 @@ def synthesize(
                         "plan_id": resolved_plan,
                         "step_id": resolved_step,
                         "artifact_uri": artifact.get("uri"),
+                        "voice_metadata": dict(voice_payload),
                     },
                 )
                 return artifact
@@ -546,6 +570,7 @@ def _build_artifact_metadata(
     attempt: int,
     total_text: str,
 ) -> Dict[str, Any]:
+    voice_payload = _voice_metadata_payload(request.voice)
     metadata: Dict[str, Any] = {
         "plan_id": request.plan_id,
         "step_id": request.step_id,
@@ -563,6 +588,7 @@ def _build_artifact_metadata(
         "selection_score": selection.score,
         "estimated_cost_usd": selection.estimated_cost_usd,
         "adapter_metadata": dict(result.metadata),
+        "voice_metadata": voice_payload,
     }
     metadata.setdefault("model_id", request.provider.display_name)
     return metadata

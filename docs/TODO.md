@@ -63,7 +63,7 @@
   - [x] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
 - [ ] `tts_agent`
   - [x] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
-  - [ ] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
+  - [x] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
 
 ### Sequence of Work — `tts_agent`
 

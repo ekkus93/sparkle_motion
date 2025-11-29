@@ -616,6 +616,7 @@ def _synthesize_dialogue(
     total_duration = 0.0
     primary_metadata: Optional[Dict[str, Any]] = None
     primary_artifact_uri: Optional[str] = None
+    primary_voice_metadata: Optional[Mapping[str, Any]] = None
 
     for idx, line in valid_lines:
         text = line.text.strip()
@@ -652,11 +653,16 @@ def _synthesize_dialogue(
         adapter_meta = metadata.get("adapter_metadata")
         if isinstance(adapter_meta, Mapping):
             entry["adapter_metadata"] = dict(adapter_meta)
+        voice_meta = metadata.get("voice_metadata")
+        if isinstance(voice_meta, Mapping):
+            entry["voice_metadata"] = dict(voice_meta)
         line_entries.append(entry)
 
         if primary_metadata is None:
             primary_metadata = metadata
             primary_artifact_uri = artifact.get("uri")
+            if isinstance(voice_meta, Mapping):
+                primary_voice_metadata = dict(voice_meta)
 
     score_breakdown = (primary_metadata or {}).get("score_breakdown")
     score_meta = dict(score_breakdown) if isinstance(score_breakdown, Mapping) else {}
@@ -669,6 +675,8 @@ def _synthesize_dialogue(
         "voice_id": (primary_metadata or {}).get("voice_id"),
         "score_breakdown": score_meta,
     }
+    if isinstance(primary_voice_metadata, Mapping):
+        tts_meta["voice_metadata"] = dict(primary_voice_metadata)
     return StepResult(
         path=audio_dir,
         paths=tuple(line_paths),

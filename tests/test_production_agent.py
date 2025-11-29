@@ -76,16 +76,33 @@ def _stub_tts_agent(monkeypatch: pytest.MonkeyPatch) -> List[Dict[str, Any]]:
         step_label = (kwargs.get("step_id") or "tts").replace(":", "_")
         dest = output_dir / f"{step_label}.wav"
         dest.write_bytes(b"FAKE_TTS")
+        voice_id = (voice_config or {}).get("voice_id", "default")
+        voice_payload = {
+            "voice_id": voice_id,
+            "provider_id": "fixture-local",
+            "provider_voice_id": f"{voice_id}-voice",
+            "description": f"{voice_id} voice",
+            "display_name": voice_id.title(),
+            "language_codes": ["en"],
+            "features": ["fixture"],
+            "sample_rate": 22050,
+            "bit_depth": 16,
+            "watermarking": False,
+            "estimated_cost_usd_per_1k_chars": 0.0,
+            "estimated_latency_s": 0.1,
+            "quality_score": 0.5,
+        }
         metadata = {
             "source_path": str(dest),
             "model_id": "fixture-tts",
             "provider_id": "fixture-local",
-            "voice_id": (voice_config or {}).get("voice_id", "default"),
+            "voice_id": voice_id,
             "duration_s": 0.5,
             "sample_rate": 22050,
             "bit_depth": 16,
             "watermarked": False,
             "score_breakdown": {"quality": 1.0},
+            "voice_metadata": voice_payload,
         }
         calls.append(
             {
@@ -331,6 +348,8 @@ def test_tts_step_records_metadata(monkeypatch: pytest.MonkeyPatch, sample_plan:
     assert tts_meta["lines_synthesized"] == len(sample_plan.shots[0].dialogue)
     assert len(tts_meta["line_artifacts"]) == len(sample_plan.shots[0].dialogue)
     assert record.meta["dialogue_paths"]
+    assert tts_meta["voice_metadata"]["provider_id"] == "fixture-local"
+    assert "voice_metadata" in tts_meta["line_artifacts"][0]
 
 
 def test_voice_profile_forwarded_to_tts(
@@ -401,6 +420,8 @@ def test_multiple_dialogue_lines_recorded(
     dialogue_paths = record.meta["dialogue_paths"]
     assert len(dialogue_paths) == 2
     assert len(record.meta["tts"]["line_artifacts"]) == 2
+    for artifact in record.meta["tts"]["line_artifacts"]:
+        assert artifact["voice_metadata"]["language_codes"] == ["en"]
 
 
 def test_tts_policy_violation_raises(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
