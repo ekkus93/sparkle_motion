@@ -1,9 +1,7 @@
 from __future__ import annotations
-from typing import Any, Literal
-import re
+from typing import Any, Dict, Literal, Mapping
 from pathlib import Path
 import os
-import json
 import logging
 import uuid
 import time
@@ -14,23 +12,76 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
-from sparkle_motion import adk_factory, observability, telemetry
+from sparkle_motion import adk_factory, adk_helpers, observability, telemetry
+from sparkle_motion.function_tools.assemble_ffmpeg import adapter
 
 LOG = logging.getLogger("assemble_ffmpeg.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
+class ClipModel(BaseModel):
+    uri: str
+    start_s: float = 0.0
+    end_s: float | None = None
+    metadata: Dict[str, Any] | None = None
+    transition: Dict[str, Any] | None = None
+
+
+class AudioModel(BaseModel):
+    uri: str
+    start_s: float = 0.0
+    end_s: float | None = None
+    metadata: Dict[str, Any] | None = None
+    gain_db: float | None = None
+
+
+class OptionsModel(BaseModel):
+    video_codec: str | None = Field(default="libx264")
+    audio_codec: str | None = Field(default="aac")
+    pix_fmt: str | None = Field(default="yuv420p")
+    crf: int | None = Field(default=18, ge=0)
+    preset: str | None = Field(default="veryslow")
+    audio_bitrate: str | None = Field(default="192k")
+    timeout_s: float | None = Field(default=120.0, gt=0)
+    retries: int | None = Field(default=0, ge=0)
+    fixture_only: bool | None = None
+
+
 class RequestModel(BaseModel):
-    # TODO: adjust fields for real schema
-    prompt: str
+    plan_id: str | None = None
+    run_id: str | None = None
+    step_id: str | None = None
+    seed: int | None = None
+    clips: list[ClipModel]
+    audio: AudioModel | None = None
+    options: OptionsModel | None = None
+    metadata: Dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_clips(self) -> "RequestModel":
+        if not self.clips:
+            raise ValueError("At least one clip is required")
+        return self
+
+
+def _serialize_validation_errors(errors: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    cleaned: list[Dict[str, Any]] = []
+    for err in errors:
+        data = dict(err)
+        ctx = data.get("ctx")
+        if isinstance(ctx, dict):
+            data["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v) for k, v in ctx.items()}
+        cleaned.append(data)
+    return cleaned
 
 
 class ResponseModel(BaseModel):
     status: Literal["success", "error"]
     artifact_uri: str | None
     request_id: str
+    metadata: Dict[str, Any] | None = None
 
 
 def make_app() -> FastAPI:
@@ -93,7 +144,7 @@ def make_app() -> FastAPI:
             LOG.debug("validation error", exc_info=exc)
         except Exception:
             pass
-        return JSONResponse(status_code=400, content={"detail": exc.errors()})
+        return JSONResponse(status_code=400, content={"detail": _serialize_validation_errors(exc.errors())})
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -132,82 +183,26 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
-            # minimal validation
-            if not getattr(req, "prompt", None):
-                raise HTTPException(status_code=400, detail="prompt required")
-
-            deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
-            artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
-            os.makedirs(artifacts_dir, exist_ok=True)
-
-            def _slugify(s: str) -> str:
-                s = s.strip()
-                s = re.sub(r"\s+", "_", s)
-                s = re.sub(r"[^A-Za-z0-9._-]", "", s)
-                return s[:80] or "artifact"
-
-            safe_name = _slugify(getattr(req, "prompt", "artifact"))
-            filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
-            local_path = os.path.join(artifacts_dir, filename)
-            try:
-                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
-            except Exception:
-                try:
-                    payload = json.dumps(req.dict(), ensure_ascii=False)
-                except Exception as e:
-                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
-                    raise HTTPException(status_code=500, detail="failed to serialize request")
+            result = _invoke_adapter(req)
+            metadata = _build_metadata(req, result, request_id)
+            artifact_uri = _publish_artifact(result.path, metadata)
 
             try:
-                with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-            except Exception as e:
-                LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
-                raise HTTPException(status_code=500, detail="failed to persist artifact")
-
-            # publish using ADK helpers (SDK -> CLI) with file:// fallback
-            artifact_uri = None
-            artifact_name = Path(local_path).name
-            try:
-                import sparkle_motion.adk_helpers as ah
-            except Exception:
-                ah = None
-
-            if ah is not None:
-                try:
-                    sdk_res = ah.probe_sdk()
-                    if sdk_res:
-                        adk_module, client = sdk_res
-                        try:
-                            artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
-                        except Exception:
-                            artifact_uri = None
-
-                    if not artifact_uri:
-                        try:
-                            artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
-                        except Exception:
-                            artifact_uri = None
-                except Exception:
-                    artifact_uri = None
-
-            # In fixture/test mode prefer a local file:// URI so tests can assert on files
-            if artifact_uri and os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            if not artifact_uri:
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            try:
-                send_telemetry("invoke.completed", {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri})
+                send_telemetry(
+                    "invoke.completed",
+                    {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri, "engine": metadata.get("engine")},
+                )
             except Exception:
                 pass
             try:
-                telemetry.emit_event("invoke.completed", {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri})
+                telemetry.emit_event(
+                    "invoke.completed",
+                    {"tool": "assemble_ffmpeg", "request_id": request_id, "artifact_uri": artifact_uri, "engine": metadata.get("engine")},
+                )
             except Exception:
                 pass
 
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
@@ -217,3 +212,99 @@ def make_app() -> FastAPI:
 
 
 app = make_app()
+
+
+def _invoke_adapter(req: RequestModel) -> adapter.AssemblyResult:
+    options = _options_dict(req.options)
+    clips = [_clip_spec_from_model(clip) for clip in req.clips]
+    audio = _audio_spec_from_model(req.audio) if req.audio else None
+    try:
+        return adapter.assemble_movie(
+            clips=clips,
+            audio=audio,
+            plan_id=req.plan_id,
+            options=options,
+            seed=req.seed,
+            output_dir=_artifacts_dir(),
+        )
+    except adapter.AssemblyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except adapter.CommandTimeoutError as exc:
+        raise HTTPException(status_code=503, detail="ffmpeg timed out") from exc
+    except adapter.CommandError as exc:
+        raise HTTPException(status_code=500, detail="ffmpeg command failed") from exc
+
+
+def _clip_spec_from_model(model: ClipModel) -> adapter.ClipSpec:
+    path = Path(model.uri).expanduser().resolve()
+    if not path.exists():
+        raise HTTPException(status_code=400, detail=f"clip not found: {path}")
+    return adapter.ClipSpec(
+        uri=path,
+        start_s=model.start_s,
+        end_s=model.end_s,
+        metadata=model.metadata,
+        transition=model.transition,
+    )
+
+
+def _audio_spec_from_model(model: AudioModel | None) -> adapter.AudioSpec | None:
+    if model is None:
+        return None
+    path = Path(model.uri).expanduser().resolve()
+    if not path.exists():
+        raise HTTPException(status_code=400, detail=f"audio not found: {path}")
+    return adapter.AudioSpec(
+        uri=path,
+        start_s=model.start_s,
+        end_s=model.end_s,
+        metadata=model.metadata,
+        gain_db=model.gain_db,
+    )
+
+
+def _options_dict(options: OptionsModel | None) -> Dict[str, Any]:
+    return options.model_dump(exclude_none=True) if options else {}
+
+
+def _artifacts_dir() -> Path:
+    base = Path(os.environ.get("ARTIFACTS_DIR", Path.cwd() / "artifacts"))
+    target = base / "assemble_ffmpeg"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _build_metadata(req: RequestModel, result: adapter.AssemblyResult, request_id: str) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = dict(result.metadata)
+    metadata.setdefault("engine", result.engine)
+    metadata["request_id"] = request_id
+    metadata["local_path"] = str(result.path)
+    metadata["duration_s"] = result.duration_s
+    if req.plan_id:
+        metadata.setdefault("plan_id", req.plan_id)
+    if req.step_id:
+        metadata["step_id"] = req.step_id
+    if req.run_id:
+        metadata["run_id"] = req.run_id
+    if req.metadata:
+        user_meta = dict(req.metadata)
+        metadata.setdefault("user_metadata", user_meta)
+    return metadata
+
+
+def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
+    try:
+        artifact = adk_helpers.publish_artifact(
+            local_path=path,
+            artifact_type="video_final",
+            media_type="video/mp4",
+            metadata=metadata,
+        )
+        uri = artifact.get("uri")  # type: ignore[index]
+    except Exception:
+        uri = None
+    if not uri:
+        uri = f"file://{path}"
+    if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and isinstance(uri, str) and uri.startswith("artifact://"):
+        return f"file://{path}"
+    return str(uri)

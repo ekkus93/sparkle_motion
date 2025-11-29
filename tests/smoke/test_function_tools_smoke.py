@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from pathlib import Path
 import importlib
 from fastapi.testclient import TestClient
 
@@ -20,7 +21,9 @@ def test_function_tools_basic_smoke(monkeypatch):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     monkeypatch.setenv("DETERMINISTIC", "1")
     # ensure artifacts dir is writable in CI/temp
-    monkeypatch.setenv("ARTIFACTS_DIR", os.environ.get("ARTIFACTS_DIR", "artifacts/test_smoke"))
+    artifacts_dir = Path(os.environ.get("ARTIFACTS_DIR", "artifacts/test_smoke"))
+    monkeypatch.setenv("ARTIFACTS_DIR", str(artifacts_dir))
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     for mod_path in FUNCTION_TOOL_MODULES:
         mod = importlib.import_module(mod_path)
@@ -48,7 +51,7 @@ def test_function_tools_basic_smoke(monkeypatch):
         assert "ready" in j
 
         # invoke - basic payload
-        payload = {"prompt": "unit-test prompt"}
+        payload = _payload_for_module(mod_path, artifacts_dir)
         r = client.post("/invoke", json=payload)
         assert r.status_code == 200, f"invoke failed for {mod_path}: {r.text}"
         j = r.json()
@@ -58,8 +61,6 @@ def test_function_tools_basic_smoke(monkeypatch):
         assert uri is not None and uri.startswith("file://"), f"unexpected artifact uri for {mod_path}: {uri}"
         # optional checks when fixture mode writes files
         try:
-            from pathlib import Path
-
             path = Path(uri[len("file://"):])
             assert path.exists(), f"artifact file missing for {mod_path}: {path}"
             # lightly validate the artifact contains the prompt text when textual
@@ -77,3 +78,11 @@ def test_function_tools_basic_smoke(monkeypatch):
             assert isinstance(j["tool_name"], str)
         if "telemetry" in j:
             assert isinstance(j["telemetry"], dict)
+
+
+def _payload_for_module(module_path: str, artifacts_dir: Path) -> dict[str, object]:
+    if module_path.endswith("assemble_ffmpeg.entrypoint"):
+        clip = artifacts_dir / "smoke_clip.mp4"
+        clip.write_bytes(b"clip")
+        return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
+    return {"prompt": "unit-test prompt"}

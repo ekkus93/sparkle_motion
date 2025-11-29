@@ -43,8 +43,8 @@ def test_entrypoint_contract(module_path: str, monkeypatch, tmp_path: Path):
     ready_json = r.json()
     assert "ready" in ready_json and "shutting_down" in ready_json
 
-    # /invoke
-    r = client.post("/invoke", json={"prompt": "param test"})
+    payload = _build_payload(module_path, tmp_path)
+    r = client.post("/invoke", json=payload)
     assert r.status_code == 200, r.text
     j = r.json()
     assert j.get("status") == "success"
@@ -65,7 +65,20 @@ def test_entrypoint_missing_prompt_returns_400(module_path: str, monkeypatch, tm
     app = mod.make_app() if hasattr(mod, "make_app") else getattr(mod, "app")
     client = TestClient(app)
 
-    # missing prompt should lead to a 400 Bad Request (or 422 Unprocessable Entity
-    # depending on FastAPI/Pydantic validation behavior). Accept either.
-    r = client.post("/invoke", json={})
+    missing_payload = _build_missing_payload(module_path)
+    r = client.post("/invoke", json=missing_payload)
     assert r.status_code in (400, 422), f"unexpected status: {r.status_code} / {r.text}"
+
+
+def _build_payload(module_path: str, tmp_path: Path) -> dict:
+    if module_path.endswith("assemble_ffmpeg.entrypoint"):
+        clip = tmp_path / "assemble_clip.mp4"
+        clip.write_bytes(b"clip")
+        return {"clips": [{"uri": str(clip)}], "options": {"fixture_only": True}}
+    return {"prompt": "param test"}
+
+
+def _build_missing_payload(module_path: str) -> dict:
+    if module_path.endswith("assemble_ffmpeg.entrypoint"):
+        return {"clips": []}
+    return {}

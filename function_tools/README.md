@@ -49,6 +49,21 @@ additional terminals and launch each tool with its own port number.
   must return the full metadata envelope so policy gates and QA have consistent
   observability.
 
+### Assemble flow
+
+- `assemble_ffmpeg` defaults to a deterministic MP4 fixture so developers can
+  exercise the production agent without `ffmpeg` installed. Enable the real
+  concat/render path by setting `SMOKE_ASSEMBLE=1` (or the broader
+  `SMOKE_ADAPTERS=1`) and ensuring an `ffmpeg` binary is available on `PATH`
+  (override via `FFMPEG_PATH`).
+- Requests must supply ordered clip descriptors (and optional audio) and the
+  entrypoint publishes a `video_final` artifact with metadata covering the
+  engine (`fixture` vs `ffmpeg`), plan identifiers, and the command tail
+  captured from stdout/stderr.
+- Force fixture mode even when smoke flags are set by exporting
+  `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1`; this mirrors the `options.fixture_only`
+  field on the `/invoke` request body.
+
 ## Tool metadata
 
 Deployment metadata shared with ADK lives in `configs/tool_registry.yaml`. That

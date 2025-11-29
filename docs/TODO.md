@@ -71,9 +71,9 @@
 6. [x] Update docs (`docs/TODO.md`, `docs/ORCHESTRATOR.md`, function tool READMEs) to reflect the new TTS flow, env vars, and artifact publishing expectations. (See `docs/ORCHESTRATOR.md#tts`, `function_tools/README.md#tts-flow`, and this snapshot for the authoritative contract.)
 
 #### FunctionTools / adapters
-- [ ] `function_tools/images_sdxl`
-  - [ ] Build deterministic stub returning 16×16 PNGs seeded by `(prompt, seed)`; real model path must use `gpu_utils.model_context()`.
-  - [ ] Emit artifact metadata (seed, dimensions, pHash) and publish via `adk_helpers`.
+- [x] `function_tools/images_sdxl`
+  - [x] Built deterministic PNG fixture (seeded by prompt/index) plus SDXL pipeline gated by `SMOKE_IMAGES`/`SMOKE_ADAPTERS` and `gpu_utils.model_context()`.
+  - [x] Emits metadata (seed, dimensions, sampler, steps, phash, device) and entrypoint publishes artifacts via `adk_helpers`; README documents GPU smoke instructions.
 - [ ] `function_tools/videos_wan`
   - [ ] Provide chunked render stub + metadata; wrap real Wan2.1 pipeline inside `model_context()` and ensure CUDA cleanup.
   - [ ] Support `SMOKE_ADAPTERS` flag to toggle heavy loads.
@@ -89,8 +89,8 @@
     - Added `tests/test_function_tools/test_tts_chatterbox_entrypoint.py` verifying `/invoke` happy-path responses, artifact URIs, and local-path metadata under fixture mode.
 - [ ] `function_tools/qa_qwen2vl`
   - [ ] Implement `inspect_frames(frames, prompts) -> QAReport` stub plus hooks for real Qwen-2-VL invocation later.
-- [ ] `function_tools/assemble_ffmpeg`
-  - [ ] Implement deterministic ffmpeg planner using safe subprocess helper and returning `ArtifactRef`.
+- [x] `function_tools/assemble_ffmpeg`
+  - [x] Implemented adapter with deterministic MP4 fixture + optional ffmpeg concat path, safe `run_command` wrapper, metadata (engine, plan_id, command tails) and FastAPI entrypoint publishing `video_final` artifacts.
 - [ ] `function_tools/lipsync_wav2lip`
   - [ ] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
@@ -104,7 +104,8 @@
 - [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
 - [ ] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
 - [ ] `tests/unit/test_images_adapter.py`, `tests/unit/test_videos_adapter.py`, `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
-- [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_assemble_ffmpeg.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
+- [ ] `tests/unit/test_qa_qwen2vl.py`, `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
+- [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 
 ### P2 — Robustness, tooling, and docs
 - [ ] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
