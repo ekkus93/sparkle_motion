@@ -657,3 +657,17 @@ def _fixture_adapter_once() -> None:
 
 
 _fixture_adapter_once()
+
+
+def _register_chatterbox_adapter() -> None:
+    try:
+        from sparkle_motion.function_tools.tts_chatterbox import adapter as _cb_adapter
+    except Exception:
+        return
+    try:
+        register_adapter("tts_chatterbox", _cb_adapter.create_tts_agent_adapter(AdapterResult))
+    except Exception:
+        pass
+
+
+_register_chatterbox_adapter()

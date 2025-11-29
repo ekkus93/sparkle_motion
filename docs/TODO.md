@@ -38,6 +38,7 @@
   - [x] Implement `model_context()` guarding model load/unload, telemetry, and `ModelOOMError` normalization.
   - [x] Add `report_memory()` snapshots + device telemetry via `adk_helpers.write_memory_event()`.
   - [x] Provide `compute_device_map()` + presets for `a100-80gb`, `a100-40gb`, `rtx4090`.
+  - [x] Introduce GPU lock + warm-cache semantics so FunctionTools can reuse heavy models and return `GpuBusyError` responses instead of blocking when the device is occupied.
 - [x] Schema registry enforcement
   - [x] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, QAReport, StageEvent, Checkpoint, QA policy bundle.
   - [x] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
@@ -77,8 +78,15 @@
   - [ ] Provide chunked render stub + metadata; wrap real Wan2.1 pipeline inside `model_context()` and ensure CUDA cleanup.
   - [ ] Support `SMOKE_ADAPTERS` flag to toggle heavy loads.
 - [ ] `function_tools/tts_chatterbox`
-  - [ ] Add fixture implementation producing deterministic WAV bytes + metadata.
-  - [ ] Gate real Chatterbox load behind `SMOKE_TTS` and ensure `gpu_utils.model_context()` handles device cleanup.
+  - [x] Add fixture implementation producing deterministic WAV bytes + metadata.
+    - Implemented sine-wave fixture synthesis in `function_tools/tts_chatterbox/adapter.py` with deterministic seed + metadata (duration, sample rate, bit depth, watermark flag) for reproducible tests.
+    - Entry point now emits WAV artifacts via `adk_helpers.publish_artifact()` and includes engine metadata plus local-path references for downstream agents.
+  - [x] Gate real Chatterbox load behind `SMOKE_TTS` and ensure `gpu_utils.model_context()` handles device cleanup.
+    - Adapter loads the real Chatterbox client only when `SMOKE_TTS` is enabled, defaulting to fixture mode otherwise, and wraps synthesis inside the shared GPU context utilities.
+    - FastAPI entry point propagates adapter metadata, enforces readiness/teardown guards, and publishes telemetry for both fixture and real runs.
+  - [x] Author deterministic unit and entrypoint tests for the adapter.
+    - Added `tests/unit/test_tts_chatterbox_adapter.py` covering fixture determinism, metadata contents, and adapter invocation plumbing.
+    - Added `tests/test_function_tools/test_tts_chatterbox_entrypoint.py` verifying `/invoke` happy-path responses, artifact URIs, and local-path metadata under fixture mode.
 - [ ] `function_tools/qa_qwen2vl`
   - [ ] Implement `inspect_frames(frames, prompts) -> QAReport` stub plus hooks for real Qwen-2-VL invocation later.
 - [ ] `function_tools/assemble_ffmpeg`

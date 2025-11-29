@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from typing import Any
 
 import pytest
@@ -38,7 +39,9 @@ class _FakeTorch:
 def _ensure_fixture_mode(monkeypatch):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     telemetry.clear_events()
+    gpu_utils.evict_cached_model()
     yield
+    gpu_utils.evict_cached_model()
     telemetry.clear_events()
 
 
@@ -95,6 +98,78 @@ def test_model_context_normalizes_oom(monkeypatch):
             pass
 
     assert excinfo.value.stage == "load"
+
+
+def test_model_context_keep_warm_reuses_handle(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    loader_calls: list[int] = []
+
+    class _Handle:
+        def __init__(self, idx: int) -> None:
+            self.idx = idx
+
+        def close(self) -> None:
+            loader_calls.append(-1)
+
+    counter = {"value": 0}
+
+    def loader() -> Any:
+        counter["value"] += 1
+        loader_calls.append(counter["value"])
+        return _Handle(counter["value"])
+
+    with gpu_utils.model_context("demo", loader=loader, keep_warm=True, warm_ttl_s=60) as ctx:
+        first_idx = ctx.pipeline.idx
+
+    with gpu_utils.model_context("demo", loader=loader, keep_warm=True, warm_ttl_s=60) as ctx:
+        assert ctx.pipeline.idx == first_idx
+
+    assert loader_calls.count(1) == 1
+
+
+def test_model_context_keep_warm_respects_ttl(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    loader_calls: list[int] = []
+
+    def loader() -> Any:
+        loader_calls.append(1)
+        return object()
+
+    with gpu_utils.model_context("demo", loader=loader, keep_warm=True, warm_ttl_s=0.05):
+        pass
+    time.sleep(0.1)
+    with gpu_utils.model_context("demo", loader=loader, keep_warm=True, warm_ttl_s=0.05):
+        pass
+    assert loader_calls == [1, 1]
+
+
+def test_model_context_busy_error(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    def loader() -> Any:
+        return object()
+
+    ready = threading.Event()
+    release = threading.Event()
+
+    def holder() -> None:
+        with gpu_utils.model_context("demo", loader=loader):
+            ready.set()
+            release.wait(timeout=1)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    ready.wait(timeout=1)
+    with pytest.raises(gpu_utils.GpuBusyError):
+        with gpu_utils.model_context("demo", loader=loader, block_until_gpu_free=False):
+            pass
+    release.set()
+    thread.join(timeout=1)
 
 
 def test_compute_device_map_presets():

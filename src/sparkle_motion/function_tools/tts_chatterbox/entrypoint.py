@@ -1,36 +1,66 @@
 from __future__ import annotations
-from typing import Any, Literal
-import re
-from pathlib import Path
-import os
-import json
-import logging
-import uuid
-import time
+
 import asyncio
-from threading import Lock
+import logging
+import os
+import time
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
+from threading import Lock
+from typing import Any, Dict, Literal, Mapping, Optional, Sequence
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from sparkle_motion import adk_factory, adk_helpers, gpu_utils, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
-from sparkle_motion import adk_factory, observability, telemetry
+from sparkle_motion.function_tools.tts_chatterbox import adapter as chatterbox_adapter
 
 LOG = logging.getLogger("tts_chatterbox.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
 class RequestModel(BaseModel):
-    # TODO: adjust fields for real schema
-    prompt: str
+    prompt: Optional[str] = None
+    text: Optional[str] = None
+    voice_id: str = "emma"
+    language: Optional[str] = None
+    sample_rate: int = 24000
+    bit_depth: int = 16
+    seed: Optional[int] = None
+    metadata: Dict[str, Any] | None = None
+    plan_id: Optional[str] = None
+    step_id: Optional[str] = None
+    run_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _ensure_prompt_or_text(self) -> "RequestModel":
+        text = (self.text or "").strip()
+        prompt = (self.prompt or "").strip()
+        if not text and not prompt:
+            raise ValueError("Provide either 'text' or 'prompt'")
+        return self
+
+
+def _serialize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    cleaned: list[Mapping[str, Any]] = []
+    for err in errors:
+        data = dict(err)
+        ctx = data.get("ctx")
+        if isinstance(ctx, Mapping):
+            data["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v) for k, v in ctx.items()}
+        cleaned.append(data)
+    return cleaned
 
 
 class ResponseModel(BaseModel):
     status: Literal["success", "error"]
     artifact_uri: str | None
     request_id: str
+    metadata: Dict[str, Any] | None = None
 
 
 def make_app() -> FastAPI:
@@ -93,7 +123,7 @@ def make_app() -> FastAPI:
             LOG.debug("validation error", exc_info=exc)
         except Exception:
             pass
-        return JSONResponse(status_code=400, content={"detail": exc.errors()})
+        return JSONResponse(status_code=400, content={"detail": _serialize_validation_errors(exc.errors())})
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -132,82 +162,26 @@ def make_app() -> FastAPI:
         with app.state.lock:
             app.state.inflight += 1
         try:
-            # minimal validation
-            if not getattr(req, "prompt", None):
-                raise HTTPException(status_code=400, detail="prompt required")
-
-            deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
-            artifacts_dir = os.environ.get("ARTIFACTS_DIR", os.path.join(os.getcwd(), "artifacts"))
-            os.makedirs(artifacts_dir, exist_ok=True)
-
-            def _slugify(s: str) -> str:
-                s = s.strip()
-                s = re.sub(r"\s+", "_", s)
-                s = re.sub(r"[^A-Za-z0-9._-]", "", s)
-                return s[:80] or "artifact"
-
-            safe_name = _slugify(getattr(req, "prompt", "artifact"))
-            filename = f"{safe_name}.json" if deterministic else f"{safe_name}_{os.getpid()}_{request_id}.json"
-            local_path = os.path.join(artifacts_dir, filename)
-            try:
-                payload = req.model_dump_json() if hasattr(req, "model_dump_json") else req.json()
-            except Exception:
-                try:
-                    payload = json.dumps(req.dict(), ensure_ascii=False)
-                except Exception as e:
-                    LOG.exception("failed to serialize request", extra={"request_id": request_id, "error": str(e)})
-                    raise HTTPException(status_code=500, detail="failed to serialize request")
+            result = _run_synthesis(req)
+            metadata = _build_metadata(req, result, request_id)
+            artifact_uri = _publish_artifact(result.path, metadata)
 
             try:
-                with open(local_path, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-            except Exception as e:
-                LOG.exception("failed to write artifact", extra={"request_id": request_id, "path": local_path, "error": str(e)})
-                raise HTTPException(status_code=500, detail="failed to persist artifact")
-
-            # publish using ADK helpers (SDK -> CLI) with file:// fallback
-            artifact_uri = None
-            artifact_name = Path(local_path).name
-            try:
-                import sparkle_motion.adk_helpers as ah
-            except Exception:
-                ah = None
-
-            if ah is not None:
-                try:
-                    sdk_res = ah.probe_sdk()
-                    if sdk_res:
-                        adk_module, client = sdk_res
-                        try:
-                            artifact_uri = ah.publish_with_sdk(adk_module, client, local_path, artifact_name, dry_run=False, project=None)
-                        except Exception:
-                            artifact_uri = None
-
-                    if not artifact_uri:
-                        try:
-                            artifact_uri = ah.publish_with_cli(local_path, artifact_name, project=None, dry_run=False)
-                        except Exception:
-                            artifact_uri = None
-                except Exception:
-                    artifact_uri = None
-
-            # In fixture/test mode prefer a local file:// URI so tests can assert on files
-            if artifact_uri and os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            if not artifact_uri:
-                artifact_uri = f"file://{os.path.abspath(local_path)}"
-
-            try:
-                send_telemetry("invoke.completed", {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri})
+                send_telemetry(
+                    "invoke.completed",
+                    {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri, "engine": metadata.get("engine")},
+                )
             except Exception:
                 pass
             try:
-                telemetry.emit_event("invoke.completed", {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri})
+                telemetry.emit_event(
+                    "invoke.completed",
+                    {"tool": "tts_chatterbox", "request_id": request_id, "artifact_uri": artifact_uri, "engine": metadata.get("engine")},
+                )
             except Exception:
                 pass
 
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
@@ -217,3 +191,69 @@ def make_app() -> FastAPI:
 
 
 app = make_app()
+
+
+def _watermarking_enabled() -> bool:
+    return os.environ.get("CHATTERBOX_WATERMARKING", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _artifacts_dir() -> Path:
+    base = Path(os.environ.get("ARTIFACTS_DIR", Path(os.getcwd()) / "artifacts"))
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _run_synthesis(req: RequestModel) -> chatterbox_adapter.SynthesisResult:
+    text = (req.text or req.prompt or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' or 'prompt' is required")
+    try:
+        return chatterbox_adapter.synthesize_text(
+            text=text,
+            voice_id=req.voice_id,
+            sample_rate=req.sample_rate,
+            bit_depth=req.bit_depth,
+            language=req.language,
+            seed=req.seed,
+            watermarking=_watermarking_enabled(),
+            output_dir=_artifacts_dir(),
+            metadata=req.metadata,
+        )
+    except gpu_utils.GpuBusyError as exc:
+        LOG.warning("GPU busy for tts request", extra={"request_id": req.run_id})
+        raise HTTPException(status_code=503, detail="gpu busy, retry later") from exc
+    except Exception as exc:
+        LOG.exception("tts synthesis failed", exc_info=exc)
+        raise HTTPException(status_code=500, detail="synthesis failed") from exc
+
+
+def _build_metadata(req: RequestModel, result: chatterbox_adapter.SynthesisResult, request_id: str) -> Dict[str, Any]:
+    engine_meta = dict(result.metadata)
+    metadata: Dict[str, Any] = {
+        "request_id": request_id,
+        "voice_id": req.voice_id,
+        "language": req.language or "auto",
+        "duration_s": round(result.duration_s, 3),
+        "sample_rate": result.sample_rate,
+        "bit_depth": result.bit_depth,
+        "watermarked": result.watermarking,
+        "engine": engine_meta.get("engine"),
+        "engine_metadata": engine_meta,
+        "local_path": str(result.path),
+    }
+    for field_name in ("plan_id", "step_id", "run_id"):
+        value = getattr(req, field_name)
+        if value:
+            metadata[field_name] = value
+    return metadata
+
+
+def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
+    try:
+        artifact = adk_helpers.publish_artifact(local_path=path, artifact_type="tts_audio", metadata=metadata)
+    except Exception:
+        artifact = {"uri": f"file://{path}", "metadata": metadata}
+    uri = artifact.get("uri") or f"file://{path}"  # type: ignore[arg-type]
+    if os.environ.get("ADK_USE_FIXTURE", "0").strip().lower() in {"1", "true", "yes", "on"} and uri.startswith("artifact://"):
+        return f"file://{path}"
+    return uri

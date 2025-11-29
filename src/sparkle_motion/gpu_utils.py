@@ -6,6 +6,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Sequence
 
 from . import adk_helpers, telemetry
@@ -58,6 +59,14 @@ class ModelOOMError(ModelContextError):
         self.memory_snapshot = dict(memory_snapshot)
 
 
+class GpuBusyError(ModelContextError):
+    """Raised when the shared GPU lock cannot be acquired immediately."""
+
+    def __init__(self, *, model_key: str) -> None:
+        super().__init__(f"GPU busy while loading '{model_key}'")
+        self.model_key = model_key
+
+
 @dataclass
 class ModelContext:
     """Model handle wrapper returned by :func:`model_context`."""
@@ -91,6 +100,109 @@ class ModelContext:
             _emit_gpu_event("gpu.model.inference_end", payload, self.allocated_devices)
 
 
+@dataclass
+class _CachedModelHandle:
+    model_key: str
+    handle: Any
+    weights: Optional[str]
+    device_map: Optional[Mapping[str, str]]
+    allocated_devices: Sequence[str]
+    metadata: MutableMapping[str, Any]
+    warm_ttl_s: Optional[float]
+    last_used_s: float
+
+
+_GPU_LOCK = Lock()
+_CACHED_MODEL: Optional[_CachedModelHandle] = None
+
+
+def gpu_is_busy() -> bool:
+    """Return True if another model_context currently owns the GPU lock."""
+
+    return _GPU_LOCK.locked()
+
+
+def evict_cached_model(model_key: Optional[str] = None) -> bool:
+    """Drop the in-memory cached model, if present.
+
+    Returns True when a cached model was released.
+    """
+
+    with _GPU_LOCK:
+        entry = _CACHED_MODEL
+        if entry is None or (model_key and entry.model_key != model_key):
+            return False
+        _evict_cached_entry(entry, reason="manual")
+        return True
+
+
+def _maybe_take_cached_model(model_key: str, *, keep_warm: bool, now_s: float) -> Optional[_CachedModelHandle]:
+    global _CACHED_MODEL
+    entry = _CACHED_MODEL
+    if entry is None:
+        return None
+    expired = _entry_expired(entry, now_s)
+    if expired or entry.model_key != model_key or not keep_warm:
+        reason = "expired" if expired else ("replacement" if entry.model_key != model_key else "caller_disabled")
+        _evict_cached_entry(entry, reason=reason)
+        return None
+    return entry
+
+
+def _evict_conflicting_cache(model_key: str, *, keep_warm: bool) -> None:
+    entry = _CACHED_MODEL
+    if entry is None:
+        return
+    if entry.model_key != model_key or not keep_warm:
+        reason = "replacement" if entry.model_key != model_key else "caller_disabled"
+        _evict_cached_entry(entry, reason=reason)
+
+
+def _store_cached_model(
+    *,
+    model_key: str,
+    handle: Any,
+    weights: Optional[str],
+    device_map: Optional[Mapping[str, str]],
+    allocated_devices: Sequence[str],
+    metadata: MutableMapping[str, Any],
+    warm_ttl_s: Optional[float],
+    last_used_s: float,
+) -> None:
+    global _CACHED_MODEL
+    _CACHED_MODEL = _CachedModelHandle(
+        model_key=model_key,
+        handle=handle,
+        weights=weights,
+        device_map=device_map,
+        allocated_devices=allocated_devices,
+        metadata=metadata,
+        warm_ttl_s=warm_ttl_s,
+        last_used_s=last_used_s,
+    )
+    _emit_gpu_event(
+        "gpu.model.cache_store",
+        {"model_key": model_key, "ttl_s": warm_ttl_s},
+        allocated_devices,
+    )
+
+
+def _evict_cached_entry(entry: _CachedModelHandle, *, reason: str) -> None:
+    global _CACHED_MODEL
+    _cleanup_handle(entry.handle)
+    _emit_gpu_event(
+        "gpu.model.cache_evict",
+        {"model_key": entry.model_key, "reason": reason},
+        entry.allocated_devices,
+    )
+    if _CACHED_MODEL is entry:
+        _CACHED_MODEL = None
+
+
+def _entry_expired(entry: _CachedModelHandle, now_s: float) -> bool:
+    return entry.warm_ttl_s is not None and (now_s - entry.last_used_s) > entry.warm_ttl_s
+
+
 @contextlib.contextmanager
 def model_context(
     model_key: str,
@@ -104,6 +216,9 @@ def model_context(
     low_cpu_mem_usage: bool = True,
     max_memory: Optional[Mapping[str, str]] = None,
     timeout_s: Optional[float] = None,
+    keep_warm: bool = False,
+    warm_ttl_s: Optional[float] = 900.0,
+    block_until_gpu_free: bool = True,
 ) -> Generator[ModelContext, None, None]:
     """Load a model via *loader* and guarantee deterministic cleanup."""
 
@@ -116,7 +231,12 @@ def model_context(
     if actual_loader is None:
         raise ValueError("model_context requires a loader callable")
 
-    metadata = {
+    normalized_ttl = None if warm_ttl_s is not None and warm_ttl_s <= 0 else warm_ttl_s
+    acquired = _GPU_LOCK.acquire(blocking=block_until_gpu_free)
+    if not acquired:
+        raise GpuBusyError(model_key=actual_key)
+
+    metadata: MutableMapping[str, Any] = {
         "model_key": actual_key,
         "weights": weights,
         "offload": offload,
@@ -126,13 +246,38 @@ def model_context(
         "max_memory": dict(max_memory or {}),
         "device_map": dict(device_map or {}),
     }
-    load_start = time.time()
-    allocated_devices = _derive_allocated_devices(device_map)
-    _emit_gpu_event("gpu.model.load_start", metadata, allocated_devices)
-
+    allocated_devices: Sequence[str] = ()
     handle: Optional[Any] = None
+    cached_entry: Optional[_CachedModelHandle] = None
+    reused = False
+    success = False
+
     try:
-        handle = _execute_loader(actual_loader, actual_key, timeout_s)
+        now = time.time()
+        cached_entry = _maybe_take_cached_model(actual_key, keep_warm=keep_warm, now_s=now)
+        if cached_entry is not None:
+            reused = True
+            handle = cached_entry.handle
+            allocated_devices = cached_entry.allocated_devices
+            metadata = dict(cached_entry.metadata)
+            idle_ms = int((now - cached_entry.last_used_s) * 1000)
+            _emit_gpu_event(
+                "gpu.model.cache_reuse",
+                {**metadata, "idle_ms": idle_ms},
+                allocated_devices,
+            )
+        else:
+            _evict_conflicting_cache(actual_key, keep_warm=keep_warm)
+            allocated_devices = _derive_allocated_devices(device_map)
+            load_start = time.time()
+            _emit_gpu_event("gpu.model.load_start", metadata, allocated_devices)
+            handle = _execute_loader(actual_loader, actual_key, timeout_s)
+            _emit_gpu_event(
+                "gpu.model.load_complete",
+                {**metadata, "duration_ms": int((time.time() - load_start) * 1000)},
+                allocated_devices,
+            )
+
         ctx = ModelContext(
             model_key=actual_key,
             pipeline=handle,
@@ -141,18 +286,35 @@ def model_context(
             allocated_devices=allocated_devices,
             metadata=metadata,
         )
-        _emit_gpu_event(
-            "gpu.model.load_complete",
-            {**metadata, "duration_ms": int((time.time() - load_start) * 1000)},
-            allocated_devices,
-        )
         yield ctx
+        success = True
     except RuntimeError as exc:
         raise _normalize_oom(exc, model_key=actual_key, stage="load", device_map=device_map) from exc
     finally:
+        now = time.time()
+        if success and keep_warm:
+            if reused and cached_entry is not None:
+                cached_entry.last_used_s = now
+                cached_entry.warm_ttl_s = normalized_ttl if normalized_ttl is not None else cached_entry.warm_ttl_s
+                cached_entry.metadata = dict(metadata)
+            elif handle is not None:
+                _store_cached_model(
+                    model_key=actual_key,
+                    handle=handle,
+                    weights=weights,
+                    device_map=device_map,
+                    allocated_devices=allocated_devices,
+                    metadata=dict(metadata),
+                    warm_ttl_s=normalized_ttl,
+                    last_used_s=now,
+                )
+                handle = None
         if handle is not None:
             _cleanup_handle(handle)
             _emit_gpu_event("gpu.model.cleanup", metadata, allocated_devices)
+        if not success and reused and cached_entry is not None:
+            _evict_cached_entry(cached_entry, reason="error")
+        _GPU_LOCK.release()
 
 
 def compute_device_map(preset: str, overrides: Optional[Mapping[str, str]] = None) -> Mapping[str, str]:
