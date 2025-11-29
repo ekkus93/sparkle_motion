@@ -21,14 +21,14 @@ priority_profiles:
       latency: 0.15
       cost: 0.15
 providers:
-  chatterbox-pro:
-    display_name: Resemble Chatterbox Pro
+  chatterbox-local:
+    display_name: Resemble Chatterbox Local
     tier: tier1
     adapter: tts_chatterbox
     fixture_alias: fixture-chatterbox
     default_voice: emma
     estimated_latency_s: 4.5
-    estimated_cost_usd_per_1k_chars: 0.025
+    estimated_cost_usd_per_1k_chars: 0.0
     quality_score: 0.93
     features:
       - voice_clone
@@ -95,7 +95,7 @@ voices:
     default_sample_rate: 24000
     default_bit_depth: 16
     provider_preferences:
-      - provider: chatterbox-pro
+      - provider: chatterbox-local
         provider_voice_id: cbx_emma_v1
       - provider: adk-edge
         provider_voice_id: adk_voice_en_f1
@@ -108,7 +108,7 @@ voices:
     provider_preferences:
       - provider: adk-edge
         provider_voice_id: adk_voice_es_m1
-      - provider: chatterbox-pro
+      - provider: chatterbox-local
         provider_voice_id: cbx_diego_v1
       - provider: fixture-local
         provider_voice_id: fixture_diego

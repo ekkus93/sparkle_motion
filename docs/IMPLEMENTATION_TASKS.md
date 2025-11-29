@@ -234,7 +234,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
     - `voices`: logical voices exposed to MoviePlans; each voice includes description, default audio settings, and a `provider_preferences` list mapping to provider-specific voice ids so the agent can fall back cleanly.
     - `rate_caps`: tier-wide caps (`daily_requests`, `concurrent_jobs`) referenced by the agent when honoring plan-level resource hints.
   - Current provider ids:
-    - `chatterbox-pro` (tier1): Resemble/Chatterbox production path, watermark-on, supports `voice_clone|multilingual|emotional_range` with moderate latency/cost.
+    - `chatterbox-local` (tier1): Resemble/Chatterbox library running locally (no external API), watermark-on, supports `voice_clone|multilingual|emotional_range` with only infrastructure costs.
     - `adk-edge` (tier2): ADK-managed edge deployment (lower latency, watermark off) for multilingual + style control use cases.
     - `fixture-local` (fixture): deterministic WAV stub used whenever `SMOKE_TTS`/`SMOKE_ADAPTERS` are disabled; zero cost/high throughput guardrail.
   - Fixture aliases are consumed by tests and the FunctionTool entrypoint so local runs can force a deterministic provider (`fixture-chatterbox` / `fixture-tts`).
