@@ -25,6 +25,7 @@ file whenever a schema URI or version changes so agents/tools stay aligned.
    `tests/unit/test_schema_registry.py` (or equivalent) that load
    `configs/schema_artifacts.yaml`, verify required keys, and assert the table
    above stays in sync (e.g., by parsing this file or a shared data source).
-4. **TODO: doc linkage** – wire this reference into `sparkle_motion.schema_registry`
-   docstrings and developer onboarding material so future contributors know
-   where to add new schema entries.
+4. **Doc linkage** – `sparkle_motion.schema_registry` docstrings and the
+   onboarding guide (`docs/HowToRunLocalTools.md`) both point back to this table.
+   Keep those references updated whenever you change artifact URIs so new
+   contributors land on the canonical schema list immediately.

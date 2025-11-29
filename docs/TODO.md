@@ -12,6 +12,8 @@
 - Production agent + `tts_agent` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
 - `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for QA automation.
 - `videos_wan` FunctionTool now routes through the Wan adapter with deterministic fixtures by default, publishes `videos_wan_clip` artifacts, and surfaces chunk metadata/telemetry with smoke-flag gating for real GPU runs.
+- `qa_qwen2vl` adapter + entrypoint hardened with structured metadata propagation, frame-id plumbing, download limits, and smoke-level assertions so upstream agents can depend on the augmented fields.
+- `lipsync_wav2lip` now ships a shared adapter (deterministic fixture + subprocess CLI wrapper), consolidated payload validators, and smoke/unit coverage across entrypoint + shared FunctionTool tests.
 
 ## Priority legend
 
@@ -65,11 +67,11 @@
 
 ### Sequence of Work — `tts_agent`
 
-1. Finalize `configs/tts_providers.yaml` (provider ids, tiering flags, rate caps, fixture aliases) and document the selection contract inside `docs/IMPLEMENTATION_TASKS.md`.
-2. Implement `sparkle_motion/tts_agent.py` with provider scoring, bounded retries, VoiceMetadata emission, and `adk_helpers.publish_artifact()` integrations plus structured telemetry.
-3. Flesh out `function_tools/tts_chatterbox/entrypoint.py`: add deterministic WAV fixture pipeline, gate the real adapter behind `SMOKE_TTS`, and ensure both paths share a metadata builder.
-4. Author `tests/unit/test_tts_agent.py` and `tests/unit/test_tts_adapter.py` covering provider selection, retry downgrades, fixture determinism, and artifact metadata.
-5. Wire the new agent into `production_agent.execute_plan()` (progress callbacks, StepExecutionRecord updates) and broaden `tests/test_production_agent.py` coverage for the TTS stage.
+1. [x] Finalize `configs/tts_providers.yaml` (provider ids, tiering flags, rate caps, fixture aliases) and document the selection contract inside `docs/IMPLEMENTATION_TASKS.md`.
+2. [x] Implement `sparkle_motion/tts_agent.py` with provider scoring, bounded retries, VoiceMetadata emission, and `adk_helpers.publish_artifact()` integrations plus structured telemetry.
+3. [x] Flesh out `function_tools/tts_chatterbox/entrypoint.py`: add deterministic WAV fixture pipeline, gate the real adapter behind `SMOKE_TTS`, and ensure both paths share a metadata builder.
+4. [x] Author `tests/unit/test_tts_agent.py` and `tests/unit/test_tts_adapter.py` covering provider selection, retry downgrades, fixture determinism, and artifact metadata.
+5. [x] Wire the new agent into `production_agent.execute_plan()` (progress callbacks, StepExecutionRecord updates) and broaden `tests/test_production_agent.py` coverage for the TTS stage.
 6. [x] Update docs (`docs/TODO.md`, `docs/ORCHESTRATOR.md`, function tool READMEs) to reflect the new TTS flow, env vars, and artifact publishing expectations. (See `docs/ORCHESTRATOR.md#tts`, `function_tools/README.md#tts-flow`, and this snapshot for the authoritative contract.)
 
 #### FunctionTools / adapters
@@ -95,8 +97,8 @@
   - [x] Implement `inspect_frames(frames, prompts) -> QAReport` with structured Qwen2-VL inference, JSON parsing, and GPU model-context integration.
 - [x] `function_tools/assemble_ffmpeg`
   - [x] Implemented adapter with deterministic MP4 fixture + optional ffmpeg concat path, safe `run_command` wrapper, metadata (engine, plan_id, command tails) and FastAPI entrypoint publishing `video_final` artifacts.
-- [ ] `function_tools/lipsync_wav2lip`
-  - [ ] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
+- [x] `function_tools/lipsync_wav2lip`
+  - [x] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
 ### P1 — Deterministic unit tests & harnesses
 - [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
@@ -107,11 +109,11 @@
 - [x] `tests/unit/test_images_agent.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
 - [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
 - [x] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
-- [ ] `tests/unit/test_images_adapter.py`
+- [x] `tests/unit/test_images_adapter.py`
 - [x] `tests/unit/test_videos_adapter.py` (fixture + env gating now covered by `tests/unit/test_videos_wan_adapter.py`)
 - [x] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
 - [x] `tests/unit/test_qa_qwen2vl.py` — validate QA adapter structured parsing using mocked Qwen responses.
-- [ ] `tests/unit/test_lipsync.py` — validate adapter contracts using fixtures.
+- [x] `tests/unit/test_lipsync_wav2lip_adapter.py` — validate adapter contracts using fixtures and fixture/real-engine fallbacks.
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 
 ### P2 — Robustness, tooling, and docs
@@ -121,7 +123,7 @@
   - [x] Implement lightweight token-bucket/queue scaffolding with single-user bypass + TODO for multi-tenant enablement.
 - [ ] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.
 - [ ] `docs/gpu_utils.md` — document `model_context` usage, device presets, telemetry expectations, and troubleshooting.
-- [ ] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
+- [x] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
 - [x] `db/schema/recent_index.sql` and `src/sparkle_motion/db/sqlite.py` — persist RecentIndex/MemoryService tables + helper functions.
 
 ### P3 — Gated smokes, proposals, and integration follow-ups

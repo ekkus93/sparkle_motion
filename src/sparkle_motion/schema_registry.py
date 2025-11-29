@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-"""Central registry for Sparkle Motion schema and policy artifacts."""
+"""Central registry for Sparkle Motion schema and policy artifacts.
+
+The canonical artifact/catalog table lives in ``docs/SCHEMA_ARTIFACTS.md``. When
+adding a new schema or QA bundle, update that document first, then ensure the
+corresponding entry exists in ``configs/schema_artifacts.yaml`` so this module
+can surface the URI + local fallback consistently for agents and FunctionTools.
+"""
 
 import os
 import warnings
@@ -33,6 +39,12 @@ class QAPolicyBundle:
 
 @dataclass(frozen=True)
 class SchemaCatalog:
+    """Loaded view of all schemas/policies declared in schema_artifacts.yaml.
+
+    Consumers should not construct this class directly; call ``load_catalog``
+    instead so updates remain synchronized with ``docs/SCHEMA_ARTIFACTS.md``.
+    """
+
     version: str
     schemas: Dict[str, SchemaArtifact]
     qa_policy: QAPolicyBundle
@@ -82,6 +94,13 @@ def _resolve_reference(*, name: str, uri: str, local_path: Path, prefer_local: O
 
 @lru_cache(maxsize=1)
 def load_catalog(config_path: Path | None = None) -> SchemaCatalog:
+    """Load schema definitions from configs/schema_artifacts.yaml.
+
+    The file layout and required keys are documented in ``docs/SCHEMA_ARTIFACTS.md``;
+    consult that doc when adding new schema entries or rotating artifact URIs so
+    onboarding guides and code stay aligned.
+    """
+
     path = config_path or DEFAULT_CONFIG_PATH
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
 

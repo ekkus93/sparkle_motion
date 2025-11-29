@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from sparkle_motion import gpu_utils
+from sparkle_motion.utils.dedupe import compute_phash
 
 LOG = logging.getLogger(__name__)
 TRUTHY = {"1", "true", "yes", "on"}
@@ -136,7 +137,7 @@ def _render_fixture_images(
         filename = f"{_slug(prompt)}-{image_index:04d}.png"
         path = output_dir / filename
         path.write_bytes(png_bytes)
-        phash = _compute_phash(pixels, width, height)
+        phash = compute_phash(pixels, width, height)
 
         base_metadata = {
             "engine": "fixture",
@@ -236,7 +237,7 @@ def _render_real_images(
             pil_image = images[0]
             rgb_image = pil_image.convert("RGB")
             pixels = list(rgb_image.getdata())
-            phash = _compute_phash(pixels, rgb_image.width, rgb_image.height)
+            phash = compute_phash(pixels, rgb_image.width, rgb_image.height)
             buffer = io.BytesIO()
             rgb_image.save(buffer, format="PNG")
             png_bytes = buffer.getvalue()
@@ -292,24 +293,6 @@ def _encode_png(width: int, height: int, pixels: List[Sequence[int]]) -> bytes:
 
 def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", binascii.crc32(chunk_type + data) & 0xFFFFFFFF)
-
-
-def _compute_phash(pixels: List[Sequence[int]], width: int, height: int) -> str:
-    if not pixels:
-        return "0" * 16
-    grayscale = [int(0.299 * r + 0.587 * g + 0.114 * b) for r, g, b in pixels]
-    sample: List[int] = []
-    for block_y in range(8):
-        src_y = min(int(block_y * height / 8), height - 1)
-        for block_x in range(8):
-            src_x = min(int(block_x * width / 8), width - 1)
-            sample.append(grayscale[src_y * width + src_x])
-    avg = sum(sample) / len(sample)
-    bits = 0
-    for value in sample:
-        bits = (bits << 1) | (1 if value >= avg else 0)
-    return f"{bits:016x}"
-
 
 def _derive_seed(seed: Optional[int], prompt: str, index: int) -> int:
     if seed is None:

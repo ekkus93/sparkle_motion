@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from sparkle_motion import images_agent
 from sparkle_motion.ratelimit import RateLimitDecision, RateLimiter
 from sparkle_motion.utils.dedupe import RecentIndex, compute_hash
+from sparkle_motion.utils.recent_index_sqlite import RecentIndexSqlite
 
 
 class _ScriptedLimiter(RateLimiter):
@@ -108,6 +110,28 @@ def test_render_without_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
         assert artifact["data"] == b"blob"
         assert "duplicate_of" not in artifact
         assert artifact["metadata"].get("deduped") is None
+
+
+def test_render_with_sqlite_recent_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    responses = [[
+        {"data": b"dup", "metadata": {}},
+        {"data": b"dup", "metadata": {}},
+    ]]
+    _install_fake_renderer(monkeypatch, responses)
+    db_path = tmp_path / "recent.db"
+    recent = RecentIndexSqlite(str(db_path))
+
+    try:
+        first = images_agent.render(
+            "prompt",
+            {"count": 2, "max_images_per_call": 2, "dedupe": True, "recent_index": recent},
+        )
+        assert first[1]["metadata"].get("deduped") is True
+        assert first[1]["duplicate_of"] == first[0]["uri"]
+        digest = compute_hash(b"dup")
+        assert recent.get(digest) == first[0]["uri"]
+    finally:
+        recent.close()
 
 
 def test_qa_called(monkeypatch: pytest.MonkeyPatch) -> None:

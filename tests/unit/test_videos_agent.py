@@ -7,6 +7,7 @@ import pytest
 
 from sparkle_motion import adk_helpers, videos_agent
 from sparkle_motion.gpu_utils import ModelOOMError
+from sparkle_motion.utils.dedupe import RecentIndex
 
 
 class _StubRenderer:
@@ -151,3 +152,33 @@ def test_progress_events_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     assert any(evt.get("phase") == "rendering" for evt in events)
     assert any(evt.get("phase") == "rendering" for evt in memory_events)
+
+
+def test_dedupe_skips_publish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    publish_calls: List[Path] = []
+
+    def fake_publish_artifact(*, local_path: Path, artifact_type: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        publish_calls.append(Path(local_path))
+        return {
+            "uri": f"file://{local_path}",
+            "storage": "local",
+            "artifact_type": artifact_type,
+            "metadata": metadata,
+            "run_id": "run-1",
+        }
+
+    monkeypatch.setattr(adk_helpers, "publish_artifact", fake_publish_artifact)
+
+    opts = {"num_frames": 16, "output_path": tmp_path / "clip.json", "dedupe": True}
+    recent = RecentIndex()
+
+    renderer = _StubRenderer()
+    first = videos_agent.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
+
+    renderer = _StubRenderer()
+    second = videos_agent.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
+
+    assert len(publish_calls) == 1
+    assert second["metadata"]["deduped"] is True
+    assert second["metadata"]["duplicate_of"] == first["uri"]
+    assert second["uri"] == first["uri"]

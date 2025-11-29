@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import sqlite3
+import time
 from typing import Optional
 
 from ..db.sqlite import get_conn, ensure_schema
@@ -25,6 +25,9 @@ class RecentIndexSqlite:
         cur = self._conn.execute("SELECT canonical_uri FROM recent_index WHERE phash = ?", (phash,))
         row = cur.fetchone()
         return None if row is None else row["canonical_uri"]
+
+    def get(self, phash: str) -> Optional[str]:
+        return self.get_canonical(phash)
 
     def add_or_get(self, phash: str, uri: str) -> str:
         now = int(time.time())
@@ -55,6 +58,9 @@ class RecentIndexSqlite:
             return uri
         return row["canonical_uri"]
 
+    def get_or_add(self, phash: str, uri: str) -> str:
+        return self.add_or_get(phash, uri)
+
     def touch(self, phash: str, uri: Optional[str] = None) -> None:
         now = int(time.time())
         if uri is None:
@@ -83,5 +89,14 @@ class RecentIndexSqlite:
                 # delete the oldest entries by last_seen asc
                 self._conn.execute(
                     "DELETE FROM recent_index WHERE id IN (SELECT id FROM recent_index ORDER BY last_seen ASC LIMIT ?)",
-                    (to_delete, ),
+                    (to_delete,),
                 )
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> RecentIndexSqlite:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()

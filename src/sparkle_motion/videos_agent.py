@@ -11,6 +11,7 @@ from typing_extensions import Literal, Protocol, TypedDict
 
 from . import adk_helpers, observability, telemetry
 from .gpu_utils import ModelOOMError
+from .utils import dedupe
 
 
 class VideoAgentError(RuntimeError):
@@ -179,6 +180,14 @@ def render_video(
     run_id = str(options.get("run_id") or observability.get_session_id())
     _validate_prompt(prompt)
 
+    dedupe_enabled = bool(options.get("dedupe", False))
+    recent_index = dedupe.resolve_recent_index(
+        enabled=dedupe_enabled,
+        backend=options.get("recent_index"),
+        use_sqlite=options.get("recent_index_use_sqlite"),
+        db_path=options.get("recent_index_db_path"),
+    )
+
     dispatcher = _ProgressDispatcher(plan_id=plan_id, step_id=step_id, run_id=run_id, callback=on_progress or options.get("on_progress"))
 
     start_payload = _coerce_frames(start_frames)
@@ -230,15 +239,18 @@ def render_video(
             record["adapter_metadata"] = dict(result.metadata)
         chunk_records.append(record)
 
-    output_path = _write_result_file(
-        plan_id=plan_id,
-        step_id=step_id,
-        prompt=prompt,
-        frames=assembled_frames,
-        chunk_records=chunk_records,
-        opts=options,
-        debug_frames=config.debug_frames,
-    )
+    payload = {
+        "plan_id": plan_id,
+        "step_id": step_id,
+        "prompt": prompt,
+        "frame_count": len(assembled_frames),
+        "chunks": chunk_records,
+    }
+    if config.debug_frames:
+        payload["frames"] = list(assembled_frames)
+
+    payload_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    digest = dedupe.compute_hash(payload_bytes)
 
     artifact_metadata: dict[str, Any] = {
         "plan_id": plan_id,
@@ -251,11 +263,47 @@ def render_video(
         artifact_metadata["assembled_frames"] = assembled_frames
     artifact_metadata["attempts"] = chunk_attempts
 
+    if dedupe_enabled and recent_index is not None:
+        canonical = recent_index.get(digest)
+        if canonical:
+            recent_index.get_or_add(digest, canonical)
+            metadata = dict(artifact_metadata)
+            metadata["deduped"] = True
+            metadata["duplicate_of"] = canonical
+            artifact = {
+                "uri": canonical,
+                "artifact_type": config.artifact_type,
+                "media_type": "application/json",
+                "metadata": metadata,
+                "storage": "adk" if canonical.startswith("artifact://") else "local",
+                "run_id": run_id,
+            }
+            telemetry.emit_event(
+                "videos_agent.render.completed",
+                {"plan_id": plan_id, "step_id": step_id, "artifact_uri": canonical, "deduped": True},
+            )
+            return artifact
+
+    output_path = _write_result_file(
+        plan_id=plan_id,
+        step_id=step_id,
+        payload_bytes=payload_bytes,
+        opts=options,
+    )
+
     artifact = adk_helpers.publish_artifact(
         local_path=output_path,
         artifact_type=config.artifact_type,
         metadata=artifact_metadata,
     )
+    if recent_index is not None:
+        canonical = recent_index.get_or_add(digest, artifact["uri"])
+        if canonical != artifact["uri"]:
+            artifact["metadata"] = dict(artifact.get("metadata") or {})
+            artifact["metadata"]["deduped"] = True
+            artifact["metadata"]["duplicate_of"] = canonical
+            artifact["uri"] = canonical
+            artifact["storage"] = "adk" if canonical.startswith("artifact://") else artifact.get("storage", "local")
     telemetry.emit_event(
         "videos_agent.render.completed",
         {"plan_id": plan_id, "step_id": step_id, "artifact_uri": artifact["uri"]},
@@ -427,22 +475,9 @@ def _write_result_file(
     *,
     plan_id: str,
     step_id: str,
-    prompt: str,
-    frames: Sequence[Any],
-    chunk_records: Sequence[Mapping[str, Any]],
+    payload_bytes: bytes,
     opts: Mapping[str, Any],
-    debug_frames: bool,
 ) -> Path:
-    payload = {
-        "plan_id": plan_id,
-        "step_id": step_id,
-        "prompt": prompt,
-        "frame_count": len(frames),
-        "chunks": chunk_records,
-    }
-    if debug_frames:
-        payload["frames"] = list(frames)
-
     output_path = opts.get("output_path")
     if output_path:
         dest = Path(output_path)
@@ -452,7 +487,7 @@ def _write_result_file(
         base.mkdir(parents=True, exist_ok=True)
         dest = base / f"{plan_id}-{step_id}-video.json"
 
-    dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    dest.write_bytes(payload_bytes)
     return dest
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sparkle_motion.ratelimit import RateLimitDecision, RateLimiter
-from sparkle_motion.utils.dedupe import RecentIndex, compute_hash
+from sparkle_motion.utils import dedupe
 
 try:
     from function_tools.images_sdxl.entrypoint import render_images
@@ -52,7 +52,12 @@ class _BatchSpec:
 
 
 class _PlanDeduper:
-    def __init__(self, enabled: bool, recent_index: Optional[RecentIndex], uri_prefix: str = "inmem://") -> None:
+    def __init__(
+        self,
+        enabled: bool,
+        recent_index: Optional[dedupe.RecentIndexBackend],
+        uri_prefix: str = "inmem://",
+    ) -> None:
         self._enabled = enabled
         self._recent_index = recent_index
         self._uri_prefix = uri_prefix
@@ -66,7 +71,7 @@ class _PlanDeduper:
         if data is None:
             return artifact
 
-        digest = compute_hash(data)
+        digest = dedupe.compute_hash(data)
         canonical_uri = artifact.get("uri") or f"{self._uri_prefix}{digest}"
 
         existing_uri = self._plan_cache.get(digest)
@@ -205,8 +210,12 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
     queue_ttl_s = float(opts.get("queue_ttl_s", 600.0))
     reference_images = opts.get("reference_images") or []
 
-    # Use an in-memory recent index for dedupe by default
-    recent = opts.get("recent_index") or (RecentIndex() if dedupe_enabled else None)
+    recent = dedupe.resolve_recent_index(
+        enabled=dedupe_enabled,
+        backend=opts.get("recent_index"),
+        use_sqlite=opts.get("recent_index_use_sqlite"),
+        db_path=opts.get("recent_index_db_path"),
+    )
     deduper = _PlanDeduper(dedupe_enabled, recent)
 
     # Pre-render QA check (textual sampling); here we call a lightweight inspect hook

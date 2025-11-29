@@ -171,6 +171,27 @@ Follow-up:
 
 ---
 
+## scripts/recent_index.py
+
+Purpose:
+- Provide a convenience wrapper around `sparkle_motion.utils.recent_index_cli` so operators can inspect or prune the SQLite-backed dedupe store without remembering the module path.
+
+Usage patterns (defaults to `SPARKLE_DB_PATH` when `--db` omitted):
+
+```bash
+PYTHONPATH=src python scripts/recent_index.py --help
+PYTHONPATH=src python scripts/recent_index.py stats --json
+PYTHONPATH=src python scripts/recent_index.py list --order last_seen --desc --limit 30
+PYTHONPATH=src python scripts/recent_index.py show deadbeefcafebabe --json
+PYTHONPATH=src python scripts/recent_index.py prune --max-age 604800 --max-entries 2000
+```
+
+Notes:
+- The CLI exposes `stats`, `list`, `show`, and `prune` subcommands mapped 1:1 to the underlying module; add `--json` where available to emit structured output for tooling.
+- Set `SPARKLE_RECENT_INDEX_SQLITE=1` (or use `recent_index_use_sqlite` in agent opts) to have the agents populate the SQLite store during runs; the script simply reads or trims those entries.
+
+---
+
 ## scripts/publish_schemas.py (planned)
 
 Purpose:
