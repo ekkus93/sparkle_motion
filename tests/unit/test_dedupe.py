@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from sparkle_motion.utils.dedupe import PHASH_HEX_LENGTH, compute_phash, hamming_distance
+from sparkle_motion.utils.dedupe import (
+    PHASH_HEX_LENGTH,
+    RecentIndex,
+    canonicalize_digest,
+    compute_phash,
+    hamming_distance,
+)
 
 
 def _make_gradient(width: int, height: int) -> list[tuple[int, int, int]]:
@@ -66,3 +72,32 @@ def test_hamming_distance_rejects_invalid_hex() -> None:
 def test_hamming_distance_zero_for_equal_values() -> None:
     value = "abcd1234abcd1234"
     assert hamming_distance(value, value) == 0
+
+
+def test_canonicalize_digest_dedupes_existing_entry() -> None:
+    index = RecentIndex()
+    digest = "abc123"
+    canonical_uri = "artifact://existing"
+    index.get_or_add(digest, canonical_uri)
+
+    uri, deduped = canonicalize_digest(digest=digest, recent_index=index, candidate_uri="artifact://new")
+
+    assert deduped is True
+    assert uri == canonical_uri
+
+
+def test_canonicalize_digest_skips_registration_when_disabled() -> None:
+    index = RecentIndex()
+    digest = "abc456"
+    candidate = "artifact://pending"
+
+    uri, deduped = canonicalize_digest(
+        digest=digest,
+        recent_index=index,
+        candidate_uri=candidate,
+        register_new=False,
+    )
+
+    assert deduped is False
+    assert uri == candidate
+    assert index.get(digest) is None

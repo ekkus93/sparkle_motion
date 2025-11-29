@@ -25,6 +25,8 @@ def _row_to_dict(row: Mapping[str, Any]) -> MutableMapping[str, Any]:
         "hit_count": row["hit_count"],
     }
     payload["last_seen_iso"] = _ts_to_iso(row["last_seen"])
+    if "distance" in row:
+        payload["distance"] = row["distance"]
     return payload
 
 
@@ -97,6 +99,35 @@ def _cmd_prune(db_path: Optional[str], *, max_age: Optional[int], max_entries: O
     return 0
 
 
+def _cmd_near(
+    db_path: Optional[str],
+    *,
+    phash: str,
+    max_distance: int,
+    limit: int,
+    order: str,
+    as_json: bool,
+) -> int:
+    with RecentIndexSqlite(db_path) as recent:
+        matches = recent.find_near(
+            phash,
+            max_distance=max_distance,
+            limit=limit,
+            order_by=order,
+        )
+
+    data = [_row_to_dict(match) for match in matches]
+    if as_json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+
+    for entry in data:
+        print(
+            f"dist={entry.get('distance', 'n/a')}	{entry['phash']}	{entry['hit_count']}	{entry['last_seen_iso']}	{entry['canonical_uri']}"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect or prune the Sparkle Motion recent-index store")
     parser.add_argument("--db", dest="db_path", help="Path to sqlite DB (defaults to SPARKLE_DB_PATH)")
@@ -119,6 +150,18 @@ def build_parser() -> argparse.ArgumentParser:
     prune.add_argument("--max-age", type=int, help="Delete entries older than this many seconds")
     prune.add_argument("--max-entries", type=int, help="Maximum entries to keep (default 10000)")
 
+    near = sub.add_parser("near", help="Find near-duplicate hashes")
+    near.add_argument("phash", help="Hash to compare against")
+    near.add_argument("--max-distance", type=int, default=6, help="Maximum Hamming distance (default 6)")
+    near.add_argument("--limit", type=int, default=10, help="Maximum matches to return")
+    near.add_argument(
+        "--order",
+        choices=["distance", "last_seen", "hit_count", "id"],
+        default="distance",
+        help="Ordering field",
+    )
+    near.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -136,6 +179,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _cmd_show(conn, phash=args.phash, as_json=args.json)
     if args.command == "prune":
         return _cmd_prune(args.db_path, max_age=args.max_age, max_entries=args.max_entries)
+    if args.command == "near":
+        return _cmd_near(
+            args.db_path,
+            phash=args.phash,
+            max_distance=args.max_distance,
+            limit=args.limit,
+            order=args.order,
+            as_json=args.json,
+        )
     parser.error("Missing command")
     return 2
 

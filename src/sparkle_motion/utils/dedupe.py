@@ -153,14 +153,27 @@ def canonicalize_digest(
     digest: str,
     recent_index: Optional[RecentIndexBackend],
     candidate_uri: str,
+    register_new: bool = True,
 ) -> tuple[str, bool]:
-    """Return the canonical URI for a digest plus whether it was deduped."""
+    """Return the canonical URI for a digest plus whether it was deduped.
+
+    When ``register_new`` is False the function will not create a new index entry,
+    which is useful for pre-publish duplicate checks where the artifact does not
+    exist yet.
+    """
 
     if recent_index is None:
         return candidate_uri, False
+
     existing = recent_index.get(digest)
     if existing is not None:
+        # touch the entry to keep hit counts fresh
+        recent_index.get_or_add(digest, existing)
         return existing, True
+
+    if not register_new:
+        return candidate_uri, False
+
     recent_index.get_or_add(digest, candidate_uri)
     return candidate_uri, False
 

@@ -17,6 +17,7 @@ def _seed_db(path: Path) -> None:
     rows = [
         ("aaaa", "artifact://clip-a", now - 10, 2),
         ("bbbb", "artifact://clip-b", now, 4),
+        ("aaab", "artifact://clip-c", now - 5, 1),
     ]
     with conn:
         conn.executemany(
@@ -34,8 +35,8 @@ def test_stats_and_list(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert code == 0
     stats_out = capsys.readouterr().out
     payload = json.loads(stats_out)
-    assert payload["entries"] == 2
-    assert payload["hits"] == 6
+    assert payload["entries"] == 3
+    assert payload["hits"] == 7
 
     code = recent_index_cli.main(["--db", str(db_path), "list", "--limit", "1"])
     assert code == 0
@@ -65,3 +66,28 @@ def test_show_and_prune(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     remaining = cur.fetchone()[0]
     assert remaining == 1
     conn.close()
+
+
+def test_near_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db_path = tmp_path / "recent.db"
+    _seed_db(db_path)
+
+    code = recent_index_cli.main(
+        [
+            "--db",
+            str(db_path),
+            "near",
+            "aaaa",
+            "--max-distance",
+            "2",
+            "--limit",
+            "2",
+            "--json",
+        ]
+    )
+    assert code == 0
+    near_out = capsys.readouterr().out
+    entries = json.loads(near_out)
+    assert entries[0]["phash"] == "aaaa"
+    assert entries[0]["distance"] == 0
+    assert any(entry["distance"] == 1 for entry in entries)

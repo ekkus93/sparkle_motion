@@ -264,9 +264,14 @@ def render_video(
     artifact_metadata["attempts"] = chunk_attempts
 
     if dedupe_enabled and recent_index is not None:
-        canonical = recent_index.get(digest)
-        if canonical:
-            recent_index.get_or_add(digest, canonical)
+        placeholder_uri = f"inmem://videos/{digest}"
+        canonical, was_deduped = dedupe.canonicalize_digest(
+            digest=digest,
+            recent_index=recent_index,
+            candidate_uri=placeholder_uri,
+            register_new=False,
+        )
+        if was_deduped:
             metadata = dict(artifact_metadata)
             metadata["deduped"] = True
             metadata["duplicate_of"] = canonical
@@ -296,9 +301,13 @@ def render_video(
         artifact_type=config.artifact_type,
         metadata=artifact_metadata,
     )
-    if recent_index is not None:
-        canonical = recent_index.get_or_add(digest, artifact["uri"])
-        if canonical != artifact["uri"]:
+    if dedupe_enabled and recent_index is not None:
+        canonical, was_deduped = dedupe.canonicalize_digest(
+            digest=digest,
+            recent_index=recent_index,
+            candidate_uri=artifact["uri"],
+        )
+        if was_deduped:
             artifact["metadata"] = dict(artifact.get("metadata") or {})
             artifact["metadata"]["deduped"] = True
             artifact["metadata"]["duplicate_of"] = canonical

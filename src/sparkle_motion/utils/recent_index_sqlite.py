@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from ..db.sqlite import get_conn, ensure_schema
+from . import dedupe
 
 
 DEFAULT_MAX_ENTRIES = 10000
@@ -91,6 +92,58 @@ class RecentIndexSqlite:
                     "DELETE FROM recent_index WHERE id IN (SELECT id FROM recent_index ORDER BY last_seen ASC LIMIT ?)",
                     (to_delete,),
                 )
+
+    def find_near(
+        self,
+        phash: str,
+        *,
+        max_distance: int = dedupe.DEFAULT_PHASH_DISTANCE_THRESHOLD,
+        limit: int = 10,
+        order_by: str = "distance",
+    ) -> List[Dict[str, Any]]:
+        """Return near-duplicate entries ranked by Hamming distance."""
+
+        if not phash:
+            return []
+
+        max_distance = max(0, int(max_distance))
+        limit = max(1, int(limit))
+        order = order_by if order_by in {"distance", "last_seen", "hit_count", "id"} else "distance"
+
+        rows = self._conn.execute(
+            "SELECT id, phash, canonical_uri, last_seen, hit_count FROM recent_index"
+        ).fetchall()
+
+        matches: List[Dict[str, Any]] = []
+        for row in rows:
+            candidate_phash = row["phash"]
+            try:
+                distance = dedupe.hamming_distance(phash, candidate_phash)
+            except ValueError:
+                continue
+            if distance > max_distance:
+                continue
+            payload: Dict[str, Any] = {
+                "id": row["id"],
+                "phash": candidate_phash,
+                "canonical_uri": row["canonical_uri"],
+                "last_seen": row["last_seen"],
+                "hit_count": row["hit_count"],
+                "distance": distance,
+            }
+            matches.append(payload)
+
+        def _sort_key(entry: Dict[str, Any]) -> tuple[Any, ...]:
+            if order == "distance":
+                return (entry["distance"], -entry["hit_count"], -entry["last_seen"], entry["id"])
+            if order == "last_seen":
+                return (-entry["last_seen"], entry["distance"], -entry["hit_count"], entry["id"])
+            if order == "hit_count":
+                return (-entry["hit_count"], entry["distance"], -entry["last_seen"], entry["id"])
+            return (entry["id"], entry["distance"], -entry["hit_count"], -entry["last_seen"])
+
+        matches.sort(key=_sort_key)
+        return matches[:limit]
 
     def close(self) -> None:
         self._conn.close()
