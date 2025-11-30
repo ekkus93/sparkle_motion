@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -347,6 +348,34 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
     assert opts["num_frames"] == expected_frames
 
 
+def test_render_frames_persists_continuity_assets(sample_plan: MoviePlan, tmp_path: Path) -> None:
+    shot = sample_plan.shots[0]
+    base_images = {img.id: img for img in sample_plan.base_images}
+    base_image_assets = {
+        img.id: production_agent._BaseImageAsset(spec=img, path=None, payload_bytes=img.prompt.encode("utf-8"))
+        for img in sample_plan.base_images
+    }
+
+    result = production_agent._render_frames(shot, tmp_path, base_images, base_image_assets)
+
+    assert result.path is not None
+    assert result.path.exists()
+    expected_dir = tmp_path / "frames" / shot.id
+    assert result.path.parent == expected_dir
+
+    start_asset = base_image_assets[shot.start_base_image_id]
+    end_asset = base_image_assets[shot.end_base_image_id]
+    for asset, role in ((start_asset, "start"), (end_asset, "end")):
+        assert asset.path is not None and asset.path.exists()
+        payload = json.loads(asset.path.read_text())
+        assert payload["shot_id"] == shot.id
+        assert payload["role"] == role
+        assert payload["base_image_id"].startswith("frame_")
+
+    assert end_asset.payload_bytes != start_asset.payload_bytes
+    assert json.loads(result.path.read_text())["end_frame_path"] == end_asset.path.as_posix()
+
+
 def test_video_stage_reuses_base_image_payloads(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
     _enable_full_execution(monkeypatch, tmp_path)
     captured: List[Dict[str, Any]] = []
@@ -380,6 +409,9 @@ def test_video_stage_reuses_base_image_payloads(monkeypatch: pytest.MonkeyPatch,
     assert len(captured) == len(sample_plan.shots)
     assert captured[0]["end"], "expected end frame payload"
     assert captured[0]["end"][0] == captured[1]["start"][0]
+    first_end_payload = captured[0]["end"][0]
+    assert b'"role": "end"' in first_end_payload
+    assert sample_plan.shots[0].id.encode() in first_end_payload
 
 
 def test_progress_callback_invoked(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:

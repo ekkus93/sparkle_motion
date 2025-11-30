@@ -4,6 +4,10 @@ from typing import Any, Dict, List, Optional, Literal, Annotated, Union, Mapping
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
+_TIMELINE_TOLERANCE = 1e-3
+_ORDERING_TOLERANCE = 1e-6
+
+
 class CharacterSpec(BaseModel):
     """Description of a character used in the movie."""
 
@@ -28,11 +32,23 @@ class ShotSpec(BaseModel):
     duration_sec: float = Field(..., gt=0)
     setting: Optional[str] = None
     visual_description: str
-    start_base_image_id: str
-    end_base_image_id: str
+    start_base_image_id: str = Field(..., min_length=1)
+    end_base_image_id: str = Field(..., min_length=1)
     motion_prompt: Optional[str] = None
     is_talking_closeup: bool = False
     dialogue: List[DialogueLine] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize_base_image_refs(self) -> "ShotSpec":
+        start = self.start_base_image_id.strip()
+        end = self.end_base_image_id.strip()
+        if not start or not end:
+            raise ValueError("start_base_image_id and end_base_image_id must be non-empty")
+        if start == end:
+            raise ValueError("start_base_image_id and end_base_image_id must differ")
+        self.start_base_image_id = start
+        self.end_base_image_id = end
+        return self
 
 
 class BaseImageSpec(BaseModel):
@@ -206,9 +222,11 @@ class MoviePlan(BaseModel):
     def _validate_relationships(self) -> "MoviePlan":
         if not self.shots:
             raise ValueError("MoviePlan must contain at least one shot")
-        if len(self.base_images) != len(self.shots) + 1:
+        expected_base_images = len(self.shots) + 1
+        if len(self.base_images) != expected_base_images:
             raise ValueError(
-                "base_images must contain one more entry than shots to preserve continuity"
+                f"base_images count mismatch: expected len(shots)+1 == {expected_base_images} "
+                f"but got {len(self.base_images)}"
             )
 
         seen_base_ids: set[str] = set()
@@ -249,22 +267,29 @@ class MoviePlan(BaseModel):
             raise ValueError("dialogue_timeline must describe the full runtime, even if silent")
 
         timeline = list(self.dialogue_timeline)
-        if timeline[0].start_time_sec > 1e-3:
+        if timeline[0].start_time_sec > _TIMELINE_TOLERANCE:
             raise ValueError("dialogue_timeline must start at time 0; prepend a silence entry if needed")
 
         last_end = 0.0
         for entry in timeline:
-            if entry.start_time_sec - last_end > 1e-3:
+            if entry.start_time_sec - last_end > _TIMELINE_TOLERANCE:
                 raise ValueError("dialogue_timeline contains gaps; insert silence entries to cover idle spans")
-            if entry.start_time_sec + 1e-6 < last_end:
+            if entry.start_time_sec + _ORDERING_TOLERANCE < last_end:
                 raise ValueError("dialogue_timeline entries must be ordered by start_time_sec")
             entry_end = entry.start_time_sec + entry.duration_sec
-            if entry_end > total_runtime + 1e-3:
+            if entry_end > total_runtime + _TIMELINE_TOLERANCE:
                 raise ValueError("dialogue_timeline exceeds total shot duration")
             last_end = max(last_end, entry_end)
 
-        if abs(last_end - total_runtime) > 1e-3:
-            raise ValueError("dialogue_timeline must match total shot duration")
+        if total_runtime - last_end > _TIMELINE_TOLERANCE:
+            raise ValueError(
+                f"dialogue_timeline ends at {last_end:.3f}s but shots run for {total_runtime:.3f}s"
+            )
+
+        if last_end - total_runtime > _TIMELINE_TOLERANCE:
+            raise ValueError(
+                f"dialogue_timeline exceeds total shot duration by {(last_end - total_runtime):.3f}s"
+            )
 
         return self
 

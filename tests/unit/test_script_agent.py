@@ -181,6 +181,32 @@ def test_generate_plan_rejects_timeline_with_gaps(monkeypatch):
         script_agent.generate_plan("timeline gaps", model_spec="stub-model")
 
 
+def test_generate_plan_rejects_short_dialogue_timeline(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.0, "duration_sec": payload["shots"][0]["duration_sec"] - 0.25},
+    ]
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError) as excinfo:
+        script_agent.generate_plan("timeline too short", model_spec="stub-model")
+
+    assert "ends at" in str(excinfo.value)
+
+
+def test_generate_plan_rejects_overlong_dialogue_timeline(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.0, "duration_sec": payload["shots"][0]["duration_sec"] + 0.5},
+    ]
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError) as excinfo:
+        script_agent.generate_plan("timeline too long", model_spec="stub-model")
+
+    assert "exceeds total shot duration" in str(excinfo.value)
+
+
 def test_generate_plan_requires_dialogue_timeline(monkeypatch):
     payload = deepcopy(_sample_plan_payload())
     payload.pop("dialogue_timeline", None)
@@ -197,3 +223,14 @@ def test_generate_plan_requires_render_profile(monkeypatch):
 
     with pytest.raises(script_agent.PlanSchemaError):
         script_agent.generate_plan("missing render profile", model_spec="stub-model")
+
+
+def test_generate_plan_rejects_extra_base_images(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["base_images"].append({"id": "frame_002", "prompt": "extra continuity"})
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError) as excinfo:
+        script_agent.generate_plan("too many base images", model_spec="stub-model")
+
+    assert "len(shots)+1" in str(excinfo.value)

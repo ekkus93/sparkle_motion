@@ -8,7 +8,7 @@ import os
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, MutableMapping, Optional, Sequence, Union
 
 from pydantic import ValidationError
 
@@ -711,7 +711,7 @@ def _execute_shot(
         cfg=cfg,
         pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
-        action=lambda: _render_frames(shot, output_dir, base_images),
+        action=lambda: _render_frames(shot, output_dir, base_images, base_image_assets),
         meta={"shot_id": shot.id},
     )
     artifacts.frames_path = frames_result.path
@@ -1026,7 +1026,15 @@ def _stage_event_metadata(meta: Mapping[str, Any]) -> Dict[str, Any]:
     return {key: _convert(val) for key, val in meta.items() if val is not None}
 
 
-def _render_frames(shot: ShotSpec, output_dir: Path, base_images: Mapping[str, BaseImageSpec]) -> Path:
+def _render_frames(
+    shot: ShotSpec,
+    output_dir: Path,
+    base_images: Mapping[str, BaseImageSpec],
+    base_image_assets: MutableMapping[str, _BaseImageAsset],
+) -> StepResult:
+    frames_dir = output_dir / "frames" / shot.id
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
     start_prompt = _base_image_prompt(
         base_images,
         shot.start_base_image_id,
@@ -1039,18 +1047,72 @@ def _render_frames(shot: ShotSpec, output_dir: Path, base_images: Mapping[str, B
         shot_id=shot.id,
         role="end",
     )
-    payload = {
+
+    def _ensure_asset(image_id: str, *, role: str, prompt: str, payload: Dict[str, Any], force_new: bool) -> Path:
+        spec = base_images.get(image_id)
+        if spec is None:
+            raise ProductionAgentError(f"Shot {shot.id} references missing base image '{image_id}'")
+        if not force_new:
+            asset = base_image_assets.get(image_id)
+            if asset and asset.path and asset.path.exists():
+                return asset.path
+        target = frames_dir / f"{image_id}-{role}.json"
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        base_image_assets[image_id] = _BaseImageAsset(
+            spec=spec,
+            path=target,
+            payload_bytes=target.read_bytes(),
+        )
+        return target
+
+    start_payload = {
+        "shot_id": shot.id,
+        "role": "start",
+        "base_image_id": shot.start_base_image_id,
+        "prompt": start_prompt,
+    }
+    end_payload = {
+        "shot_id": shot.id,
+        "role": "end",
+        "base_image_id": shot.end_base_image_id,
+        "prompt": end_prompt,
+    }
+    start_frame_path = _ensure_asset(
+        shot.start_base_image_id,
+        role="start",
+        prompt=start_prompt,
+        payload=start_payload,
+        force_new=False,
+    )
+    end_frame_path = _ensure_asset(
+        shot.end_base_image_id,
+        role="end",
+        prompt=end_prompt,
+        payload=end_payload,
+        force_new=True,
+    )
+
+    summary_payload = {
         "shot_id": shot.id,
         "visual_description": shot.visual_description,
         "start_base_image_id": shot.start_base_image_id,
         "end_base_image_id": shot.end_base_image_id,
         "start_frame_prompt": start_prompt,
         "end_frame_prompt": end_prompt,
+        "start_frame_path": start_frame_path.as_posix(),
+        "end_frame_path": end_frame_path.as_posix(),
     }
-    dest = output_dir / "frames" / f"{shot.id}.json"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return dest
+    summary_path = frames_dir / "frames.json"
+    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return StepResult(
+        path=summary_path,
+        meta={
+            "shot_id": shot.id,
+            "start_frame_path": start_frame_path.as_posix(),
+            "end_frame_path": end_frame_path.as_posix(),
+        },
+    )
 
 
 def _synthesize_dialogue(
