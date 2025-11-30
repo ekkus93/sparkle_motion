@@ -10,7 +10,15 @@ from sparkle_motion import schema_registry
 
 def test_list_schema_names_contains_expected_entries():
     names = list(schema_registry.list_schema_names())
-    assert {"movie_plan", "asset_refs", "qa_report", "stage_event", "checkpoint"}.issubset(names)
+    assert {
+        "movie_plan",
+        "asset_refs",
+        "qa_report",
+        "stage_event",
+        "checkpoint",
+        "run_context",
+        "stage_manifest",
+    }.issubset(names)
 
 
 def test_get_schema_uri_and_path_for_movie_plan():
@@ -36,6 +44,8 @@ def test_typed_getters_return_expected_names():
     assert schema_registry.qa_report_schema().name == "qa_report"
     assert schema_registry.stage_event_schema().name == "stage_event"
     assert schema_registry.checkpoint_schema().name == "checkpoint"
+    assert schema_registry.run_context_schema().name == "run_context"
+    assert schema_registry.stage_manifest_schema().name == "stage_manifest"
 
 
 def test_resolve_schema_uri_prefers_artifact_outside_fixture(monkeypatch):

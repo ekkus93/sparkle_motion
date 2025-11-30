@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 import pytest
 
+from sparkle_motion import schema_registry
 from sparkle_motion.function_tools.production_agent.entrypoint import app
 
 
@@ -38,6 +39,7 @@ def test_invoke_dry_mode(client: TestClient, sample_plan: dict) -> None:
     assert data["simulation_report"]
     assert data["artifact_uris"] == []
     assert data["run_id"]
+    assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
 
 
 def test_invoke_run_mode_writes_artifact(
@@ -53,6 +55,7 @@ def test_invoke_run_mode_writes_artifact(
     assert data["artifact_uris"]
     assert data["steps"]
     assert data["run_id"]
+    assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
 
 
 def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,6 +75,7 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     artifacts_data = artifacts_resp.json()
     assert artifacts_data["run_id"] == run_id
     assert isinstance(artifacts_data["artifacts"], list)
+    assert all("artifact_uri" in item and "stage_id" in item for item in artifacts_data["artifacts"])
 
     pause_resp = client.post("/control/pause", json={"run_id": run_id})
     assert pause_resp.status_code == 200

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from sparkle_motion import schema_registry
 from sparkle_motion.function_tools.script_agent.entrypoint import app
 
 
@@ -25,6 +26,7 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     data = r.json()
     assert data["status"] == "success"
     assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
     artifact_uri = data["artifact_uri"]
     if artifact_uri.startswith("file://"):
         artifact_path = Path(artifact_uri.replace("file://", ""))

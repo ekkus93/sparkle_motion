@@ -176,3 +176,11 @@ def stage_event_schema() -> SchemaArtifact:
 
 def checkpoint_schema() -> SchemaArtifact:
     return load_catalog().get_schema("checkpoint")
+
+
+def run_context_schema() -> SchemaArtifact:
+    return load_catalog().get_schema("run_context")
+
+
+def stage_manifest_schema() -> SchemaArtifact:
+    return load_catalog().get_schema("stage_manifest")

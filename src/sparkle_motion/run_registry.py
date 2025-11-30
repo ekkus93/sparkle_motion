@@ -22,6 +22,19 @@ class ArtifactEntry:
     artifact_uri: str
     media_type: Optional[str] = None
     local_path: Optional[str] = None
+    download_url: Optional[str] = None
+    storage_hint: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    duration_s: Optional[float] = None
+    frame_rate: Optional[float] = None
+    resolution_px: Optional[str] = None
+    checksum_sha256: Optional[str] = None
+    qa_report_uri: Optional[str] = None
+    qa_passed: Optional[bool] = None
+    qa_mode: Optional[str] = None
+    playback_ready: Optional[bool] = None
+    notes: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now_iso)
 
@@ -33,6 +46,19 @@ class ArtifactEntry:
             "artifact_uri": self.artifact_uri,
             "media_type": self.media_type,
             "local_path": self.local_path,
+            "download_url": self.download_url,
+            "storage_hint": self.storage_hint,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "duration_s": self.duration_s,
+            "frame_rate": self.frame_rate,
+            "resolution_px": self.resolution_px,
+            "checksum_sha256": self.checksum_sha256,
+            "qa_report_uri": self.qa_report_uri,
+            "qa_passed": self.qa_passed,
+            "qa_mode": self.qa_mode,
+            "playback_ready": self.playback_ready,
+            "notes": self.notes,
             "metadata": self.metadata,
             "created_at": self.created_at,
         }
@@ -160,6 +186,19 @@ class RunRegistry:
                     artifact_uri=str(artifact_uri),
                     media_type=meta.get("media_type"),
                     local_path=meta.get("local_path"),
+                    download_url=meta.get("download_url"),
+                    storage_hint=meta.get("storage_hint"),
+                    mime_type=meta.get("mime_type"),
+                    size_bytes=meta.get("size_bytes"),
+                    duration_s=meta.get("duration_s"),
+                    frame_rate=meta.get("frame_rate"),
+                    resolution_px=meta.get("resolution_px"),
+                    checksum_sha256=meta.get("checksum_sha256"),
+                    qa_report_uri=meta.get("qa_report_uri"),
+                    qa_passed=meta.get("qa_passed"),
+                    qa_mode=meta.get("qa_mode"),
+                    playback_ready=meta.get("playback_ready"),
+                    notes=meta.get("notes"),
                     metadata=dict(meta),
                 )
                 state.artifacts.setdefault(entry.stage, []).append(entry)

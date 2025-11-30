@@ -44,6 +44,7 @@ class ResponseModel(BaseModel):
     status: Literal["success", "error"]
     artifact_uri: Optional[str] = None
     request_id: str
+    schema_uri: Optional[str] = None
 
 
 def make_app() -> FastAPI:
@@ -184,7 +185,12 @@ def make_app() -> FastAPI:
             except Exception:
                 pass
 
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id)
+            try:
+                schema_uri = schema_registry.movie_plan_schema().uri
+            except Exception:
+                schema_uri = None
+
+            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id, schema_uri=schema_uri)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:

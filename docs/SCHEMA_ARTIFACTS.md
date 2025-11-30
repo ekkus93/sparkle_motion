@@ -11,6 +11,8 @@ file whenever a schema URI or version changes so agents/tools stay aligned.
 | QAReport | `artifact://sparkle-motion/schemas/qa_report/v1` | `artifacts/schemas/QAReport.schema.json` | Consumed by `qa_qwen2vl` + QA policy checks. |
 | StageEvent | `artifact://sparkle-motion/schemas/stage_event/v1` | `artifacts/schemas/StageEvent.schema.json` | WorkflowAgent + `production_agent` timeline payload schema. |
 | Checkpoint | `artifact://sparkle-motion/schemas/checkpoint/v1` | `artifacts/schemas/Checkpoint.schema.json` | Optional per-stage checkpoint manifests for resume flows. |
+| RunContext | `artifact://sparkle-motion/schemas/run_context/v1` | `artifacts/schemas/RunContext.schema.json` | Canonical plan-intake payload consumed by `production_agent` before executing stages. |
+| StageManifest | `artifact://sparkle-motion/schemas/stage_manifest/v1` | `artifacts/schemas/StageManifest.schema.json` | Structured `/artifacts` manifest rows (base images, TTS clips, final deliverables). |
 | QA policy bundle | `artifact://sparkle-motion/qa_policy/v1` | `artifacts/qa_policy/qa_policy_v1.tar.gz` (manifest: `artifacts/qa_policy/v1/manifest.json`) | Policy pack consumed by QA + human-review gates; update manifest when policy revisions ship. |
 
 ## Next steps

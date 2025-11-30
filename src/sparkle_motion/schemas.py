@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -129,3 +130,75 @@ class MoviePlan(BaseModel):
             ]
         }
     )
+
+
+class RunContext(BaseModel):
+    """Materialized production context derived from a validated MoviePlan."""
+
+    run_id: str
+    plan_id: str
+    plan_title: str
+    plan: MoviePlan
+    schema_uri: Optional[str] = None
+    shot_order: List[str] = Field(default_factory=list)
+    dialogue_timeline_uri: Optional[str] = None
+    base_image_map: Dict[str, str] = Field(default_factory=dict)
+    render_profile: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_plan(
+        cls,
+        plan: MoviePlan,
+        *,
+        run_id: str,
+        schema_uri: Optional[str] = None,
+        render_profile: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "RunContext":
+        """Construct a RunContext using canonical identifiers from the plan."""
+
+        plan_id = (plan.metadata or {}).get("plan_id") or plan.title.strip().lower().replace(" ", "-")[:64] or "movie-plan"
+        shot_order = [shot.id for shot in plan.shots]
+        base_meta = dict(plan.metadata or {})
+        ctx_meta = dict(metadata or {})
+        if base_meta:
+            ctx_meta.setdefault("plan_metadata", base_meta)
+        return cls(
+            run_id=run_id,
+            plan_id=plan_id,
+            plan_title=plan.title,
+            plan=plan,
+            schema_uri=schema_uri,
+            shot_order=shot_order,
+            render_profile=dict(render_profile or {}),
+            metadata=ctx_meta,
+        )
+
+
+class StageManifest(BaseModel):
+    """Structured artifact manifest entry served via production_agent /artifacts."""
+
+    run_id: str
+    stage_id: str
+    artifact_type: str
+    name: str
+    artifact_uri: str
+    media_type: Optional[str] = None
+    local_path: Optional[str] = None
+    download_url: Optional[str] = None
+    storage_hint: Optional[Literal["adk", "local"]] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = Field(default=None, ge=0)
+    duration_s: Optional[float] = Field(default=None, ge=0)
+    frame_rate: Optional[float] = Field(default=None, ge=0)
+    resolution_px: Optional[str] = None
+    checksum_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    qa_report_uri: Optional[str] = None
+    qa_passed: Optional[bool] = None
+    qa_mode: Optional[str] = None
+    playback_ready: Optional[bool] = None
+    notes: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from sparkle_motion import schema_registry
 from sparkle_motion.function_tools.script_agent import entrypoint
 
 
@@ -24,6 +25,7 @@ def test_invoke_persists_artifact(tmp_path, monkeypatch):
     assert j.get("status") == "success"
     artifact_uri = j.get("artifact_uri")
     assert artifact_uri and artifact_uri.startswith("file://")
+    assert j.get("schema_uri") == schema_registry.movie_plan_schema().uri
 
     # Verify artifact file exists and contains the payload
     file_path = Path(artifact_uri.replace("file://", ""))
