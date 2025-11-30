@@ -175,7 +175,7 @@
   stages and `/artifacts` consumers can rely on exact offsets
   (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Dialogue timeline + TTS synthesis,
   THE_PLAN.md Stage table).
-- [ ] Integrate `qa_qwen2vl` twice within production_agent: (1) base-image QA
+- [x] Integrate `qa_qwen2vl` twice within production_agent: (1) base-image QA
   right after SDXL renders, retrying failed images before video, and (2)
   per-shot video QA with retry budgets + `qa_skipped` annotations when
   `qa_mode="skip"` is requested (reference `docs/NOTEBOOK_AGENT_INTEGRATION.md`

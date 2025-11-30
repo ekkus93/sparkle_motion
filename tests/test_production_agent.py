@@ -15,6 +15,7 @@ from sparkle_motion import tts_agent
 from sparkle_motion.images_agent import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
     ProductionResult,
+    ProductionAgentConfig,
     StepExecutionError,
     StepExecutionRecord,
     StepQueuedError,
@@ -83,6 +84,28 @@ def _stub_videos_agent(
         }
 
     monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _fake_render)
+
+
+@pytest.fixture(autouse=True)
+def _stub_qa_inspect(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
+    calls: List[Dict[str, Any]] = []
+    decisions: List[str] = []
+
+    def _fake_inspect(frames: List[bytes], prompts: List[str], opts: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+        decision = decisions.pop(0) if decisions else "approve"
+        report = {"decision": decision, "issues": []}
+        payload = {
+            "status": decision,
+            "decision": decision,
+            "artifact_uri": f"artifact://qa/{len(calls)}",
+            "report": report,
+            "metadata": {"decision": decision, "qa_stage": (opts or {}).get("metadata", {}).get("qa_stage")},
+        }
+        calls.append({"frames": frames, "prompts": prompts, "opts": opts, "decision": decision})
+        return payload
+
+    monkeypatch.setattr("function_tools.qa_qwen2vl.entrypoint.inspect_frames", _fake_inspect)
+    return {"calls": calls, "decisions": decisions}
 
 
 @pytest.fixture(autouse=True)
@@ -337,10 +360,62 @@ def test_gate_flags(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp
     assert statuses["plan_intake"] == "succeeded"
     assert statuses["images"] == expected
     assert statuses["video"] == expected
+    assert statuses["qa_base_images"] == "succeeded"
+    assert statuses["qa_video"] == "succeeded"
 
 
 class FakeError(Exception):
     pass
+
+
+def test_base_image_qa_retries_until_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+    _stub_qa_inspect: Dict[str, Any],
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    decisions = _stub_qa_inspect["decisions"]
+    decisions.extend(["reject", "approve", "approve", "approve"])
+    result = execute_plan(sample_plan, mode="run")
+    image_records = [rec for rec in result.steps if rec.step_type == "images"]
+    assert any("retry" in rec.meta for rec in image_records)
+    qa_records = [rec for rec in result.steps if rec.step_type == "qa_base_images"]
+    assert any(not rec.meta.get("qa_passed") for rec in qa_records)
+    assert qa_records[-1].meta.get("qa_passed") is True
+
+
+def test_qa_steps_skipped_in_skip_mode(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    sample_plan.metadata = dict(sample_plan.metadata or {})
+    sample_plan.metadata["qa_mode"] = "skip"
+    result = execute_plan(sample_plan, mode="run")
+    qa_records = [rec for rec in result.steps if rec.step_type in {"qa_base_images", "qa_video"}]
+    assert qa_records, "expected QA step records"
+    for rec in qa_records:
+        assert rec.status == "skipped"
+        assert rec.meta.get("qa_skipped") is True
+
+
+def test_video_qa_failure_raises_after_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+    _stub_qa_inspect: Dict[str, Any],
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    decisions = _stub_qa_inspect["decisions"]
+    # First call (base images) passes, video QA keeps failing
+    decisions.extend(["approve", "reject", "reject", "approve", "approve"])
+    cfg = ProductionAgentConfig(qa_retry_attempts=1)
+    with pytest.raises(StepExecutionError):
+        execute_plan(sample_plan, mode="run", config=cfg)
 
 
 def test_retry_behavior(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
