@@ -101,22 +101,38 @@
   - [x] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
 #### Notebook control surface (Colab UI)
-- [ ] Build the end-to-end `ipywidgets` control panel cell described in
+- [x] Build the end-to-end `ipywidgets` control panel cell described in
   `docs/NOTEBOOK_AGENT_INTEGRATION.md`: prompt/title inputs, Generate Plan /
   Run Production /
   Pause /
   Resume /
   Stop buttons wired to `script_agent` (`POST /invoke`) and
   `production_agent` (`POST /invoke`, `POST /control/*`).
-- [ ] Implement asynchronous status + artifact polling helpers that call
+- [x] Implement asynchronous status + artifact polling helpers that call
   `GET /ready`, `GET /status`, and `GET /artifacts`, stream updates into shared
   `widgets.Output` panes, and keep background tasks cancellable so the Colab UI
   never blocks.
-- [ ] Add the "final deliverable" helper cell from
+- [x] Add the "final deliverable" helper cell from
   `docs/NOTEBOOK_AGENT_INTEGRATION.md`: fetch the `video_final` manifest entry,
   embed the MP4 inline, warn when `qa_skipped` is true, handle missing
   `video_final` rows by surfacing a retry action (`resume_from="qa_publish"`),
   and provide Drive/download fallbacks.
+- **Colab manual verification checklist**
+  - [ ] Launch the control panel cell with live `script_agent`/`production_agent` servers and confirm Generate Plan flows return `artifact_uri` plus autofill the Plan URI field.
+  - [ ] Run Production in both `dry` and `run` modes, then exercise `Pause`/`Resume`/`Stop` buttons against real `/control/*` endpoints to confirm acknowledgements surface in the Control Responses pane.
+  - [ ] Enable the status polling toggle once `/status` is available, validate that `/ready` + `/status` snapshots stream into the Status pane, and ensure the polling loop can be started/stopped without hanging the notebook.
+  - [ ] Test the artifacts viewer: specify a `run_id`, optionally a `stage`, and confirm `/artifacts` responses render (including `video_final` metadata) and auto-refresh when the checkbox is enabled.
+  - [ ] After the "final deliverable" helper cell lands, verify inline MP4 embedding, QA badge rendering when `qa_skipped` is true, and Drive download fallbacks inside Colab.
+   - [ ] Run the full Colab preflight sequence (auth, env vars, pip installs, Drive mount, GPU/disk checks, `/ready` probes) and confirm each helper cell succeeds end-to-end.
+   - [ ] Generate multiple MoviePlans via the control panel, inspect the rendered plan JSON/tables, and confirm dialogue timeline, base_images count, and `render_profile` constraints all validate before production.
+   - [ ] Manually edit a plan in-notebook (e.g., tweak shot durations or base-image references) and ensure the MoviePlan validator surfaces mismatches (shot runtime vs. dialogue timeline, base_images count) before allowing production.
+   - [ ] Kick off production runs with `qa_mode="full"` and `qa_mode="skip"`, verifying that StepExecutionRecord history, QA badges, and `/status` responses reflect the requested mode.
+   - [ ] Observe the dialogue/TTS stage outputs: confirm per-line artifacts, stitched `tts_timeline.wav`, and timeline-with-actuals manifests appear in `/artifacts` and render inside the notebook viewers.
+   - [ ] Validate base-image QA flows by forcing a known failure (bad prompt/fixture), confirming the notebook surfaces the QA report, regenerates via `images_agent`, and only proceeds after a pass.
+   - [ ] Validate clip-level QA + retry behavior by injecting a `qa_qwen2vl` failure, checking that the control panel pauses, surfaces retry counts, and resumes automatically once QA passes.
+   - [ ] Use the control buttons to trigger `pause`, `resume`, and `stop` during a long run, then exercise `resume_from=<stage>` to ensure partial progress can restart without rerunning prior stages.
+   - [ ] Confirm the artifacts viewer renders every stage manifest (base images, TTS audio, video clips, QA reports, assembly outputs) with inline previews (`Image`, `Audio`, `Video`) and that auto-refresh never duplicates or drops entries.
+   - [ ] For the final deliverable helper, cover both local-path and remote-download paths: trigger ADK download fallback when `local_path` is absent, display the inline video, verify QA warnings when `qa_skipped` is true, and test the "resume from qa_publish" action when `video_final` is missing.
 
 #### Pipeline JSON contracts
 - [ ] Promote the documented request/response envelopes for
