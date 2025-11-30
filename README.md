@@ -154,4 +154,29 @@ Troubleshooting mirrors SDXL:
 - Missing WAN weights or incompatible wheels fall back to the deterministic
   fixture, so the tests still pass but no GPU work occurs (check logs for the
   fallback notice).
+
+A2A integration roadmap
+-----------------------
+Sparkle Motion currently orchestrates every FunctionTool from a single
+`production_agent`, so peer-to-peer agent messaging is unnecessary and we have
+not wired up the A2A protocol yet. Once we invite external or independently
+hosted agents, A2A becomes attractive because it formalizes discovery,
+capability negotiation, and transport between heterogeneous agent runtimes.
+
+Why adopt A2A later?
+- Third-party or remote teams can plug their agents into the pipeline without us
+	baking their SDKs directly into `production_agent`.
+- We can scale individual agents independently and still reuse the same message
+	contract for telemetry + error propagation.
+- A2A helps enforce a clean “tools over the wire” boundary, which is useful once
+	runs span multiple services or data centers.
+
+High-level adoption plan
+1. Introduce an A2A server (or client) shim inside `production_agent` so plan
+	 steps map to A2A invocations instead of direct FunctionTool calls.
+2. Wrap the existing adapters (images, videos, TTS, QA, assemble, lipsync) with
+	 lightweight A2A endpoints that expose the same payload schema they already
+	 validate today.
+3. Extend the artifact/telemetry hooks to include A2A trace IDs so cross-agent
+	 debugging remains intact, and document the contract for external partners.
 # sparkle_motion

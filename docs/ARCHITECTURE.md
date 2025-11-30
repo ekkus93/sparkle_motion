@@ -93,6 +93,17 @@ Implementation Tasks document.
 	counts, device/model metadata, logs URIs, and policy/error annotations.
 	Failures trigger cleanup (GPU context release, temp file handling) and
 	dependent-step skips per the Implementation Tasks guidance.
+	Plan intake now materializes a canonical `RunContext` that validates
+	`MoviePlan` schemas, enforces `render_profile` selections (model IDs, FPS
+	limits, provider locks), confirms base-image continuity (`len(base_images)
+	== len(shots) + 1`), and stitches the dialogue timeline into the per-line
+	TTS schedule before any heavy stage is invoked. Each subsequent stage
+	records its required inputs/outputs inside the `StepExecutionRecord` (shot
+	IDs, dialogue clips, artifact manifests) so notebooks can resume or inspect
+	runs without rehydrating bespoke temp files. Clip-level QA is mandatory in
+	`qa_mode="full"` and reruns failed shots up to the configured retry budget;
+	desktop or developer flows may request `qa_mode="skip"`, which still emits
+	`qa_skipped: true` so downstream dashboards clearly mark non-validated runs.
 
 ### MoviePlan schema & validation recap
 
@@ -338,6 +349,105 @@ provenance.
 	operators rely on notebook logs and session metadata only. Local summaries
 	(if desired) are generator outputs derived from the ADK data, not the other
 	way around.
+
+### Production run observability & controls
+
+- `production_agent` exposes HTTP surfaces that mirror its ADK timeline so the
+	Colab UI (and future CLIs) can introspect long-running jobs. `GET /status`
+	requires a `run_id` and returns the latest `StepExecutionRecord` timeline,
+	current stage, attempt counts, QA state, and pause/stop flags. Polling every
+	3–5 seconds keeps the on-notebook dashboard in sync without resorting to ad
+	hoc log scraping.
+- `GET /artifacts` accepts `run_id` (and optional `stage`/`step_id`) and emits
+	structured asset manifests per stage: base-image thumbnails, dialogue WAVs,
+	per-shot MP4s, QA report URIs, and final assembly outputs. Assets always
+	arrive as typed URIs (`artifact://` or `file://` in dev) so the UI can embed
+	imagery/audio/video controls without guessing locations.
+- The `qa_publish` stage must contribute a manifest entry with
+	`artifact_type="video_final"`, `artifact_uri`, the `local_path` used by
+	production_agent (when it saved into `/content`), and a signed `download_url`
+	when the file only exists in ArtifactService. This contract guarantees that
+	operators—and the Colab dashboard—can surface a verified final video without
+	re-parsing StepExecutionRecords.
+- Control endpoints `POST /pause`, `POST /resume`, and `POST /stop` wrap the
+	underlying orchestration state machine. Each accepts `{"run_id": ...}`,
+	propagates intent through the asyncio event gates inside `production_agent`,
+	and responds once the agent acknowledges the new state. Pauses drain the
+	current stage and hold before the next stage begins; stop cancels remaining
+	work while persisting the artifact manifest so a `resume_from` request can
+	restart safely.
+- Status payloads always echo immutable run metadata (plan ID, render profile,
+	qa_mode) and flag whether QA was skipped so operators immediately understand
+	if artifacts are distribution-ready.
+
+### Notebook production dashboard (Colab control cell)
+
+- The notebook embeds an `ipywidgets` (or `google.colab.widgets`) panel that
+	drives the endpoints above. Buttons trigger `/invoke` to start production and
+	the pause/resume/stop controls; disabled/enabled states follow the latest
+	`/status` payload to avoid inconsistent intents, and all callbacks execute in
+	Python so no browser scripting is required.
+- A status column renders the active stage, elapsed/remaining times derived
+	from `StepExecutionRecord` telemetry, and recent log lines so users always
+	know “where production_agent is” without reading raw notebooks.
+- Asset tabs query `/artifacts` as soon as each stage completes, rendering base
+	image thumbnails, inline audio controls for line-level TTS clips, MP4 preview
+	players for per-shot videos, and the final assembly via `widgets.Image`,
+	`widgets.Audio`, and `IPython.display.Video`. This mirrors the stage
+	payload contracts (`plan_intake`, `dialogue_audio`, `base_images`,
+	`video`, `video_qa`, `assemble`, `qa_publish`) documented in
+	`NOTEBOOK_AGENT_INTEGRATION.md`.
+- The dashboard also ships a dedicated “Final Video” cell: it fetches the
+	`video_final` manifest entry, embeds the MP4 inline via `IPython.display.Video`
+	or a `widgets.Output` panel, and triggers `google.colab.files.download()` (or
+	falls back to `adk artifacts download`) so users can export the QA-approved
+	deliverable from inside Colab immediately.
+- Alert banners highlight QA failures, retries exhausted, or `qa_skipped`
+	states; from there the UI can surface “retry shot” or “resume from stage X”
+	actions powered by the same control endpoints. This keeps the architecture’s
+	observability contract in lockstep with THE_PLAN requirements.
+- The terminal `qa_publish` stage concentrates on cross-shot safety/audio
+	checks (finger-count and prompt-mismatch issues are already handled per clip),
+	so the dashboard only surfaces regressions that block final delivery.
+
+#### Final video manifest contract
+
+`production_agent` is responsible for publishing a single `/artifacts` row with
+`artifact_type="video_final"` once `qa_publish` succeeds. The manifest schema is
+authoritative and mirrors THE_PLAN so downstream clients never guess field
+names:
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `artifact_type` | Literal `"video_final"` | yes | Reject mismatched literals before responding. |
+| `artifact_uri` | string | yes | ADK ArtifactService URI for long-term storage. |
+| `local_path` | string | yes | Absolute Colab path for inline playback. |
+| `download_url` | string | conditional | Mandatory when `storage_hint="adk"`; omit when local. |
+| `storage_hint` | enum `{"adk","local"}` | yes | Tells clients whether to read from disk or fetch remotely. |
+| `mime_type` | string | yes | Typically `video/mp4`; allows future codecs. |
+| `size_bytes` | integer | yes | Enables download progress/quotas. |
+| `duration_s` | float | yes | Total runtime; must match assemble metadata. |
+| `frame_rate` | float | yes | Derived from shot timing metadata. |
+| `resolution_px` | string | yes | `"{width}x{height}"` for layout decisions. |
+| `checksum_sha256` | string | yes | 64-char lowercase hex for integrity checks. |
+| `qa_report_uri` | string | yes | References the approving QA artifact. |
+| `qa_passed` | boolean | yes | True when QA approved, false if publish blocked. |
+| `qa_mode` | string | yes | Mirrors run metadata (`"full"` vs `"skip"`). |
+| `run_id` | string | yes | Links manifest to ADK session. |
+| `stage_id` | string | yes | Should be `"qa_publish"`; future stages can add their own rows. |
+| `created_at` | ISO 8601 string | yes | Timestamp when manifest emitted. |
+| `playback_ready` | boolean | yes | Signals whether `local_path` already exists. |
+| `notes` | string | optional | Room for render profile / retry counts. |
+
+Validation rules:
+
+1. `download_url` MUST be present any time `storage_hint` is `"adk"`.
+2. `checksum_sha256` is validated pre-response; production_agent refuses to
+	emit the manifest until the digest matches the on-disk file.
+3. `duration_s`, `frame_rate`, and `size_bytes` are positive numbers; negative
+	or zero values fail the stage immediately.
+4. Missing `video_final` entries are treated as fatal by clients, which surface
+	“QA publish incomplete” guidance instead of attempting playback.
 
 ## Data contracts & storage layout
 

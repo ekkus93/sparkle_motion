@@ -100,6 +100,90 @@
 - [x] `function_tools/lipsync_wav2lip`
   - [x] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
+#### Notebook control surface (Colab UI)
+- [ ] Build the end-to-end `ipywidgets` control panel cell described in
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md`: prompt/title inputs, Generate Plan /
+  Run Production /
+  Pause /
+  Resume /
+  Stop buttons wired to `script_agent` (`POST /invoke`) and
+  `production_agent` (`POST /invoke`, `POST /control/*`).
+- [ ] Implement asynchronous status + artifact polling helpers that call
+  `GET /ready`, `GET /status`, and `GET /artifacts`, stream updates into shared
+  `widgets.Output` panes, and keep background tasks cancellable so the Colab UI
+  never blocks.
+- [ ] Add the "final deliverable" helper cell from
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md`: fetch the `video_final` manifest entry,
+  embed the MP4 inline, warn when `qa_skipped` is true, handle missing
+  `video_final` rows by surfacing a retry action (`resume_from="qa_publish"`),
+  and provide Drive/download fallbacks.
+
+#### Pipeline JSON contracts
+- [ ] Promote the documented request/response envelopes for
+  `script_agent`/`production_agent` into canonical schema artifacts (MoviePlan,
+  RunContext, StageManifest) and enforce them directly inside the FastAPI
+  entrypoints.
+- [ ] For each FunctionTool (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
+  `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`), implement typed
+  request/response dataclasses (or Pydantic models) that match
+  `docs/ARCHITECTURE.md` and reject payloads that drift from those specs.
+- [ ] Add contract tests that exercise each agent/tool endpoint end-to-end and
+  compare the emitted JSON (artifacts, metadata) to the samples in
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md` so regressions are caught automatically.
+
+#### MoviePlan parity & stage orchestration
+- [ ] Extend `sparkle_motion.schemas.MoviePlan` (and script_agent output) to
+  include the documented `base_images` inventory, top-level
+  `dialogue_timeline`, and required `render_profile.video.model_id`, enforcing
+  `len(base_images) == len(shots) + 1` and dialogue duration ≡ total shot
+  runtime before any production_agent call (`docs/NOTEBOOK_AGENT_INTEGRATION.md`
+  §§Dialogue timeline/Base images, Render profile block).
+- [ ] Update shot data structures + validators so shots reference start/end
+  base-image IDs instead of prompts, and teach production_agent to honor the
+  continuity contract (reuse shot N end frame as shot N+1 start frame) before
+  invoking downstream tools (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Start/end
+  frame continuity, Stage table rows).
+- [ ] Add a plan-intake stage that loads schema hashes from
+  `schema_registry`, materializes a `RunContext`, enforces policy gates, and
+  records StageEvent/StageManifest entries as described in
+  `docs/ARCHITECTURE.md` §Production run observability + THE_PLAN.md §Stage
+  contracts.
+- [ ] Implement the dialogue + audio stage exactly as specced: call
+  `tts_agent` once per dialogue timeline entry, record `line_artifacts`, and
+  stitch a single `tts_timeline.wav` artifact with measured timings so later
+  stages and `/artifacts` consumers can rely on exact offsets
+  (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Dialogue timeline + TTS synthesis,
+  THE_PLAN.md Stage table).
+- [ ] Integrate `qa_qwen2vl` twice within production_agent: (1) base-image QA
+  right after SDXL renders, retrying failed images before video, and (2)
+  per-shot video QA with retry budgets + `qa_skipped` annotations when
+  `qa_mode="skip"` is requested (reference `docs/NOTEBOOK_AGENT_INTEGRATION.md`
+  §§Base images + QA, Clip-level QA + retries, THE_PLAN.md §§Video QA rows).
+- [ ] Add the terminal `qa_publish` stage that inspects the final MP4/audio
+  pair, writes QA reports, and publishes the `video_final` manifest entry that
+  downstream `/artifacts` consumers expect (THE_PLAN.md §Final deliverable
+  contract, `docs/NOTEBOOK_AGENT_INTEGRATION.md` Final deliverable helper).
+
+#### Production agent observability & controls
+- [ ] Persist StepExecutionRecord history (and run metadata such as
+  `plan_id`, `render_profile`, and `qa_mode`) so the new `/status` endpoint can
+  stream the timeline structure described in THE_PLAN.md §Colab dashboard and
+  `docs/ARCHITECTURE.md` §Production run observability.
+- [ ] Implement `/artifacts?run_id=&stage=` that serves structured manifests
+  per stage, including thumbnails/audio/MP4 entries, and validate the
+  `qa_publish` response contract (requires `artifact_type="video_final"`,
+  `artifact_uri`, `local_path`, `download_url`, checksum) before responding as
+  mandated by THE_PLAN.md §Final deliverable contract.
+- [ ] Add `/control/pause`, `/control/resume`, and `/control/stop` endpoints
+  that wrap the production_agent execution loop with asyncio gates so notebook
+  buttons can pause/resume/stop jobs without killing processes
+  (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §Production run dashboard, THE_PLAN.md
+  Immediate workstream item #1).
+- [ ] Thread a `qa_mode` option from `/invoke` through production_agent, store
+  it with run state, and ensure status/artifact responses badge `qa_skipped`
+  runs exactly as the docs require (THE_PLAN.md §Live status polling,
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md` QA modes subsection).
+
 ### P1 — Deterministic unit tests & harnesses
 - [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
 - [x] `tests/unit/test_adk_helpers.py` — verify artifact publish fallbacks, schema registry loader behavior, and memory events.
@@ -115,6 +199,9 @@
 - [x] `tests/unit/test_qa_qwen2vl.py` — validate QA adapter structured parsing using mocked Qwen responses.
 - [x] `tests/unit/test_lipsync_wav2lip_adapter.py` — validate adapter contracts using fixtures and fixture/real-engine fallbacks.
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
+- [ ] Finalize the dialogue timeline builder API ownership (production_agent vs.
+  helper module) and cover it with unit tests so plan edits and TTS synthesis
+  stay in sync with `docs/NOTEBOOK_AGENT_INTEGRATION.md` expectations.
 
 ### P2 — Robustness, tooling, and docs
 - [x] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
@@ -125,6 +212,12 @@
 - [x] `docs/gpu_utils.md` — document `model_context` usage, device presets, telemetry expectations, and troubleshooting.
 - [x] `docs/SCHEMA_ARTIFACTS.md` linkage — add references from module docstrings + onboarding notes once schema loader is wired.
 - [x] `db/schema/recent_index.sql` and `src/sparkle_motion/db/sqlite.py` — persist RecentIndex/MemoryService tables + helper functions.
+- [ ] Document the canonical port assignments and environment variables for
+  each FunctionTool once the ipywidgets UI is wired (per
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md`).
+- [ ] Capture and document the artifact preview patterns (image/audio/video
+  widget recipes) after the first UI prototype is validated, so future notebooks
+  follow the same embedding conventions.
 
 ### P3 — Gated smokes, proposals, and integration follow-ups
 - [ ] Smoke tests: add opt-in tests under `tests/smoke/` for `images_sdxl`, `videos_wan`, `tts_chatterbox`, `assemble_ffmpeg`, `lipsync_wav2lip`, `qa_qwen2vl`, all gated via corresponding `SMOKE_*` env vars.
