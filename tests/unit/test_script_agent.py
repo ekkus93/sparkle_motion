@@ -16,6 +16,29 @@ class _StubAgent:
         return self._payload
 
 
+def _sample_plan_payload() -> dict:
+    return {
+        "title": "Demo",
+        "base_images": [
+            {"id": "frame_000", "prompt": "hero start"},
+            {"id": "frame_001", "prompt": "hero end"},
+        ],
+        "shots": [
+            {
+                "id": "shot-1",
+                "duration_sec": 5,
+                "visual_description": "A calm beach",
+                "start_base_image_id": "frame_000",
+                "end_base_image_id": "frame_001",
+            }
+        ],
+        "dialogue_timeline": [
+            {"type": "silence", "start_time_sec": 0.0, "duration_sec": 5.0},
+        ],
+        "render_profile": {"video": {"model_id": "wan-2.1"}, "metadata": {}},
+    }
+
+
 @pytest.fixture(autouse=True)
 def _stub_run_id(monkeypatch):
     monkeypatch.setattr(script_agent.observability, "get_session_id", lambda: "test-run")
@@ -39,18 +62,7 @@ def _install_agent(monkeypatch, payload):
 
 
 def test_generate_plan_validates_and_publishes(monkeypatch, tmp_path):
-    plan_payload = {
-        "title": "Demo",
-        "shots": [
-            {
-                "id": "shot-1",
-                "duration_sec": 5,
-                "visual_description": "A calm beach",
-                "start_frame_prompt": "start",
-                "end_frame_prompt": "end",
-            }
-        ],
-    }
+    plan_payload = _sample_plan_payload()
     _install_agent(monkeypatch, json.dumps(plan_payload))
 
     captured: dict = {}
@@ -86,17 +98,8 @@ def test_generate_plan_raises_on_invalid_json(monkeypatch):
 
 
 def test_generate_plan_raises_on_schema_failure(monkeypatch):
-    bad_payload = {
-        "title": "Broken",
-        "shots": [
-            {
-                "id": "shot-1",
-                "duration_sec": 5,
-                "visual_description": "Scene",
-                # missing start/end prompts to trigger schema failure
-            }
-        ],
-    }
+    bad_payload = _sample_plan_payload()
+    bad_payload["base_images"] = [{"id": "frame_000", "prompt": "start"}]  # insufficient entries
     _install_agent(monkeypatch, json.dumps(bad_payload))
 
     with pytest.raises(script_agent.PlanSchemaError):
@@ -104,25 +107,20 @@ def test_generate_plan_raises_on_schema_failure(monkeypatch):
 
 
 def test_generate_plan_respects_shot_limit(monkeypatch):
-    payload = {
-        "title": "Long",
-        "shots": [
-            {
-                "id": "shot-1",
-                "duration_sec": 5,
-                "visual_description": "Scene",
-                "start_frame_prompt": "start",
-                "end_frame_prompt": "end",
-            },
-            {
-                "id": "shot-2",
-                "duration_sec": 5,
-                "visual_description": "Scene",
-                "start_frame_prompt": "start",
-                "end_frame_prompt": "end",
-            },
-        ],
-    }
+    payload = _sample_plan_payload()
+    payload["shots"].append(
+        {
+            "id": "shot-2",
+            "duration_sec": 5,
+            "visual_description": "Scene",
+            "start_base_image_id": "frame_001",
+            "end_base_image_id": "frame_002",
+        }
+    )
+    payload["base_images"].append({"id": "frame_002", "prompt": "hero close"})
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.0, "duration_sec": 10.0},
+    ]
     _install_agent(monkeypatch, json.dumps(payload))
     monkeypatch.setenv("SCRIPT_AGENT_MAX_SHOTS", "1")
     monkeypatch.setattr(

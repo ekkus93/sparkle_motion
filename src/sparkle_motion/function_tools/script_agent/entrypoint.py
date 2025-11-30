@@ -7,10 +7,11 @@ import logging
 import uuid
 import time
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Optional, Iterable, Tuple, Dict
 
 from fastapi import FastAPI, HTTPException
 
@@ -134,6 +135,7 @@ def make_app() -> FastAPI:
             app.state.inflight += 1
         try:
             plan = _generate_movie_plan(req, request_id)
+            plan = _canonicalize_plan_base_images(plan)
 
             # prepare artifact persistence
             deterministic = os.environ.get("DETERMINISTIC", "1") == "1"
@@ -236,26 +238,105 @@ def _generate_movie_plan(req: RequestModel, request_id: str) -> MoviePlan:
     return MoviePlan.model_validate(fallback_payload)
 
 
-def _plan_from_request_shots(req: RequestModel) -> MoviePlan:
-    shots: list[dict[str, Any]] = []
-    for idx, raw in enumerate(req.shots or []):
-        shots.append(_normalize_shot(idx, raw or {}, req))
+def _canonicalize_plan_base_images(plan: MoviePlan) -> MoviePlan:
+    """Return a copy of ``plan`` with sequential base image ids and prompts."""
+
+    shots = plan.shots
     if not shots:
+        return plan
+
+    plan_dict = plan.model_dump()
+    base_images = plan_dict.get("base_images") or []
+    base_lookup: Dict[str, Dict[str, Any]] = {}
+    for entry in base_images:
+        if isinstance(entry, dict) and entry.get("id"):
+            base_lookup[str(entry["id"])] = entry
+
+    new_base_images: list[dict[str, Any]] = []
+    updated_shots: list[dict[str, Any]] = plan_dict.get("shots", [])
+    if not isinstance(updated_shots, list):
+        return plan
+
+    for idx, shot in enumerate(updated_shots):
+        if not isinstance(shot, dict):
+            continue
+        original_start_id = shot.get("start_base_image_id")
+        original_end_id = shot.get("end_base_image_id")
+        shot_desc = shot.get("visual_description") or f"Shot {idx + 1}"
+
+        start_prompt = _lookup_base_prompt(base_lookup, original_start_id, fallback=f"{shot_desc}: establishing")
+        end_prompt = _lookup_base_prompt(base_lookup, original_end_id, fallback=f"{shot_desc}: closing")
+
+        if idx == 0:
+            new_base_images.append(_canonical_base_image(0, start_prompt, source_entry=base_lookup.get(str(original_start_id))))
+        shot["start_base_image_id"] = _frame_id(idx)
+
+        terminal_index = idx + 1
+        shot["end_base_image_id"] = _frame_id(terminal_index)
+        new_base_images.append(_canonical_base_image(terminal_index, end_prompt, source_entry=base_lookup.get(str(original_end_id))))
+
+    plan_dict["base_images"] = new_base_images
+    plan_dict["shots"] = updated_shots
+    return MoviePlan.model_validate(plan_dict)
+
+
+def _lookup_base_prompt(base_lookup: Dict[str, Dict[str, Any]], base_id: Optional[str], *, fallback: str) -> str:
+    if base_id and base_id in base_lookup:
+        prompt = base_lookup[base_id].get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt.strip()
+        meta = base_lookup[base_id].get("metadata")
+        if isinstance(meta, dict):
+            meta_prompt = meta.get("prompt")
+            if isinstance(meta_prompt, str) and meta_prompt.strip():
+                return meta_prompt.strip()
+    return fallback
+
+
+def _canonical_base_image(index: int, prompt: str, *, source_entry: Optional[Dict[str, Any]]) -> dict[str, Any]:
+    base = _base_image(index, prompt)
+    metadata = dict(base.get("metadata") or {})
+    metadata.setdefault("ordinal", index)
+    if source_entry:
+        metadata.setdefault("source_base_image_id", source_entry.get("id"))
+        if source_entry.get("metadata"):
+            metadata.setdefault("source_metadata", source_entry.get("metadata"))
+    base["metadata"] = metadata
+    return base
+
+
+def _plan_from_request_shots(req: RequestModel) -> MoviePlan:
+    raw_shots = [dict(raw or {}) for raw in (req.shots or [])]
+    if not raw_shots:
         raise ValueError("no shots provided")
+    descriptor = _derive_prompt(req)
+    shots, base_images, timeline = _build_plan_components(raw_shots, descriptor=descriptor, req=req)
     payload = {
         "title": req.title or _title_from_prompt(req.prompt, fallback="ScriptAgent Plan"),
         "shots": shots,
+        "base_images": base_images,
+        "dialogue_timeline": timeline,
+        "render_profile": _default_render_profile(),
         "metadata": {"source": "script_agent.entrypoint.pass_through"},
     }
     return MoviePlan.model_validate(payload)
 
 
-def _normalize_shot(idx: int, raw: dict[str, Any], req: RequestModel) -> dict[str, Any]:
+@dataclass
+class _NormalizedShot:
+    data: dict[str, Any]
+    start_prompt: str
+    end_prompt: str
+    dialogue: list[dict[str, Any]]
+
+
+def _normalize_shot(idx: int, raw: dict[str, Any], req: Optional[RequestModel], descriptor: str) -> _NormalizedShot:
+    title_hint = req.title if req else None
     base_desc = _first_non_empty(
         raw.get("visual_description"),
         raw.get("description"),
         raw.get("desc"),
-        f"Shot {idx + 1} for {req.title or _title_from_prompt(req.prompt)}",
+        f"Shot {idx + 1} for {title_hint or _title_from_prompt(descriptor)}",
     )
     start_prompt = _first_non_empty(
         raw.get("start_frame_prompt"),
@@ -270,17 +351,15 @@ def _normalize_shot(idx: int, raw: dict[str, Any], req: RequestModel) -> dict[st
     )
     duration = _coerce_duration(raw.get("duration_sec") or raw.get("duration"), default=4.0 + idx)
     dialogue = _normalize_dialogue(raw.get("dialogue"), idx)
-    return {
+    shot = {
         "id": str(raw.get("id") or f"shot_{idx + 1:03d}"),
         "duration_sec": duration,
         "visual_description": base_desc,
-        "start_frame_prompt": start_prompt,
-        "end_frame_prompt": end_prompt,
         "motion_prompt": raw.get("motion_prompt") or "Deliberate cinematic move",
         "is_talking_closeup": bool(raw.get("is_talking_closeup") or raw.get("talking_closeup") or False),
-        "dialogue": dialogue,
-        "setting": raw.get("setting") or (req.title or "soundstage"),
+        "setting": raw.get("setting") or (title_hint or "soundstage"),
     }
+    return _NormalizedShot(shot, start_prompt, end_prompt, dialogue)
 
 
 def _coerce_duration(value: Any, *, default: float) -> float:
@@ -319,6 +398,11 @@ def _normalize_dialogue(raw_dialogue: Any, shot_idx: int) -> list[dict[str, Any]
                     payload["start_time_sec"] = float(entry["start_time_sec"])
                 except (TypeError, ValueError):
                     pass
+            if entry.get("duration_sec") is not None:
+                try:
+                    payload["duration_sec"] = max(float(entry["duration_sec"]), 0.05)
+                except (TypeError, ValueError):
+                    pass
             normalized.append(payload)
     return normalized
 
@@ -338,14 +422,14 @@ def _derive_prompt(req: RequestModel) -> str:
 def _synthetic_plan_payload(prompt: str, title_hint: Optional[str], request_id: str) -> dict[str, Any]:
     base_title = title_hint or _title_from_prompt(prompt, fallback="Generated Short Film")
     descriptor = prompt or "cinematic short"
-    shots: list[dict[str, Any]] = []
     motifs = (
         "establishing vista",
         "character turning point",
         "closing tableau",
     )
+    raw_shots: list[dict[str, Any]] = []
     for idx, motif in enumerate(motifs[:2]):
-        shots.append(
+        raw_shots.append(
             {
                 "id": f"shot_{idx + 1:03d}",
                 "duration_sec": 4.0 + idx,
@@ -362,9 +446,14 @@ def _synthetic_plan_payload(prompt: str, title_hint: Optional[str], request_id: 
                 ],
             }
         )
+
+    shots, base_images, timeline = _build_plan_components(raw_shots, descriptor=descriptor)
     return {
         "title": base_title,
         "shots": shots,
+        "base_images": base_images,
+        "dialogue_timeline": timeline,
+        "render_profile": _default_render_profile(),
         "metadata": {
             "source": "script_agent.entrypoint.synthetic",
             "request_id": request_id,
@@ -391,3 +480,111 @@ def _first_non_empty(*candidates: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _build_plan_components(
+    raw_shots: Iterable[dict[str, Any]],
+    *,
+    descriptor: str,
+    req: Optional[RequestModel] = None,
+) -> Tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    normalized: list[_NormalizedShot] = [
+        _normalize_shot(idx, raw or {}, req, descriptor)
+        for idx, raw in enumerate(raw_shots)
+    ]
+    if not normalized:
+        raise ValueError("no shots provided")
+
+    base_images: list[dict[str, Any]] = []
+    timeline: list[dict[str, Any]] = []
+    cursor = 0.0
+    shots: list[dict[str, Any]] = []
+    for idx, payload in enumerate(normalized):
+        shot = payload.data
+        if idx == 0:
+            base_images.append(_base_image(idx, payload.start_prompt or shot["visual_description"]))
+        start_id = base_images[idx]["id"]
+        end_id = _frame_id(idx + 1)
+        base_images.append(_base_image(idx + 1, payload.end_prompt or shot["visual_description"]))
+        shot["start_base_image_id"] = start_id
+        shot["end_base_image_id"] = end_id
+        shots.append(shot)
+        entries, cursor = _timeline_entries_from_dialogue(payload.dialogue, cursor, shot["duration_sec"])
+        timeline.extend(entries)
+    return shots, base_images, timeline
+
+
+def _frame_id(index: int) -> str:
+    return f"frame_{index:03d}"
+
+
+def _base_image(index: int, prompt: str) -> dict[str, Any]:
+    safe_prompt = prompt or f"Cinematic frame {index:03d}"
+    return {"id": _frame_id(index), "prompt": safe_prompt, "metadata": {"ordinal": index}}
+
+
+def _timeline_entries_from_dialogue(
+    dialogue: list[dict[str, Any]],
+    start_time: float,
+    duration: float,
+) -> Tuple[list[dict[str, Any]], float]:
+    entries: list[dict[str, Any]] = []
+    shot_start = start_time
+    shot_end = shot_start + duration
+    cursor = shot_start
+    if dialogue:
+        for idx, line in enumerate(dialogue):
+            remaining_lines = len(dialogue) - idx
+            remaining_time = max(shot_end - cursor, 0.0)
+            if remaining_lines <= 0:
+                break
+            chunk = remaining_time / remaining_lines if remaining_lines else 0.0
+            chunk = max(chunk, 0.01)
+            requested_duration = line.get("duration_sec")
+            if requested_duration is not None:
+                try:
+                    chunk = max(min(float(requested_duration), remaining_time), 0.01)
+                except (TypeError, ValueError):
+                    chunk = max(chunk, 0.01)
+            text = line.get("text", "").strip()
+            if not text:
+                cursor += chunk
+                continue
+            entries.append(
+                {
+                    "type": "dialogue",
+                    "character_id": line.get("character_id") or f"char_{idx + 1:02d}",
+                    "text": text,
+                    "start_time_sec": cursor,
+                    "duration_sec": chunk,
+                }
+            )
+            cursor += chunk
+    if cursor < shot_end:
+        entries.append(_silence_entry(cursor, shot_end - cursor))
+        cursor = shot_end
+    if not entries:
+        entries.append(_silence_entry(shot_start, duration))
+        cursor = shot_end
+    return entries, cursor
+
+
+def _silence_entry(start: float, duration: float) -> dict[str, Any]:
+    return {
+        "type": "silence",
+        "start_time_sec": start,
+        "duration_sec": max(duration, 0.01),
+    }
+
+
+def _default_render_profile() -> dict[str, Any]:
+    model_id = os.environ.get("SCRIPT_AGENT_VIDEO_MODEL", "wan-2.1")
+    max_fps = os.environ.get("SCRIPT_AGENT_VIDEO_MAX_FPS")
+    profile: dict[str, Any] = {"video": {"model_id": model_id}}
+    if max_fps:
+        try:
+            profile["video"]["max_fps"] = float(max_fps)
+        except ValueError:
+            pass
+    profile.setdefault("metadata", {"source": "script_agent.entrypoint"})
+    return profile

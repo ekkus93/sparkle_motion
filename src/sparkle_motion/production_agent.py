@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from . import adk_helpers, observability, telemetry, videos_agent, tts_agent
 from .images_agent import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
-from .schemas import DialogueLine, MoviePlan, ShotSpec
+from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec
 
 
 class ProductionAgentError(RuntimeError):
@@ -171,7 +171,8 @@ def execute_plan(
     cfg = config or ProductionAgentConfig()
     model = _coerce_plan(plan)
     _validate_plan(model)
-    policy_decisions = _run_policy_checks(model)
+    base_images = _build_base_image_lookup(model)
+    policy_decisions = _run_policy_checks(model, base_images)
     plan_id = _plan_identifier(model)
     run_id = run_id or observability.get_session_id()
 
@@ -198,6 +199,7 @@ def execute_plan(
                 pre_step_hook=pre_step_hook,
                 records=records,
                 voice_profiles=voice_profiles,
+                base_images=base_images,
             )
             shot_artifacts.append(artifacts)
     except StepRateLimitError:
@@ -256,14 +258,59 @@ def _validate_plan(plan: MoviePlan) -> None:
         raise ProductionAgentError("MoviePlan must contain at least one shot")
 
 
-def _run_policy_checks(plan: MoviePlan) -> List[str]:
+def _build_base_image_lookup(plan: MoviePlan) -> Dict[str, BaseImageSpec]:
+    lookup: Dict[str, BaseImageSpec] = {}
+    for image in plan.base_images:
+        if not image.id:
+            raise ProductionAgentError("Base images must include an id")
+        if image.id in lookup:
+            raise ProductionAgentError(f"Duplicate base image id detected: {image.id}")
+        lookup[image.id] = image
+    if not lookup:
+        raise ProductionAgentError("MoviePlan must include at least one base image")
+    return lookup
+
+
+def _base_image_prompt(
+    base_images: Mapping[str, BaseImageSpec],
+    image_id: str,
+    *,
+    shot_id: str,
+    role: str,
+    allow_empty: bool = False,
+) -> str:
+    try:
+        spec = base_images[image_id]
+    except KeyError as exc:
+        raise ProductionAgentError(f"Shot {shot_id} references missing base image '{image_id}' for {role} frame") from exc
+    prompt = (spec.prompt or "").strip()
+    if not prompt and not allow_empty:
+        raise ProductionAgentError(f"Base image '{image_id}' referenced by shot {shot_id} has an empty prompt")
+    return prompt
+
+
+def _run_policy_checks(plan: MoviePlan, base_images: Mapping[str, BaseImageSpec]) -> List[str]:
     banned_keywords = {"weaponized", "forbidden"}
     decisions: List[str] = []
     for shot in plan.shots:
+        start_prompt = _base_image_prompt(
+            base_images,
+            shot.start_base_image_id,
+            shot_id=shot.id,
+            role="start",
+            allow_empty=True,
+        )
+        end_prompt = _base_image_prompt(
+            base_images,
+            shot.end_base_image_id,
+            shot_id=shot.id,
+            role="end",
+            allow_empty=True,
+        )
         text = " ".join(
             filter(
                 None,
-                [shot.visual_description, shot.start_frame_prompt, shot.end_frame_prompt],
+                [shot.visual_description, start_prompt, end_prompt],
             )
         ).lower()
         if any(keyword in text for keyword in banned_keywords):
@@ -369,6 +416,7 @@ def _execute_shot(
     pre_step_hook: Optional[Callable[[str], None]],
     records: List[StepExecutionRecord],
     voice_profiles: Mapping[str, Mapping[str, Any]],
+    base_images: Mapping[str, BaseImageSpec],
 ) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
@@ -393,7 +441,7 @@ def _execute_shot(
         cfg=cfg,
         pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
-        action=lambda: _render_frames(shot, output_dir),
+        action=lambda: _render_frames(shot, output_dir, base_images),
         meta={"shot_id": shot.id},
     )
     artifacts.frames_path = frames_result.path
@@ -432,7 +480,7 @@ def _execute_shot(
         cfg=cfg,
         pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
-        action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, progress_callback),
+        action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, base_images, progress_callback),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
     artifacts.video_path = video_result.path
@@ -590,12 +638,26 @@ def _rate_limit_meta(decision: RateLimitDecision) -> Dict[str, Any]:
     }
 
 
-def _render_frames(shot: ShotSpec, output_dir: Path) -> Path:
+def _render_frames(shot: ShotSpec, output_dir: Path, base_images: Mapping[str, BaseImageSpec]) -> Path:
+    start_prompt = _base_image_prompt(
+        base_images,
+        shot.start_base_image_id,
+        shot_id=shot.id,
+        role="start",
+    )
+    end_prompt = _base_image_prompt(
+        base_images,
+        shot.end_base_image_id,
+        shot_id=shot.id,
+        role="end",
+    )
     payload = {
         "shot_id": shot.id,
         "visual_description": shot.visual_description,
-        "start_frame_prompt": shot.start_frame_prompt,
-        "end_frame_prompt": shot.end_frame_prompt,
+        "start_base_image_id": shot.start_base_image_id,
+        "end_base_image_id": shot.end_base_image_id,
+        "start_frame_prompt": start_prompt,
+        "end_frame_prompt": end_prompt,
     }
     dest = output_dir / "frames" / f"{shot.id}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -707,6 +769,7 @@ def _render_video_clip(
     output_dir: Path,
     plan_id: str,
     run_id: str,
+    base_images: Mapping[str, BaseImageSpec],
     progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
 ) -> Path:
     video_dir = output_dir / "video"
@@ -715,11 +778,13 @@ def _render_video_clip(
 
     fps = _default_video_fps()
     num_frames = _estimate_frame_count(shot.duration_sec, fps)
-    prompt_parts = [shot.visual_description or "", shot.motion_prompt or ""]
+    start_prompt = _base_image_prompt(base_images, shot.start_base_image_id, shot_id=shot.id, role="start")
+    end_prompt = _base_image_prompt(base_images, shot.end_base_image_id, shot_id=shot.id, role="end")
+    prompt_parts = [shot.visual_description or "", shot.motion_prompt or "", start_prompt, end_prompt]
     prompt = " | ".join(part for part in prompt_parts if part) or f"Shot {shot.id}"
 
-    start_frames = [_encode_prompt_bytes(shot.start_frame_prompt)] if shot.start_frame_prompt else []
-    end_frames = [_encode_prompt_bytes(shot.end_frame_prompt)] if shot.end_frame_prompt else []
+    start_frames = [_encode_prompt_bytes(start_prompt)] if start_prompt else []
+    end_frames = [_encode_prompt_bytes(end_prompt)] if end_prompt else []
 
     opts = {
         "num_frames": num_frames,

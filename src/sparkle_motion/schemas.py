@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Any, Dict, List, Optional, Literal, Annotated, Union
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 class CharacterSpec(BaseModel):
@@ -14,9 +14,11 @@ class CharacterSpec(BaseModel):
 
 
 class DialogueLine(BaseModel):
+    """Single dialogue entry attached to a shot's script."""
+
     character_id: str
     text: str
-    start_time_sec: Optional[float] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ShotSpec(BaseModel):
@@ -26,11 +28,51 @@ class ShotSpec(BaseModel):
     duration_sec: float = Field(..., gt=0)
     setting: Optional[str] = None
     visual_description: str
-    start_frame_prompt: str
-    end_frame_prompt: str
+    start_base_image_id: str
+    end_base_image_id: str
     motion_prompt: Optional[str] = None
     is_talking_closeup: bool = False
     dialogue: List[DialogueLine] = Field(default_factory=list)
+
+
+class BaseImageSpec(BaseModel):
+    """Keyframe specification shared across all shots."""
+
+    id: str
+    prompt: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class _DialogueTimelineBase(BaseModel):
+    start_time_sec: float = Field(..., ge=0.0)
+    duration_sec: float = Field(..., gt=0.0)
+
+
+class DialogueTimelineDialogue(_DialogueTimelineBase):
+    type: Literal["dialogue"] = "dialogue"
+    character_id: str
+    text: str
+
+
+class DialogueTimelineSilence(_DialogueTimelineBase):
+    type: Literal["silence"] = "silence"
+
+
+DialogueTimelineEntry = Annotated[
+    Union[DialogueTimelineDialogue, DialogueTimelineSilence],
+    Field(discriminator="type"),
+]
+
+
+class RenderProfileVideo(BaseModel):
+    model_id: str
+    max_fps: Optional[float] = Field(default=None, gt=0.0)
+    notes: Optional[str] = None
+
+
+class RenderProfile(BaseModel):
+    video: RenderProfileVideo
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AssetRefsShot(BaseModel):
@@ -98,13 +140,16 @@ class MoviePlan(BaseModel):
 
     Required fields for an orchestrator run:
       - title
-      - shots: each shot must have id, duration_sec, visual_description,
-        start_frame_prompt and end_frame_prompt.
+      - base_images: ordered inventory of keyframes with len == len(shots) + 1
+      - shots: each shot must reference consecutive base image ids via
+        `start_base_image_id` / `end_base_image_id`.
     """
-
     title: str
     characters: List[CharacterSpec] = Field(default_factory=list)
+    base_images: List[BaseImageSpec] = Field(default_factory=list)
     shots: List[ShotSpec] = Field(default_factory=list)
+    dialogue_timeline: List[DialogueTimelineEntry] = Field(default_factory=list)
+    render_profile: RenderProfile
     metadata: Dict[str, str] = Field(default_factory=dict)
 
     model_config = ConfigDict(
@@ -113,23 +158,87 @@ class MoviePlan(BaseModel):
                 {
                     "title": "Night Rooftop Confession",
                     "characters": [{"id": "c1", "name": "Ava"}],
+                    "base_images": [
+                        {"id": "frame_000", "prompt": "Rooftop establishing"},
+                        {"id": "frame_001", "prompt": "Close on Ava"},
+                    ],
                     "shots": [
                         {
                             "id": "shot_001",
                             "duration_sec": 8,
                             "visual_description": "Wide shot with neon signs",
-                            "start_frame_prompt": "A neon-lit rooftop, rain...",
-                            "end_frame_prompt": "Same rooftop, Ava closeup...",
+                            "start_base_image_id": "frame_000",
+                            "end_base_image_id": "frame_001",
                             "motion_prompt": "A slow dolly from wide to close",
                             "is_talking_closeup": True,
-                            "dialogue": [{"character_id": "c1", "text": "I always loved you."}]
                         }
                     ],
+                    "dialogue_timeline": [
+                        {
+                            "type": "dialogue",
+                            "character_id": "c1",
+                            "text": "I always loved you.",
+                            "start_time_sec": 0.0,
+                            "duration_sec": 4.0,
+                        }
+                    ],
+                    "render_profile": {
+                        "video": {"model_id": "wan-2.1"},
+                        "metadata": {},
+                    },
                     "metadata": {"seed": "12345"}
                 }
             ]
         }
     )
+
+    @model_validator(mode="after")
+    def _validate_relationships(self) -> "MoviePlan":
+        if not self.shots:
+            raise ValueError("MoviePlan must contain at least one shot")
+        if len(self.base_images) != len(self.shots) + 1:
+            raise ValueError(
+                "base_images must contain one more entry than shots to preserve continuity"
+            )
+
+        id_order = [base_image.id for base_image in self.base_images]
+        id_to_index = {base_image.id: idx for idx, base_image in enumerate(self.base_images)}
+        for index, shot in enumerate(self.shots):
+            start_idx = id_to_index.get(shot.start_base_image_id)
+            end_idx = id_to_index.get(shot.end_base_image_id)
+            if start_idx is None:
+                raise ValueError(f"Shot {shot.id} references missing start_base_image_id {shot.start_base_image_id}")
+            if end_idx is None:
+                raise ValueError(f"Shot {shot.id} references missing end_base_image_id {shot.end_base_image_id}")
+            if start_idx != index:
+                raise ValueError(
+                    f"Shot {shot.id} must start at base_images[{index}] (got {id_order[start_idx]})"
+                )
+            if end_idx != index + 1:
+                raise ValueError(
+                    f"Shot {shot.id} must end at base_images[{index + 1}] (got {id_order[end_idx]})"
+                )
+
+        total_runtime = sum(shot.duration_sec for shot in self.shots)
+        if total_runtime <= 0:
+            raise ValueError("MoviePlan total duration must be positive")
+
+        if not self.dialogue_timeline:
+            raise ValueError("dialogue_timeline must describe the full runtime, even if silent")
+
+        last_end = 0.0
+        for entry in self.dialogue_timeline:
+            entry_end = entry.start_time_sec + entry.duration_sec
+            if entry_end > total_runtime + 1e-3:
+                raise ValueError("dialogue_timeline exceeds total shot duration")
+            if entry.start_time_sec + 1e-6 < last_end:
+                raise ValueError("dialogue_timeline entries must be ordered by start_time_sec")
+            last_end = max(last_end, entry_end)
+
+        if abs(last_end - total_runtime) > 1e-3:
+            raise ValueError("dialogue_timeline must match total shot duration")
+
+        return self
 
 
 class RunContext(BaseModel):

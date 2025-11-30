@@ -1,5 +1,29 @@
 {
   "$defs": {
+    "BaseImageSpec": {
+      "description": "Keyframe specification shared across all shots.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "prompt"
+      ],
+      "title": "BaseImageSpec",
+      "type": "object"
+    },
     "CharacterSpec": {
       "description": "Description of a character used in the movie.",
       "properties": {
@@ -39,22 +63,16 @@
       "type": "object"
     },
     "DialogueLine": {
+      "description": "Single dialogue entry attached to a shot's script.",
       "properties": {
         "character_id": {
           "title": "Character Id",
           "type": "string"
         },
-        "start_time_sec": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Start Time Sec"
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
         },
         "text": {
           "title": "Text",
@@ -66,6 +84,123 @@
         "text"
       ],
       "title": "DialogueLine",
+      "type": "object"
+    },
+    "DialogueTimelineDialogue": {
+      "properties": {
+        "character_id": {
+          "title": "Character Id",
+          "type": "string"
+        },
+        "duration_sec": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Sec",
+          "type": "number"
+        },
+        "start_time_sec": {
+          "minimum": 0.0,
+          "title": "Start Time Sec",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "dialogue",
+          "default": "dialogue",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_time_sec",
+        "duration_sec",
+        "character_id",
+        "text"
+      ],
+      "title": "DialogueTimelineDialogue",
+      "type": "object"
+    },
+    "DialogueTimelineSilence": {
+      "properties": {
+        "duration_sec": {
+          "exclusiveMinimum": 0.0,
+          "title": "Duration Sec",
+          "type": "number"
+        },
+        "start_time_sec": {
+          "minimum": 0.0,
+          "title": "Start Time Sec",
+          "type": "number"
+        },
+        "type": {
+          "const": "silence",
+          "default": "silence",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_time_sec",
+        "duration_sec"
+      ],
+      "title": "DialogueTimelineSilence",
+      "type": "object"
+    },
+    "RenderProfile": {
+      "properties": {
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "video": {
+          "$ref": "#/$defs/RenderProfileVideo"
+        }
+      },
+      "required": [
+        "video"
+      ],
+      "title": "RenderProfile",
+      "type": "object"
+    },
+    "RenderProfileVideo": {
+      "properties": {
+        "max_fps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Fps"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "required": [
+        "model_id"
+      ],
+      "title": "RenderProfileVideo",
       "type": "object"
     },
     "ShotSpec": {
@@ -83,8 +218,8 @@
           "title": "Duration Sec",
           "type": "number"
         },
-        "end_frame_prompt": {
-          "title": "End Frame Prompt",
+        "end_base_image_id": {
+          "title": "End Base Image Id",
           "type": "string"
         },
         "id": {
@@ -120,8 +255,8 @@
           "default": null,
           "title": "Setting"
         },
-        "start_frame_prompt": {
-          "title": "Start Frame Prompt",
+        "start_base_image_id": {
+          "title": "Start Base Image Id",
           "type": "string"
         },
         "visual_description": {
@@ -133,40 +268,59 @@
         "id",
         "duration_sec",
         "visual_description",
-        "start_frame_prompt",
-        "end_frame_prompt"
+        "start_base_image_id",
+        "end_base_image_id"
       ],
       "title": "ShotSpec",
       "type": "object"
     }
   },
   "$id": "sparkle_motion/MoviePlan.schema.json",
-  "description": "Top-level production plan the ScriptAgent emits.\n\nRequired fields for an orchestrator run:\n  - title\n  - shots: each shot must have id, duration_sec, visual_description,\n    start_frame_prompt and end_frame_prompt.",
+  "description": "Top-level production plan the ScriptAgent emits.\n\nRequired fields for an orchestrator run:\n  - title\n  - base_images: ordered inventory of keyframes with len == len(shots) + 1\n  - shots: each shot must reference consecutive base image ids via\n    `start_base_image_id` / `end_base_image_id`.",
   "examples": [
     {
+      "base_images": [
+        {
+          "id": "frame_000",
+          "prompt": "Rooftop establishing"
+        },
+        {
+          "id": "frame_001",
+          "prompt": "Close on Ava"
+        }
+      ],
       "characters": [
         {
           "id": "c1",
           "name": "Ava"
         }
       ],
+      "dialogue_timeline": [
+        {
+          "character_id": "c1",
+          "duration_sec": 4.0,
+          "start_time_sec": 0.0,
+          "text": "I always loved you.",
+          "type": "dialogue"
+        }
+      ],
       "metadata": {
         "seed": "12345"
       },
+      "render_profile": {
+        "metadata": {},
+        "video": {
+          "model_id": "wan-2.1"
+        }
+      },
       "shots": [
         {
-          "dialogue": [
-            {
-              "character_id": "c1",
-              "text": "I always loved you."
-            }
-          ],
           "duration_sec": 8,
-          "end_frame_prompt": "Same rooftop, Ava closeup...",
+          "end_base_image_id": "frame_001",
           "id": "shot_001",
           "is_talking_closeup": true,
           "motion_prompt": "A slow dolly from wide to close",
-          "start_frame_prompt": "A neon-lit rooftop, rain...",
+          "start_base_image_id": "frame_000",
           "visual_description": "Wide shot with neon signs"
         }
       ],
@@ -174,11 +328,39 @@
     }
   ],
   "properties": {
+    "base_images": {
+      "items": {
+        "$ref": "#/$defs/BaseImageSpec"
+      },
+      "title": "Base Images",
+      "type": "array"
+    },
     "characters": {
       "items": {
         "$ref": "#/$defs/CharacterSpec"
       },
       "title": "Characters",
+      "type": "array"
+    },
+    "dialogue_timeline": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "dialogue": "#/$defs/DialogueTimelineDialogue",
+            "silence": "#/$defs/DialogueTimelineSilence"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/DialogueTimelineDialogue"
+          },
+          {
+            "$ref": "#/$defs/DialogueTimelineSilence"
+          }
+        ]
+      },
+      "title": "Dialogue Timeline",
       "type": "array"
     },
     "metadata": {
@@ -187,6 +369,9 @@
       },
       "title": "Metadata",
       "type": "object"
+    },
+    "render_profile": {
+      "$ref": "#/$defs/RenderProfile"
     },
     "shots": {
       "items": {
@@ -201,7 +386,8 @@
     }
   },
   "required": [
-    "title"
+    "title",
+    "render_profile"
   ],
   "title": "MoviePlan",
   "type": "object"

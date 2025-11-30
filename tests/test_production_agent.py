@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import pytest
 
@@ -20,7 +20,17 @@ from sparkle_motion.production_agent import (
     execute_plan,
 )
 from sparkle_motion.ratelimit import RateLimitDecision
-from sparkle_motion.schemas import CharacterSpec, DialogueLine, MoviePlan, ShotSpec
+from sparkle_motion.schemas import (
+    BaseImageSpec,
+    CharacterSpec,
+    DialogueLine,
+    DialogueTimelineDialogue,
+    DialogueTimelineSilence,
+    MoviePlan,
+    RenderProfile,
+    RenderProfileVideo,
+    ShotSpec,
+)
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -132,33 +142,69 @@ def _stub_tts_agent(
     return calls
 
 
+def _timeline_for_shots(shots: Sequence[ShotSpec]) -> List[DialogueTimelineDialogue | DialogueTimelineSilence]:
+    entries: List[DialogueTimelineDialogue | DialogueTimelineSilence] = []
+    current = 0.0
+    for shot in shots:
+        spoken_line = next((line for line in shot.dialogue if line.text.strip()), None)
+        if spoken_line is not None:
+            entries.append(
+                DialogueTimelineDialogue(
+                    character_id=spoken_line.character_id,
+                    text=spoken_line.text,
+                    start_time_sec=current,
+                    duration_sec=shot.duration_sec,
+                )
+            )
+        else:
+            entries.append(
+                DialogueTimelineSilence(
+                    start_time_sec=current,
+                    duration_sec=shot.duration_sec,
+                )
+            )
+        current += shot.duration_sec
+    return entries
+
+
 @pytest.fixture
-def sample_plan(tmp_path: Path) -> MoviePlan:
+def sample_plan() -> MoviePlan:
+    shots = [
+        ShotSpec(
+            id="shot-1",
+            visual_description="A hero poses",
+            duration_sec=3,
+            dialogue=[
+                DialogueLine(character_id="hero", text="Hello there!"),
+            ],
+            start_base_image_id="frame_000",
+            end_base_image_id="frame_001",
+            is_talking_closeup=True,
+        ),
+        ShotSpec(
+            id="shot-2",
+            visual_description="Establishing shot",
+            duration_sec=5,
+            dialogue=[],
+            start_base_image_id="frame_001",
+            end_base_image_id="frame_002",
+            is_talking_closeup=False,
+        ),
+    ]
+    base_images = [
+        BaseImageSpec(id="frame_000", prompt="Hero start frame"),
+        BaseImageSpec(id="frame_001", prompt="Hero end frame / establishing intro"),
+        BaseImageSpec(id="frame_002", prompt="Sunset skyline"),
+    ]
+    timeline = _timeline_for_shots(shots)
     return MoviePlan(
         title="Test Film",
         metadata={"plan_id": "plan-123"},
-        shots=[
-            ShotSpec(
-                id="shot-1",
-                visual_description="A hero poses",
-                duration_sec=3,
-                dialogue=[
-                    DialogueLine(character_id="hero", text="Hello there!"),
-                ],
-                start_frame_prompt="hero start",
-                end_frame_prompt="hero end",
-                is_talking_closeup=True,
-            ),
-            ShotSpec(
-                id="shot-2",
-                visual_description="Establishing shot",
-                duration_sec=5,
-                dialogue=[],
-                start_frame_prompt="establish",
-                end_frame_prompt="sunset",
-                is_talking_closeup=False,
-            ),
-        ],
+        characters=[CharacterSpec(id="hero", name="Hero")],
+        base_images=base_images,
+        shots=shots,
+        dialogue_timeline=timeline,
+        render_profile=RenderProfile(video=RenderProfileVideo(model_id="wan-fixture"), metadata={}),
     )
 
 
@@ -230,6 +276,7 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
     run_id = "run-456"
     monkeypatch.setenv("VIDEOS_AGENT_DEFAULT_FPS", "12")
     expected_path = tmp_path / "video" / f"{shot.id}.mp4"
+    base_images = {img.id: img for img in sample_plan.base_images}
 
     captured: Dict[str, Any] = {}
 
@@ -250,12 +297,15 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
 
     monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
 
-    result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id)
+    result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id, base_images)
 
     assert result_path == expected_path
-    assert captured["start_frames"][0] == shot.start_frame_prompt.encode("utf-8")
-    assert captured["end_frames"][0] == shot.end_frame_prompt.encode("utf-8")
-    assert captured["prompt"] == shot.visual_description
+    start_prompt = base_images[shot.start_base_image_id].prompt
+    end_prompt = base_images[shot.end_base_image_id].prompt
+    assert captured["start_frames"][0] == start_prompt.encode("utf-8")
+    assert captured["end_frames"][0] == end_prompt.encode("utf-8")
+    expected_prompt = " | ".join(part for part in [shot.visual_description, start_prompt, end_prompt] if part)
+    assert captured["prompt"] == expected_prompt
     opts = captured["opts"]
     assert opts["plan_id"] == plan_id
     assert opts["run_id"] == run_id
@@ -366,6 +416,20 @@ def test_voice_profile_forwarded_to_tts(
     _stub_tts_agent: List[Dict[str, Any]],
 ) -> None:
     _enable_full_execution(monkeypatch, tmp_path)
+    shots = [
+        ShotSpec(
+            id="shot-voice",
+            visual_description="Conversation",
+            duration_sec=3,
+            dialogue=[
+                DialogueLine(character_id="hero", text="It is my turn to speak."),
+                DialogueLine(character_id="narrator", text="Now I will reply."),
+            ],
+            start_base_image_id="frame_000",
+            end_base_image_id="frame_001",
+            is_talking_closeup=True,
+        )
+    ]
     plan = MoviePlan(
         title="Voices",
         metadata={"plan_id": "plan-voices"},
@@ -373,20 +437,13 @@ def test_voice_profile_forwarded_to_tts(
             CharacterSpec(id="hero", name="Hero", voice_profile={"voice_id": "hero_voice"}),
             CharacterSpec(id="narrator", name="Narrator", voice_profile={"voice_id": "narrator_voice"}),
         ],
-        shots=[
-            ShotSpec(
-                id="shot-voice",
-                visual_description="Conversation",
-                duration_sec=3,
-                dialogue=[
-                    DialogueLine(character_id="hero", text="It is my turn to speak."),
-                    DialogueLine(character_id="narrator", text="Now I will reply."),
-                ],
-                start_frame_prompt="hero start",
-                end_frame_prompt="hero end",
-                is_talking_closeup=True,
-            )
+        base_images=[
+            BaseImageSpec(id="frame_000", prompt="hero start"),
+            BaseImageSpec(id="frame_001", prompt="hero end"),
         ],
+        shots=shots,
+        dialogue_timeline=_timeline_for_shots(shots),
+        render_profile=RenderProfile(video=RenderProfileVideo(model_id="wan-fixture")),
     )
 
     execute_plan(plan, mode="run")
@@ -402,23 +459,30 @@ def test_multiple_dialogue_lines_recorded(
     tmp_path: Path,
 ) -> None:
     _enable_full_execution(monkeypatch, tmp_path)
+    shots = [
+        ShotSpec(
+            id="shot-multi",
+            visual_description="Back-and-forth",
+            duration_sec=3,
+            dialogue=[
+                DialogueLine(character_id="a", text="First line."),
+                DialogueLine(character_id="b", text="Second line."),
+            ],
+            start_base_image_id="frame_100",
+            end_base_image_id="frame_101",
+            is_talking_closeup=True,
+        )
+    ]
     plan = MoviePlan(
         title="Two Lines",
         metadata={"plan_id": "plan-multi"},
-        shots=[
-            ShotSpec(
-                id="shot-multi",
-                visual_description="Back-and-forth",
-                duration_sec=3,
-                dialogue=[
-                    DialogueLine(character_id="a", text="First line."),
-                    DialogueLine(character_id="b", text="Second line."),
-                ],
-                start_frame_prompt="start",
-                end_frame_prompt="end",
-                is_talking_closeup=True,
-            )
+        base_images=[
+            BaseImageSpec(id="frame_100", prompt="start"),
+            BaseImageSpec(id="frame_101", prompt="end"),
         ],
+        shots=shots,
+        dialogue_timeline=_timeline_for_shots(shots),
+        render_profile=RenderProfile(video=RenderProfileVideo(model_id="wan-fixture")),
     )
 
     result = execute_plan(plan, mode="run")

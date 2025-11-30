@@ -268,10 +268,13 @@ def _has_required_shot_fields(plan: Dict[str, Any]) -> bool:
     shots = plan.get("shots")
     if not isinstance(shots, list) or not shots:
         return False
+    base_images = plan.get("base_images")
+    if not isinstance(base_images, list) or len(base_images) != len(shots) + 1:
+        return False
     first = next((shot for shot in shots if isinstance(shot, dict)), None)
     if first is None:
         return False
-    required = {"duration_sec", "visual_description", "start_frame_prompt", "end_frame_prompt"}
+    required = {"duration_sec", "visual_description", "start_base_image_id", "end_base_image_id"}
     return required.issubset(first.keys())
 
 
@@ -303,14 +306,28 @@ def _fallback_movie_plan() -> Dict[str, Any]:
                 "voice_profile": {},
             },
         ],
+        "base_images": [
+            {
+                "id": "frame_000",
+                "prompt": "Golden hour light over a sandstone plateau, cinematic lighting, 35mm, volumetric rays",
+            },
+            {
+                "id": "frame_001",
+                "prompt": "Camera settles on glowing canyon rim with dust particles sparkling in the air",
+            },
+            {
+                "id": "frame_002",
+                "prompt": "Closeup of the hero's hand leaving streaks of light across the wall",
+            },
+        ],
         "shots": [
             {
                 "id": "fallback-shot-1",
                 "duration_sec": 4,
                 "setting": "Sunrise plateau",
                 "visual_description": "Wide sunrise shot over a glowing canyon with floating dust motes.",
-                "start_frame_prompt": "Golden hour light over a sandstone plateau, cinematic lighting, 35mm, volumetric rays",
-                "end_frame_prompt": "Camera settles on glowing canyon rim with dust particles sparkling in the air",
+                "start_base_image_id": "frame_000",
+                "end_base_image_id": "frame_001",
                 "motion_prompt": "Slow dolly forward from wide to medium",
                 "is_talking_closeup": False,
                 "dialogue": [
@@ -322,8 +339,8 @@ def _fallback_movie_plan() -> Dict[str, Any]:
                 "duration_sec": 5,
                 "setting": "Crystal cavern",
                 "visual_description": "Medium shot of the hero touching bioluminescent crystals inside a cavern.",
-                "start_frame_prompt": "Hero steps into a teal-lit cavern, crystals casting caustic reflections",
-                "end_frame_prompt": "Closeup of the hero's hand leaving streaks of light across the wall",
+                "start_base_image_id": "frame_001",
+                "end_base_image_id": "frame_002",
                 "motion_prompt": "Handheld push-in with gentle camera shake",
                 "is_talking_closeup": True,
                 "dialogue": [
@@ -331,6 +348,24 @@ def _fallback_movie_plan() -> Dict[str, Any]:
                 ],
             },
         ],
+        "dialogue_timeline": [
+            {
+                "type": "dialogue",
+                "character_id": "char_narrator",
+                "text": "A new journey begins at first light.",
+                "start_time_sec": 0.0,
+                "duration_sec": 4.0,
+            },
+            {
+                "type": "silence",
+                "start_time_sec": 4.0,
+                "duration_sec": 5.0,
+            },
+        ],
+        "render_profile": {
+            "video": {"model_id": "wan-fixture"},
+            "metadata": {"max_fps": 16},
+        },
     }
 
 

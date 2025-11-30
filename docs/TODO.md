@@ -140,13 +140,17 @@
   RunContext, StageManifest) and enforce them directly inside the FastAPI
   entrypoints. (Schemas now exported via `scripts/export_schemas.py`, stored
   under `schemas/*.schema.json`, and the entrypoints/tests validate those models.)
-- [ ] For each FunctionTool (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
+- [x] For each FunctionTool (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
   `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`), implement typed
   request/response dataclasses (or Pydantic models) that match
-  `docs/ARCHITECTURE.md` and reject payloads that drift from those specs.
-- [ ] Add contract tests that exercise each agent/tool endpoint end-to-end and
+  `docs/ARCHITECTURE.md` and reject payloads that drift from those specs. (See
+  `src/sparkle_motion/function_tools/*/models.py` for the canonical requests
+  and responses now enforced by every entrypoint.)
+- [x] Add contract tests that exercise each agent/tool endpoint end-to-end and
   compare the emitted JSON (artifacts, metadata) to the samples in
-  `docs/NOTEBOOK_AGENT_INTEGRATION.md` so regressions are caught automatically.
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md` so regressions are caught automatically
+  (`tests/test_function_tools/test_function_tool_contracts.py` +
+  `docs/samples/function_tools/*.sample.json`).
 
 #### MoviePlan parity & stage orchestration
 - [ ] Extend `sparkle_motion.schemas.MoviePlan` (and script_agent output) to

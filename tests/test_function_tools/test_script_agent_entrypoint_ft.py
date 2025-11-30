@@ -35,3 +35,8 @@ def test_invoke_smoke(tmp_path, monkeypatch):
         plan = saved.get("validated_plan")
         assert isinstance(plan, dict)
         assert plan.get("shots")
+        base_images = plan.get("base_images")
+        assert isinstance(base_images, list)
+        assert len(base_images) == len(plan["shots"]) + 1
+        assert base_images[0]["id"] == "frame_000"
+        assert plan["shots"][0]["start_base_image_id"] == "frame_000"

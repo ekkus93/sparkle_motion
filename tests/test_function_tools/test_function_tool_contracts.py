@@ -47,17 +47,25 @@ def test_production_agent_response_matches_sample(tmp_path: Path, monkeypatch: p
     sample_plan = {
         "title": "Test Film",
         "metadata": {"plan_id": "plan-entrypoint"},
+        "base_images": [
+            {"id": "frame_000", "prompt": "hero start"},
+            {"id": "frame_001", "prompt": "hero end"},
+        ],
         "shots": [
             {
                 "id": "shot-1",
                 "duration_sec": 2,
                 "visual_description": "A hero poses",
-                "start_frame_prompt": "hero start",
-                "end_frame_prompt": "hero end",
+                "start_base_image_id": "frame_000",
+                "end_base_image_id": "frame_001",
                 "dialogue": [],
                 "is_talking_closeup": False,
             }
         ],
+        "dialogue_timeline": [
+            {"type": "silence", "start_time_sec": 0.0, "duration_sec": 2.0},
+        ],
+        "render_profile": {"video": {"model_id": "wan-fixture"}},
     }
 
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
