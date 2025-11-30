@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import time
@@ -10,10 +11,10 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Option
 
 from pydantic import ValidationError
 
-from . import adk_helpers, observability, telemetry, videos_agent, tts_agent
+from . import adk_helpers, observability, telemetry, videos_agent, tts_agent, schema_registry
 from .images_agent import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
-from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec
+from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec, RunContext, StageEvent
 
 
 class ProductionAgentError(RuntimeError):
@@ -157,6 +158,25 @@ class _ShotArtifacts:
     lipsync_path: Optional[Path] = None
 
 
+@dataclass(frozen=True)
+class _BaseImageAsset:
+    spec: BaseImageSpec
+    path: Optional[Path]
+    payload_bytes: bytes
+
+
+@dataclass(frozen=True)
+class _PlanIntakeResult:
+    base_image_lookup: Dict[str, BaseImageSpec]
+    base_image_assets: Dict[str, _BaseImageAsset]
+    policy_decisions: List[str]
+    run_context: RunContext
+    run_context_path: Optional[Path]
+    plan_path: Optional[Path]
+    dialogue_timeline_path: Optional[Path]
+    schema_meta: Dict[str, Dict[str, str]]
+
+
 def execute_plan(
     plan: MoviePlan | Mapping[str, Any],
     *,
@@ -171,13 +191,12 @@ def execute_plan(
     cfg = config or ProductionAgentConfig()
     model = _coerce_plan(plan)
     _validate_plan(model)
-    base_images = _build_base_image_lookup(model)
-    policy_decisions = _run_policy_checks(model, base_images)
     plan_id = _plan_identifier(model)
     run_id = run_id or observability.get_session_id()
 
     if mode == "dry":
-        report = _simulate_execution_report(model, policy_decisions)
+        plan_intake_result = _run_plan_intake(model, plan_id=plan_id, run_id=run_id, output_dir=None)
+        report = _simulate_execution_report(model, plan_intake_result.policy_decisions)
         _record_summary_event(run_id, plan_id, "dry", [], simulation=report)
         return ProductionResult([], steps=[], simulation_report=report)
 
@@ -185,6 +204,50 @@ def execute_plan(
     records: List[StepExecutionRecord] = []
     shot_artifacts: List[_ShotArtifacts] = []
 
+    plan_intake_holder: Dict[str, _PlanIntakeResult] = {}
+
+    def _plan_intake_action() -> StepResult:
+        result = _run_plan_intake(model, plan_id=plan_id, run_id=run_id, output_dir=output_dir)
+        plan_intake_holder["result"] = result
+        if result.run_context_path is None:
+            raise ProductionAgentError("plan intake failed to persist run_context")
+        meta: Dict[str, Any] = {
+            "artifact_type": "plan_run_context",
+            "media_type": "application/json",
+            "plan_uri": str(result.plan_path) if result.plan_path else None,
+            "dialogue_timeline_uri": result.run_context.dialogue_timeline_uri,
+            "base_image_map": dict(result.run_context.base_image_map),
+            "schema_uris": result.schema_meta,
+            "policy_decisions": list(result.policy_decisions),
+        }
+        # Remove None to keep metadata JSON-friendly
+        meta = {key: value for key, value in meta.items() if value is not None}
+        return StepResult(
+            path=result.run_context_path,
+            artifact_uri=str(result.run_context_path),
+            meta=meta,
+        )
+
+    plan_record, _ = _run_step(
+        plan_id=plan_id,
+        run_id=run_id,
+        step_id=f"{plan_id}:plan_intake",
+        step_type="plan_intake",
+        gate_flag=None,
+        cfg=cfg,
+        action=_plan_intake_action,
+        meta={"stage": "plan_intake"},
+        progress_callback=progress_callback,
+        pre_step_hook=pre_step_hook,
+    )
+    records.append(plan_record)
+
+    plan_intake_result = plan_intake_holder.get("result")
+    if plan_intake_result is None:
+        raise ProductionAgentError("plan intake stage did not return a result")
+
+    base_images = plan_intake_result.base_image_lookup
+    base_image_assets = plan_intake_result.base_image_assets
     voice_profiles = _character_voice_map(model)
 
     try:
@@ -200,6 +263,7 @@ def execute_plan(
                 records=records,
                 voice_profiles=voice_profiles,
                 base_images=base_images,
+                base_image_assets=base_image_assets,
             )
             shot_artifacts.append(artifacts)
     except StepRateLimitError:
@@ -320,6 +384,125 @@ def _run_policy_checks(plan: MoviePlan, base_images: Mapping[str, BaseImageSpec]
     return decisions
 
 
+def _run_plan_intake(
+    plan: MoviePlan,
+    *,
+    plan_id: str,
+    run_id: str,
+    output_dir: Optional[Path],
+) -> _PlanIntakeResult:
+    base_image_lookup = _build_base_image_lookup(plan)
+    policy_decisions = _run_policy_checks(plan, base_image_lookup)
+
+    plan_dir: Optional[Path] = None
+    if output_dir is not None:
+        plan_dir = output_dir / "plan"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+
+    base_image_assets = _build_base_image_assets(plan.base_images, plan_dir)
+    plan_path = _persist_plan_payload(plan, plan_dir)
+    timeline_path = _persist_dialogue_timeline(plan, plan_dir)
+
+    schema_meta = {
+        "movie_plan": _schema_metadata(schema_registry.movie_plan_schema()),
+        "run_context": _schema_metadata(schema_registry.run_context_schema()),
+    }
+
+    base_image_map = {
+        image_id: (asset.path.as_posix() if asset.path else asset.spec.prompt)
+        for image_id, asset in base_image_assets.items()
+    }
+
+    run_context = RunContext.from_plan(
+        plan,
+        run_id=run_id,
+        schema_uri=schema_meta.get("run_context", {}).get("uri"),
+        metadata={"schemas": schema_meta},
+        dialogue_timeline_uri=timeline_path.as_posix() if timeline_path else None,
+        base_image_map=base_image_map,
+        policy_decisions=policy_decisions,
+    )
+    run_context_path = _persist_run_context(run_context, plan_dir)
+
+    return _PlanIntakeResult(
+        base_image_lookup=base_image_lookup,
+        base_image_assets=base_image_assets,
+        policy_decisions=list(policy_decisions),
+        run_context=run_context,
+        run_context_path=run_context_path,
+        plan_path=plan_path,
+        dialogue_timeline_path=timeline_path,
+        schema_meta=schema_meta,
+    )
+
+
+def _build_base_image_assets(base_images: Sequence[BaseImageSpec], plan_dir: Optional[Path]) -> Dict[str, _BaseImageAsset]:
+    assets: Dict[str, _BaseImageAsset] = {}
+    base_image_dir = plan_dir / "base_images" if plan_dir else None
+    if base_image_dir is not None:
+        base_image_dir.mkdir(parents=True, exist_ok=True)
+
+    for spec in base_images:
+        payload_dict = _model_dump(spec)
+        payload_bytes = json.dumps(payload_dict, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+        asset_path: Optional[Path] = None
+        if base_image_dir is not None:
+            asset_path = base_image_dir / f"{spec.id}.json"
+            asset_path.write_bytes(payload_bytes)
+        assets[spec.id] = _BaseImageAsset(spec=spec, path=asset_path, payload_bytes=payload_bytes)
+    return assets
+
+
+def _persist_plan_payload(plan: MoviePlan, plan_dir: Optional[Path]) -> Optional[Path]:
+    if plan_dir is None:
+        return None
+    path = plan_dir / "movie_plan.json"
+    path.write_text(json.dumps(_model_dump(plan), ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _persist_dialogue_timeline(plan: MoviePlan, plan_dir: Optional[Path]) -> Optional[Path]:
+    if plan_dir is None:
+        return None
+    timeline_path = plan_dir / "dialogue_timeline.json"
+    timeline_payload = [_model_dump(entry) for entry in plan.dialogue_timeline]
+    timeline_path.write_text(json.dumps(timeline_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return timeline_path
+
+
+def _persist_run_context(run_context: RunContext, plan_dir: Optional[Path]) -> Optional[Path]:
+    if plan_dir is None:
+        return None
+    path = plan_dir / "run_context.json"
+    payload = run_context.model_dump() if hasattr(run_context, "model_dump") else run_context.dict()
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _schema_metadata(artifact: schema_registry.SchemaArtifact) -> Dict[str, str]:
+    meta: Dict[str, str] = {"uri": artifact.uri}
+    local_path = artifact.local_path
+    if local_path and local_path.exists():
+        meta["sha256"] = _hash_file_path(local_path)
+    return meta
+
+
+def _hash_file_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _model_dump(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()  # type: ignore[attr-defined]
+    return value
+
+
 def _simulate_execution_report(plan: MoviePlan, policy_decisions: Sequence[str]) -> SimulationReport:
     steps: List[SimulationStep] = []
     for shot in plan.shots:
@@ -417,6 +600,7 @@ def _execute_shot(
     records: List[StepExecutionRecord],
     voice_profiles: Mapping[str, Mapping[str, Any]],
     base_images: Mapping[str, BaseImageSpec],
+    base_image_assets: Mapping[str, _BaseImageAsset],
 ) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
@@ -480,7 +664,15 @@ def _execute_shot(
         cfg=cfg,
         pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
-        action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, base_images, progress_callback),
+        action=lambda: _render_video_clip(
+            shot,
+            output_dir,
+            plan_id,
+            run_id,
+            base_images,
+            base_image_assets,
+            progress_callback,
+        ),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
     artifacts.video_path = video_result.path
@@ -539,33 +731,88 @@ def _run_step(
     meta_payload: Dict[str, Any] = dict(meta or {})
 
     step_result = StepResult()
+    base_event_info = {"step_id": step_id, "gate_flag": gate_flag}
 
     if not should_execute:
         status = "simulated"
+        _record_stage_event(
+            run_id=run_id,
+            stage=step_type,
+            status="success",
+            attempt=1,
+            metadata=_stage_event_metadata({**base_event_info, "simulated": True}),
+        )
     else:
         status = "failed"
         for attempt in range(1, max(cfg.max_attempts, 1) + 1):
             attempts = attempt
             if pre_step_hook:
                 pre_step_hook(step_id)
+            _record_stage_event(
+                run_id=run_id,
+                stage=step_type,
+                status="begin",
+                attempt=attempt,
+                metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempt}),
+            )
             try:
                 step_result = _normalize_step_result(action())
                 artifact_path = step_result.path or (step_result.paths[0] if step_result.paths else None)
                 status = "succeeded"
+                meta_payload.update(dict(step_result.meta or {}))
+                artifact_uri = step_result.artifact_uri or (str(artifact_path) if artifact_path else None)
+                _record_stage_event(
+                    run_id=run_id,
+                    stage=step_type,
+                    status="success",
+                    attempt=attempt,
+                    metadata=_stage_event_metadata(
+                        {
+                            **base_event_info,
+                            **meta_payload,
+                            "attempt": attempt,
+                            "artifact_uri": artifact_uri,
+                        }
+                    ),
+                )
                 break
             except RateLimitQueued as exc:
                 status = "queued"  # type: ignore[assignment]
                 error_type = exc.__class__.__name__
                 meta_payload["rate_limit"] = _rate_limit_meta(exc.decision)
                 rate_limit_state = "queued"
+                _record_stage_event(
+                    run_id=run_id,
+                    stage=step_type,
+                    status="fail",
+                    attempt=attempt,
+                    metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempt}),
+                    error=str(exc),
+                )
                 break
             except RateLimitExceeded as exc:
                 status = "failed"
                 error_type = exc.__class__.__name__
                 meta_payload["rate_limit"] = _rate_limit_meta(exc.decision)
                 rate_limit_state = "exceeded"
+                _record_stage_event(
+                    run_id=run_id,
+                    stage=step_type,
+                    status="fail",
+                    attempt=attempt,
+                    metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempt}),
+                    error=str(exc),
+                )
                 break
-            except StepTransientError:
+            except StepTransientError as exc:
+                _record_stage_event(
+                    run_id=run_id,
+                    stage=step_type,
+                    status="fail",
+                    attempt=attempt,
+                    metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempt}),
+                    error=str(exc),
+                )
                 if attempt >= cfg.max_attempts:
                     error_type = "StepTransientError"
                     break
@@ -573,14 +820,29 @@ def _run_step(
                 continue
             except Exception as exc:  # pragma: no cover - defensive fallback
                 error_type = exc.__class__.__name__
+                _record_stage_event(
+                    run_id=run_id,
+                    stage=step_type,
+                    status="fail",
+                    attempt=attempt,
+                    metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempt}),
+                    error=str(exc),
+                )
                 break
         else:  # pragma: no cover
             error_type = "UnknownError"
+            _record_stage_event(
+                run_id=run_id,
+                stage=step_type,
+                status="fail",
+                attempt=attempts or 1,
+                metadata=_stage_event_metadata({**base_event_info, **meta_payload, "attempt": attempts or 1}),
+                error="UnknownError",
+            )
 
     end_dt = datetime.now(timezone.utc)
     duration = (end_dt - start_dt).total_seconds()
     artifact_uri = step_result.artifact_uri or (str(artifact_path) if artifact_path else None)
-    meta_payload.update(dict(step_result.meta or {}))
     record = StepExecutionRecord(
         plan_id=plan_id,
         step_id=step_id,
@@ -636,6 +898,46 @@ def _rate_limit_meta(decision: RateLimitDecision) -> Dict[str, Any]:
         "ttl_deadline_s": decision.ttl_deadline_s,
         "reason": decision.reason,
     }
+
+
+def _record_stage_event(
+    *,
+    run_id: str,
+    stage: str,
+    status: Literal["begin", "success", "fail"],
+    attempt: int,
+    metadata: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> None:
+    event = StageEvent(
+        run_id=run_id,
+        stage=stage,
+        status=status,
+        timestamp=time.time(),
+        attempt=max(1, attempt),
+        error=error,
+        metadata=metadata or {},
+    )
+    try:
+        payload = event.model_dump() if hasattr(event, "model_dump") else event.dict()
+        adk_helpers.write_memory_event(run_id=run_id, event_type="production_agent.stage_event", payload=payload)
+    except adk_helpers.MemoryWriteError:
+        pass
+
+
+def _stage_event_metadata(meta: Mapping[str, Any]) -> Dict[str, Any]:
+    def _convert(value: Any) -> Any:
+        if isinstance(value, Path):
+            return value.as_posix()
+        if isinstance(value, Mapping):
+            return {key: _convert(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_convert(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    return {key: _convert(val) for key, val in meta.items() if val is not None}
 
 
 def _render_frames(shot: ShotSpec, output_dir: Path, base_images: Mapping[str, BaseImageSpec]) -> Path:
@@ -770,6 +1072,7 @@ def _render_video_clip(
     plan_id: str,
     run_id: str,
     base_images: Mapping[str, BaseImageSpec],
+    base_image_assets: Mapping[str, _BaseImageAsset],
     progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
 ) -> Path:
     video_dir = output_dir / "video"
@@ -783,8 +1086,14 @@ def _render_video_clip(
     prompt_parts = [shot.visual_description or "", shot.motion_prompt or "", start_prompt, end_prompt]
     prompt = " | ".join(part for part in prompt_parts if part) or f"Shot {shot.id}"
 
-    start_frames = [_encode_prompt_bytes(start_prompt)] if start_prompt else []
-    end_frames = [_encode_prompt_bytes(end_prompt)] if end_prompt else []
+    def _frame_payload(image_id: str, prompt_text: str) -> bytes:
+        asset = base_image_assets.get(image_id)
+        if asset and asset.payload_bytes:
+            return asset.payload_bytes
+        return _encode_prompt_bytes(prompt_text)
+
+    start_frames = [_frame_payload(shot.start_base_image_id, start_prompt)] if start_prompt else []
+    end_frames = [_frame_payload(shot.end_base_image_id, end_prompt)] if end_prompt else []
 
     opts = {
         "num_frames": num_frames,

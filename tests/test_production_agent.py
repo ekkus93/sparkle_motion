@@ -221,9 +221,14 @@ def test_execute_plan_modes(tmp_path: Path, sample_plan: MoviePlan, monkeypatch:
         assert result.steps == []
         assert result.simulation_report is not None
     else:
-        assert len(result.steps) >= 3
+        assert result.steps, "expected plan_intake step to be recorded"
         assert result.simulation_report is None
         assert "production_agent_final_movie" in result[0]["uri"]
+        first_step = result.steps[0]
+        assert first_step.step_type == "plan_intake"
+        assert first_step.status == "succeeded"
+        base_map = first_step.meta.get("base_image_map")
+        assert isinstance(base_map, dict) and base_map, "plan_intake should record base image map"
 
 
 @pytest.mark.parametrize(
@@ -243,6 +248,7 @@ def test_gate_flags(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp
     statuses = {record.step_id.split(":")[-1]: record.status for record in result.steps}
     adapters_enabled = os.getenv("SMOKE_ADAPTERS") not in {None, "", "0", "false"}
     expected = "succeeded" if adapters_enabled else "simulated"
+    assert statuses["plan_intake"] == "succeeded"
     assert statuses["images"] == expected
     assert statuses["video"] == expected
 
@@ -277,6 +283,10 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
     monkeypatch.setenv("VIDEOS_AGENT_DEFAULT_FPS", "12")
     expected_path = tmp_path / "video" / f"{shot.id}.mp4"
     base_images = {img.id: img for img in sample_plan.base_images}
+    base_image_assets = {
+        img.id: production_agent._BaseImageAsset(spec=img, path=None, payload_bytes=img.prompt.encode("utf-8"))
+        for img in sample_plan.base_images
+    }
 
     captured: Dict[str, Any] = {}
 
@@ -297,7 +307,7 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
 
     monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
 
-    result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id, base_images)
+    result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id, base_images, base_image_assets)
 
     assert result_path == expected_path
     start_prompt = base_images[shot.start_base_image_id].prompt
@@ -313,6 +323,41 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
     assert opts["output_path"].endswith(f"{shot.id}.mp4")
     expected_frames = int(round(shot.duration_sec * 12))
     assert opts["num_frames"] == expected_frames
+
+
+def test_video_stage_reuses_base_image_payloads(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    captured: List[Dict[str, Any]] = []
+
+    def _capture(
+        start_frames: Iterable[bytes],
+        end_frames: Iterable[bytes],
+        prompt: str,
+        opts: Optional[Mapping[str, Any]] = None,
+        *,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        _adapter: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        options = dict(opts or {})
+        target = Path(options.get("output_path") or tmp_path / "video" / f"{options.get('shot_id')}.mp4")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"fixture")
+        captured.append(
+            {
+                "shot_id": options.get("shot_id"),
+                "start": [bytes(chunk) for chunk in start_frames],
+                "end": [bytes(chunk) for chunk in end_frames],
+            }
+        )
+        return {"uri": f"file://{target}", "metadata": {"source_path": str(target), "prompt": prompt}}
+
+    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
+
+    execute_plan(sample_plan, mode="run")
+
+    assert len(captured) == len(sample_plan.shots)
+    assert captured[0]["end"], "expected end frame payload"
+    assert captured[0]["end"][0] == captured[1]["start"][0]
 
 
 def test_progress_callback_invoked(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:

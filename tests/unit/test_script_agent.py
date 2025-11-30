@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -131,3 +132,50 @@ def test_generate_plan_respects_shot_limit(monkeypatch):
 
     with pytest.raises(script_agent.PlanResourceError):
         script_agent.generate_plan("too many shots", model_spec="stub-model")
+
+
+def test_generate_plan_requires_non_empty_render_model(monkeypatch):
+    payload = _sample_plan_payload()
+    payload["render_profile"]["video"]["model_id"] = "   "
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("blank model", model_spec="stub-model")
+
+
+def test_generate_plan_rejects_duplicate_base_images(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["base_images"][1]["id"] = payload["base_images"][0]["id"]
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("duplicate base ids", model_spec="stub-model")
+
+
+def test_generate_plan_rejects_timeline_not_starting_at_zero(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.5, "duration_sec": 4.5},
+    ]
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("timeline must start at zero", model_spec="stub-model")
+
+
+def test_generate_plan_rejects_timeline_with_gaps(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.0, "duration_sec": 1.0},
+        {
+            "type": "dialogue",
+            "character_id": "c1",
+            "text": "Hello",
+            "start_time_sec": 2.0,
+            "duration_sec": 3.0,
+        },
+    ]
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("timeline gaps", model_spec="stub-model")

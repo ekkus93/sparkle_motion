@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Literal, Annotated, Union
+from typing import Any, Dict, List, Optional, Literal, Annotated, Union, Mapping, Sequence
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
@@ -68,6 +68,13 @@ class RenderProfileVideo(BaseModel):
     model_id: str
     max_fps: Optional[float] = Field(default=None, gt=0.0)
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_model_id(self) -> "RenderProfileVideo":
+        if not self.model_id or not self.model_id.strip():
+            raise ValueError("render_profile.video.model_id must be a non-empty string")
+        self.model_id = self.model_id.strip()
+        return self
 
 
 class RenderProfile(BaseModel):
@@ -201,6 +208,18 @@ class MoviePlan(BaseModel):
                 "base_images must contain one more entry than shots to preserve continuity"
             )
 
+        seen_base_ids: set[str] = set()
+        for base_image in self.base_images:
+            base_id = base_image.id.strip() if base_image.id else ""
+            if not base_id:
+                raise ValueError("Base image ids must be non-empty")
+            if base_id in seen_base_ids:
+                raise ValueError(f"Duplicate base image id detected: {base_id}")
+            seen_base_ids.add(base_id)
+            prompt = base_image.prompt.strip() if base_image.prompt else ""
+            if not prompt:
+                raise ValueError(f"Base image {base_id} must include a non-empty prompt")
+
         id_order = [base_image.id for base_image in self.base_images]
         id_to_index = {base_image.id: idx for idx, base_image in enumerate(self.base_images)}
         for index, shot in enumerate(self.shots):
@@ -226,13 +245,19 @@ class MoviePlan(BaseModel):
         if not self.dialogue_timeline:
             raise ValueError("dialogue_timeline must describe the full runtime, even if silent")
 
+        timeline = list(self.dialogue_timeline)
+        if timeline[0].start_time_sec > 1e-3:
+            raise ValueError("dialogue_timeline must start at time 0; prepend a silence entry if needed")
+
         last_end = 0.0
-        for entry in self.dialogue_timeline:
+        for entry in timeline:
+            if entry.start_time_sec - last_end > 1e-3:
+                raise ValueError("dialogue_timeline contains gaps; insert silence entries to cover idle spans")
+            if entry.start_time_sec + 1e-6 < last_end:
+                raise ValueError("dialogue_timeline entries must be ordered by start_time_sec")
             entry_end = entry.start_time_sec + entry.duration_sec
             if entry_end > total_runtime + 1e-3:
                 raise ValueError("dialogue_timeline exceeds total shot duration")
-            if entry.start_time_sec + 1e-6 < last_end:
-                raise ValueError("dialogue_timeline entries must be ordered by start_time_sec")
             last_end = max(last_end, entry_end)
 
         if abs(last_end - total_runtime) > 1e-3:
@@ -264,6 +289,9 @@ class RunContext(BaseModel):
         schema_uri: Optional[str] = None,
         render_profile: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        dialogue_timeline_uri: Optional[str] = None,
+        base_image_map: Optional[Mapping[str, str]] = None,
+        policy_decisions: Optional[Sequence[str]] = None,
     ) -> "RunContext":
         """Construct a RunContext using canonical identifiers from the plan."""
 
@@ -273,6 +301,17 @@ class RunContext(BaseModel):
         ctx_meta = dict(metadata or {})
         if base_meta:
             ctx_meta.setdefault("plan_metadata", base_meta)
+        if policy_decisions:
+            ctx_meta.setdefault("policy_decisions", list(policy_decisions))
+
+        if render_profile is not None:
+            render_profile_payload = dict(render_profile)
+        else:
+            if hasattr(plan.render_profile, "model_dump"):
+                render_profile_payload = plan.render_profile.model_dump()
+            else:  # pragma: no cover - legacy pydantic v1 fallback
+                render_profile_payload = plan.render_profile.dict()  # type: ignore[attr-defined]
+
         return cls(
             run_id=run_id,
             plan_id=plan_id,
@@ -280,7 +319,9 @@ class RunContext(BaseModel):
             plan=plan,
             schema_uri=schema_uri,
             shot_order=shot_order,
-            render_profile=dict(render_profile or {}),
+            dialogue_timeline_uri=dialogue_timeline_uri,
+            base_image_map=dict(base_image_map or {}),
+            render_profile=render_profile_payload,
             metadata=ctx_meta,
         )
 
