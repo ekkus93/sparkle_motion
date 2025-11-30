@@ -191,13 +191,15 @@ class _DialogueStageResult:
     sample_rate: int
     channels: int
     sample_width: int
+    timeline_offsets: Dict[int, Dict[str, Any]]
     stage_manifests: List[StageManifest]
 
 
 @dataclass(frozen=True)
 class _TimelineSegment:
+    entry_index: int
     kind: Literal["dialogue", "silence"]
-    duration: float
+    target_duration: float
     path: Optional[Path]
 
 
@@ -298,6 +300,8 @@ def execute_plan(
             "total_duration_s": result.total_duration_s,
             "sample_rate": result.sample_rate,
             "channels": result.channels,
+            "sample_width_bytes": result.sample_width,
+            "timeline_offsets": result.timeline_offsets,
         }
         return StepResult(
             path=result.timeline_audio_path,
@@ -550,10 +554,15 @@ def _run_dialogue_stage(
     line_paths: List[Path] = []
     segments: List[_TimelineSegment] = []
 
+    def _positive_float(value: Any) -> float:
+        if isinstance(value, (int, float)):
+            return max(0.0, float(value))
+        return 0.0
+
     for index, entry in enumerate(plan.dialogue_timeline):
         entry_type = getattr(entry, "type", "dialogue")
-        start_time = getattr(entry, "start_time_sec", 0.0)
-        duration = getattr(entry, "duration_sec", 0.0)
+        start_time = _positive_float(getattr(entry, "start_time_sec", 0.0))
+        duration = _positive_float(getattr(entry, "duration_sec", 0.0))
         base_payload: Dict[str, Any] = {
             "index": index,
             "type": entry_type,
@@ -562,7 +571,14 @@ def _run_dialogue_stage(
             "character_id": getattr(entry, "character_id", None),
         }
         if entry_type == "silence":
-            segments.append(_TimelineSegment(kind="silence", duration=duration, path=None))
+            segments.append(
+                _TimelineSegment(
+                    entry_index=index,
+                    kind="silence",
+                    target_duration=duration,
+                    path=None,
+                )
+            )
             line_entries.append({**base_payload, "text": None, "artifact_uri": None, "local_path": None})
             continue
 
@@ -585,10 +601,13 @@ def _run_dialogue_stage(
         if not local_path.exists():
             local_path.write_bytes(b"")
         line_paths.append(local_path)
+        raw_duration_hint = _positive_float(metadata.get("duration_s"))
+        target_duration = duration if duration > 0 else raw_duration_hint
         segments.append(
             _TimelineSegment(
+                entry_index=index,
                 kind="dialogue",
-                duration=float(metadata.get("duration_s") or duration or 0.0),
+                target_duration=target_duration,
                 path=local_path,
             )
         )
@@ -615,7 +634,25 @@ def _run_dialogue_stage(
     if not segments:
         raise ProductionAgentError("dialogue_timeline must contain at least one entry to synthesize")
 
-    total_duration, sample_rate, sample_width, channels = _stitch_timeline_audio(segments, timeline_audio_path)
+    total_duration, sample_rate, sample_width, channels, offsets = _stitch_timeline_audio(segments, timeline_audio_path)
+
+    for entry in line_entries:
+        offset_meta = offsets.get(entry["index"])
+        if offset_meta:
+            entry["start_time_actual_s"] = offset_meta["start_time_s"]
+            entry["end_time_actual_s"] = offset_meta["end_time_s"]
+            entry["duration_actual_s"] = offset_meta["written_duration_s"]
+            entry["duration_audio_raw_s"] = offset_meta.get("source_duration_s")
+            entry["timeline_padding_s"] = offset_meta.get("padding_applied_s")
+            entry["timeline_trimmed_s"] = offset_meta.get("trimmed_s")
+        else:
+            entry["start_time_actual_s"] = entry.get("start_time_sec", 0.0)
+            planned_duration = entry.get("duration_sec") or 0.0
+            entry["end_time_actual_s"] = entry["start_time_actual_s"] + planned_duration
+            entry["duration_actual_s"] = planned_duration
+            entry["duration_audio_raw_s"] = None
+            entry["timeline_padding_s"] = 0.0
+            entry["timeline_trimmed_s"] = 0.0
 
     summary_payload = {
         "plan_id": plan_id,
@@ -629,6 +666,7 @@ def _run_dialogue_stage(
             "channels": channels,
             "sample_width_bytes": sample_width,
         },
+        "timeline_offsets": offsets,
     }
     summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -658,7 +696,7 @@ def _run_dialogue_stage(
             storage_hint="local",
             mime_type="application/json",
             size_bytes=summary_path.stat().st_size,
-            metadata=_manifest_metadata({"summary": True}),
+            metadata=_manifest_metadata({"summary": True, "total_duration_s": total_duration}),
             playback_ready=False,
         )
     )
@@ -678,6 +716,7 @@ def _run_dialogue_stage(
             duration_s=total_duration,
             metadata=_manifest_metadata(
                 {
+                    "entry_count": len(line_entries),
                     "sample_rate": sample_rate,
                     "channels": channels,
                     "sample_width_bytes": sample_width,
@@ -696,19 +735,33 @@ def _run_dialogue_stage(
         sample_rate=sample_rate,
         channels=channels,
         sample_width=sample_width,
+        timeline_offsets=offsets,
         stage_manifests=manifests,
     )
 
 
-def _stitch_timeline_audio(segments: Sequence[_TimelineSegment], timeline_path: Path) -> tuple[float, int, int, int]:
+def _stitch_timeline_audio(
+    segments: Sequence[_TimelineSegment],
+    timeline_path: Path,
+) -> tuple[float, int, int, int, Dict[int, Dict[str, Any]]]:
     sample_rate: Optional[int] = None
     sample_width: Optional[int] = None
     channels: Optional[int] = None
     total_duration = 0.0
+    offsets: Dict[int, Dict[str, float]] = {}
     timeline_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_writer_defaults(writer: wave.Wave_write) -> None:
+        nonlocal sample_rate, sample_width, channels
+        if sample_rate is None or sample_width is None or channels is None:
+            sample_rate, sample_width, channels = 22050, 2, 1
+            writer.setnchannels(channels)
+            writer.setsampwidth(sample_width)
+            writer.setframerate(sample_rate)
 
     with wave.open(str(timeline_path), "wb") as writer:
         for segment in segments:
+            start_time = total_duration
             if segment.kind == "dialogue":
                 if segment.path is None or not segment.path.exists():
                     raise ProductionAgentError("dialogue segment missing audio payload")
@@ -717,34 +770,68 @@ def _stitch_timeline_audio(segments: Sequence[_TimelineSegment], timeline_path: 
                     sw = reader.getsampwidth()
                     ch = reader.getnchannels()
                     frame_count = reader.getnframes()
-                    if sample_rate is None:
-                        sample_rate, sample_width, channels = sr, sw, ch
-                        writer.setnchannels(channels)
-                        writer.setsampwidth(sample_width)
-                        writer.setframerate(sample_rate)
-                    elif sr != sample_rate or sw != sample_width or ch != channels:
-                        raise ProductionAgentError("dialogue audio segments must share sample parameters")
-                    writer.writeframes(reader.readframes(frame_count))
-                    total_duration += frame_count / sr
-            else:
+                    data = reader.readframes(frame_count)
                 if sample_rate is None:
-                    sample_rate, sample_width, channels = 22050, 2, 1
+                    sample_rate, sample_width, channels = sr, sw, ch
                     writer.setnchannels(channels)
                     writer.setsampwidth(sample_width)
                     writer.setframerate(sample_rate)
-                frames_needed = max(1, int(round(segment.duration * sample_rate)))
-                silence_chunk_frames = 4096
-                silence_frame = b"\x00" * sample_width * channels
-                written = 0
-                while written < frames_needed:
-                    batch = min(silence_chunk_frames, frames_needed - written)
-                    writer.writeframes(silence_frame * batch)
-                    written += batch
-                total_duration += frames_needed / sample_rate
+                elif sr != sample_rate or sw != sample_width or ch != channels:
+                    raise ProductionAgentError("dialogue audio segments must share sample parameters")
+                if sample_rate is None or sample_width is None or channels is None:
+                    raise ProductionAgentError("audio parameters unavailable for dialogue segment")
+                bytes_per_frame = sample_width * channels
+                actual_duration = frame_count / sample_rate if sample_rate else 0.0
+                target_duration = segment.target_duration if segment.target_duration > 0 else actual_duration
+                if target_duration <= 0:
+                    target_duration = actual_duration or 1.0 / sample_rate
+                desired_frames = max(1, int(round(target_duration * sample_rate)))
+                if desired_frames <= frame_count:
+                    writer.writeframes(data[: desired_frames * bytes_per_frame])
+                else:
+                    writer.writeframes(data)
+                    missing_frames = desired_frames - frame_count
+                    writer.writeframes(b"\x00" * bytes_per_frame * missing_frames)
+                written_duration = desired_frames / sample_rate
+                padding = max(0.0, written_duration - actual_duration)
+                trimmed = max(0.0, actual_duration - written_duration)
+                offsets[segment.entry_index] = {
+                    "kind": segment.kind,
+                    "start_time_s": start_time,
+                    "end_time_s": start_time + written_duration,
+                    "written_duration_s": written_duration,
+                    "target_duration_s": target_duration,
+                    "source_duration_s": actual_duration,
+                    "padding_applied_s": padding,
+                    "trimmed_s": trimmed,
+                }
+                total_duration += written_duration
+            else:
+                _ensure_writer_defaults(writer)
+                if sample_rate is None or sample_width is None or channels is None:
+                    raise ProductionAgentError("audio parameters unavailable for silence segment")
+                bytes_per_frame = sample_width * channels
+                target_duration = max(0.0, segment.target_duration)
+                desired_frames = int(round(target_duration * sample_rate))
+                if desired_frames > 0:
+                    silence_frame = b"\x00" * bytes_per_frame
+                    writer.writeframes(silence_frame * desired_frames)
+                written_duration = desired_frames / sample_rate if sample_rate and desired_frames > 0 else 0.0
+                offsets[segment.entry_index] = {
+                    "kind": "silence",
+                    "start_time_s": start_time,
+                    "end_time_s": start_time + written_duration,
+                    "written_duration_s": written_duration,
+                    "target_duration_s": target_duration,
+                    "source_duration_s": 0.0,
+                    "padding_applied_s": 0.0,
+                    "trimmed_s": 0.0,
+                }
+                total_duration += written_duration
 
     if sample_rate is None or sample_width is None or channels is None:
         raise ProductionAgentError("Failed to synthesize dialogue timeline audio")
-    return total_duration, sample_rate, sample_width, channels
+    return total_duration, sample_rate, sample_width, channels, offsets
 
 
 def _build_plan_intake_manifests(

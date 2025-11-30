@@ -337,6 +337,11 @@ Key guidelines:
 		still matches the plan’s absolute timestamps.
 	- Metadata records the offsets so downstream stages (lipsync, assemble) can
 		rely on exact timing.
+	- The stage writes `dialogue_timeline_audio.json`, which contains each
+		`line_artifact` plus `start_time_actual_s`, `end_time_actual_s`,
+		`duration_audio_raw_s`, `timeline_padding_s`, and `timeline_trimmed_s`. A
+		`timeline_offsets` map mirrors these values so `/artifacts` consumers can
+		rebuild the stitched WAV alignment without reprocessing audio.
 
 ### 4. Video clip generation + continuity
 
@@ -395,7 +400,7 @@ the user prompt into concrete inputs/outputs:
 | Stage | Required inputs | Primary outputs | Notes |
 | --- | --- | --- | --- |
 | **Plan intake** | MoviePlan JSON (inline or fetched via `artifact_uri`), schema hash, policy gate config, environment paths (`ARTIFACTS_DIR`, etc.), `render_profile` block | Canonical `RunContext` (shot order, dialogue timeline, base-image map, selected render profiles), validation report, policy audit log | Fails fast if schema mismatch, missing base-image references, or render_profile absent/unsupported. |
-| **Dialogue & audio** | `dialogue_timeline`, character voice profiles, TTS model settings, optional pronunciation overrides | Per-line WAVs + metadata (durations, viseme hints), stitched `tts_timeline.wav`, updated dialogue timeline with measured durations | Stitched file length must equal cumulative shot duration; offsets stored for assemble/lipsync. |
+| **Dialogue & audio** | `dialogue_timeline`, character voice profiles, TTS model settings, optional pronunciation overrides | Per-line WAVs + metadata (durations, viseme hints), stitched `tts_timeline.wav`, `dialogue_timeline_audio.json` with measured offsets/duration deltas | Stitched file length must equal cumulative shot duration; offsets stored for assemble/lipsync. |
 | **Base images + early QA** | `base_images` array, SDXL config (prompt, seed, guidance), regeneration policy, QA probe settings | QA-approved PNG/WEBP URIs (one per base image), QA reports per frame, retry history | Any failed finger-count probe triggers regeneration before progressing to video. |
 | **Video clips** | Shot list (start/end base-image URIs, duration, motion prompt, fps, frame count), video `render_profile` entry (model_id, caps), continuity constraints | Per-shot MP4/PNG sequences, motion metadata (num frames, seed), continuity confirmation records | Uses shot *N* end frame as shot *N+1* start frame; stores asset refs for assembly; honoring the declared model is mandatory. |
 | **Video QA (per shot)** | Clip asset URIs, prompts/motion summaries, QA policy, retry budget, `qa_mode` flag | QA report per clip, `clip_passed` boolean, retry counters, `qa_skipped` marker | Failing clips are rerendered before progressing; `qa_mode="skip"` short-circuits the stage (dev-only). |

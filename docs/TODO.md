@@ -169,7 +169,7 @@
   records StageEvent/StageManifest entries as described in
   `docs/ARCHITECTURE.md` §Production run observability + THE_PLAN.md §Stage
   contracts.
-- [ ] Implement the dialogue + audio stage exactly as specced: call
+- [x] Implement the dialogue + audio stage exactly as specced: call
   `tts_agent` once per dialogue timeline entry, record `line_artifacts`, and
   stitch a single `tts_timeline.wav` artifact with measured timings so later
   stages and `/artifacts` consumers can rely on exact offsets

@@ -559,6 +559,16 @@ def test_dialogue_stage_builds_timeline_audio(monkeypatch: pytest.MonkeyPatch, s
     assert summary["entry_count"] == len(sample_plan.dialogue_timeline)
     assert record.meta["entry_count"] == len(sample_plan.dialogue_timeline)
     assert record.meta["line_artifacts"], "Line artifacts should capture per-entry metadata"
+    assert "timeline_offsets" in record.meta
+    assert summary["timeline_offsets"]
+    assert len(summary["timeline_offsets"]) == summary["entry_count"]
+    first_entry = summary["lines"][0]
+    assert pytest.approx(first_entry["start_time_actual_s"], rel=1e-3) == first_entry["start_time_sec"]
+    expected_end = first_entry["start_time_sec"] + first_entry["duration_sec"]
+    assert pytest.approx(first_entry["end_time_actual_s"], rel=1e-3) == expected_end
+    assert first_entry["timeline_padding_s"] >= 0.0
+    total_plan_duration = sum(line.get("duration_sec", 0.0) for line in summary["lines"])
+    assert pytest.approx(summary["timeline_audio"]["duration_s"], rel=1e-3) == total_plan_duration
 
 
 def test_run_dialogue_stage_returns_stage_manifests(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
@@ -575,6 +585,62 @@ def test_run_dialogue_stage_returns_stage_manifests(monkeypatch: pytest.MonkeyPa
     assert result.summary_path.exists()
     artifact_types = {manifest.artifact_type for manifest in result.stage_manifests}
     assert {"dialogue_timeline_audio", "tts_timeline_audio"}.issubset(artifact_types)
+
+
+def test_dialogue_stage_trims_and_pads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    shots = [
+        ShotSpec(
+            id="shot-trim",
+            visual_description="Quick close-up",
+            duration_sec=0.2,
+            dialogue=[DialogueLine(character_id="hero", text="Hi")],
+            start_base_image_id="frame_a",
+            end_base_image_id="frame_b",
+            is_talking_closeup=True,
+        ),
+        ShotSpec(
+            id="shot-pad",
+            visual_description="Long speech",
+            duration_sec=1.5,
+            dialogue=[DialogueLine(character_id="hero", text="This line runs long")],
+            start_base_image_id="frame_b",
+            end_base_image_id="frame_c",
+            is_talking_closeup=True,
+        ),
+    ]
+    timeline = [
+        DialogueTimelineDialogue(character_id="hero", text="Hi", start_time_sec=0.0, duration_sec=0.2),
+        DialogueTimelineDialogue(character_id="hero", text="This line runs long", start_time_sec=0.2, duration_sec=1.5),
+    ]
+    plan = MoviePlan(
+        title="Trim Pad",
+        metadata={"plan_id": "plan-trim-pad"},
+        characters=[CharacterSpec(id="hero", name="Hero")],
+        base_images=[
+            BaseImageSpec(id="frame_a", prompt="start"),
+            BaseImageSpec(id="frame_b", prompt="mid"),
+            BaseImageSpec(id="frame_c", prompt="end"),
+        ],
+        shots=shots,
+        dialogue_timeline=timeline,
+        render_profile=RenderProfile(video=RenderProfileVideo(model_id="wan-fixture")),
+    )
+    voice_profiles = production_agent._character_voice_map(plan)
+    result = production_agent._run_dialogue_stage(
+        plan,
+        plan_id="plan-trim-pad",
+        run_id="run-trim-pad",
+        output_dir=tmp_path,
+        voice_profiles=voice_profiles,
+    )
+    assert pytest.approx(result.total_duration_s, rel=1e-3) == 1.7
+    first_entry = result.line_entries[0]
+    second_entry = result.line_entries[1]
+    assert first_entry["timeline_trimmed_s"] > 0.0
+    assert pytest.approx(first_entry["duration_actual_s"], rel=1e-3) == 0.2
+    assert second_entry["timeline_padding_s"] > 0.0
+    assert pytest.approx(second_entry["duration_actual_s"], rel=1e-3) == 1.5
 
 
 def test_voice_profile_forwarded_to_tts(
