@@ -275,9 +275,7 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": {
-            "type": "string"
-          },
+          "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
         },
@@ -378,6 +376,7 @@
           "type": "number"
         },
         "end_base_image_id": {
+          "minLength": 1,
           "title": "End Base Image Id",
           "type": "string"
         },
@@ -415,6 +414,7 @@
           "title": "Setting"
         },
         "start_base_image_id": {
+          "minLength": 1,
           "title": "Start Base Image Id",
           "type": "string"
         },

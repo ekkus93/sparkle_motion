@@ -62,6 +62,7 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Unable to load MoviePlan payload")
     plan_metadata = dict(plan_model.metadata or {})
     plan_metadata["qa_mode"] = req.qa_mode
+    plan_metadata["qa_skipped"] = req.qa_mode == "skip"
     plan_model.metadata = plan_metadata
     try:
         schema_uri = schema_registry.movie_plan_schema().uri
@@ -73,7 +74,7 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
         plan_model,
         run_id=run_id,
         schema_uri=schema_uri,
-        metadata={"qa_mode": req.qa_mode},
+        metadata={"qa_mode": req.qa_mode, "qa_skipped": req.qa_mode == "skip"},
     )
     plan_payload = plan_model.model_dump()
 
@@ -104,6 +105,7 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
             progress_callback=_progress,
             run_id=run_id,
             pre_step_hook=pre_step_hook,
+            qa_mode=req.qa_mode,
         )
     except StepQueuedError as exc:
         LOG.warning(
@@ -341,6 +343,7 @@ def _entry_to_manifest(entry: Mapping[str, Any], run_id: str) -> Dict[str, Any]:
         "qa_report_uri": entry.get("qa_report_uri"),
         "qa_passed": entry.get("qa_passed"),
         "qa_mode": entry.get("qa_mode"),
+        "qa_skipped": entry.get("qa_skipped"),
         "playback_ready": entry.get("playback_ready"),
         "notes": entry.get("notes"),
         "metadata": entry.get("metadata", {}),
@@ -539,6 +542,7 @@ def _build_preview_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         "size_bytes": entry.get("size_bytes"),
         "qa_passed": entry.get("qa_passed"),
         "qa_mode": entry.get("qa_mode"),
+        "qa_skipped": entry.get("qa_skipped"),
         "playback_ready": entry.get("playback_ready"),
     }
 

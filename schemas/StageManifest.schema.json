@@ -170,6 +170,18 @@
       "default": null,
       "title": "Qa Report Uri"
     },
+    "qa_skipped": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Qa Skipped"
+    },
     "resolution_px": {
       "anyOf": [
         {

@@ -82,11 +82,13 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     assert status_data["run_id"] == run_id
     assert status_data["steps"], "status should include recorded steps"
     assert status_data["qa_mode"] == "skip"
+    assert status_data["qa_skipped"] is True
     assert status_data["metadata"].get("qa_mode") == "skip"
     assert status_data["render_profile"]["video"]["model_id"] == "wan-fixture"
     assert status_data["timeline"] == status_data["log"]
     assert status_data["timeline"], "timeline history should be populated"
     assert status_data["timeline"][0]["qa_mode"] == "skip"
+    assert status_data["timeline"][0]["qa_skipped"] is True
 
     artifacts_resp = client.get("/artifacts", params={"run_id": run_id})
     assert artifacts_resp.status_code == 200
@@ -137,6 +139,7 @@ def test_artifacts_endpoint_returns_video_final_manifest(
     assert final_entry["artifact_type"] == "video_final"
     assert final_entry["stage_id"] == "qa_publish"
     assert isinstance(final_entry["qa_passed"], bool)
+    assert isinstance(final_entry["qa_skipped"], bool)
     assert isinstance(final_entry["playback_ready"], bool)
     assert final_entry["checksum_sha256"]
     if final_entry["storage_hint"] == "adk":

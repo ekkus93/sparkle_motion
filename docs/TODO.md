@@ -206,6 +206,10 @@
   it with run state, and ensure status/artifact responses badge `qa_skipped`
   runs exactly as the docs require (THE_PLAN.md §Live status polling,
   `docs/NOTEBOOK_AGENT_INTEGRATION.md` QA modes subsection).
+- [x] Thread a `qa_mode` option from `/invoke` through production_agent, store
+  it with run state, and ensure status/artifact responses badge `qa_skipped`
+  runs exactly as the docs require (THE_PLAN.md §Live status polling,
+  `docs/NOTEBOOK_AGENT_INTEGRATION.md` QA modes subsection).
 
 ### P1 — Deterministic unit tests & harnesses
 - [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.

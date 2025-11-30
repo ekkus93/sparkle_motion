@@ -390,14 +390,48 @@ def test_base_image_qa_retries_until_pass(
 
 def test_qa_steps_skipped_in_skip_mode(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
-    sample_plan.metadata = dict(sample_plan.metadata or {})
-    sample_plan.metadata["qa_mode"] = "skip"
-    result = execute_plan(sample_plan, mode="run")
+    result = execute_plan(sample_plan, mode="run", qa_mode="skip")
     qa_records = [rec for rec in result.steps if rec.step_type in {"qa_base_images", "qa_video"}]
     assert qa_records, "expected QA step records"
     for rec in qa_records:
         assert rec.status == "skipped"
         assert rec.meta.get("qa_skipped") is True
+
+
+def test_run_registry_badges_qa_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    run_id = "run-qa-skipped"
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id="plan-skip", plan_title=sample_plan.title, mode="run", qa_mode="skip")
+    progress_handler = registry.build_progress_handler(run_id)
+    pre_step_hook = registry.pre_step_hook(run_id)
+    execute_plan(
+        sample_plan,
+        mode="run",
+        run_id=run_id,
+        qa_mode="skip",
+        progress_callback=progress_handler,
+        pre_step_hook=pre_step_hook,
+    )
+    status = registry.get_status(run_id)
+    assert status["qa_mode"] == "skip"
+    assert status["qa_skipped"] is True
+    timeline = status["timeline"]
+    assert all(entry["qa_mode"] == "skip" for entry in timeline)
+    assert all(entry["qa_skipped"] is True for entry in timeline)
+    artifacts = registry.get_artifacts(run_id, stage="qa_publish")
+    final_entry = next(entry for entry in artifacts if entry["artifact_type"] == "video_final")
+    assert final_entry["qa_skipped"] is True
+    assert final_entry["qa_passed"] is False
+    registry.discard_run(run_id)
 
 
 def test_video_qa_failure_raises_after_retries(

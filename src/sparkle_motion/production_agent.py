@@ -221,6 +221,7 @@ def execute_plan(
     config: Optional[ProductionAgentConfig] = None,
     run_id: Optional[str] = None,
     pre_step_hook: Optional[Callable[[str], None]] = None,
+    qa_mode: Optional[Literal["full", "skip"]] = None,
 ) -> ProductionResult:
     """Execute or simulate a MoviePlan."""
 
@@ -229,7 +230,7 @@ def execute_plan(
     _validate_plan(model)
     plan_id = _plan_identifier(model)
     run_id = run_id or observability.get_session_id()
-    qa_mode = _resolve_qa_mode(model)
+    qa_mode = _resolve_qa_mode(model, override=qa_mode)
 
     def _execute_plan_intake_stage(output_dir: Optional[Path]) -> tuple[StepExecutionRecord, _PlanIntakeResult]:
         holder: Dict[str, _PlanIntakeResult] = {}
@@ -397,6 +398,7 @@ def execute_plan(
             shot_artifacts=shot_artifacts,
             dialogue_result=dialogue_result,
             assemble_path=final_result.path,
+            qa_mode=qa_mode,
         )
         qa_publish_holder["artifact"] = qa_artifact_ref
         _record_stage_manifest_entries(run_id=run_id, manifests=manifests)
@@ -1869,6 +1871,7 @@ def _record_stage_manifest_entries(*, run_id: str, manifests: Sequence[StageMani
             qa_report_uri=manifest.qa_report_uri,
             qa_passed=manifest.qa_passed,
             qa_mode=manifest.qa_mode,
+            qa_skipped=manifest.qa_skipped,
             playback_ready=manifest.playback_ready,
             notes=manifest.notes,
             metadata=dict(manifest.metadata),
@@ -2177,6 +2180,7 @@ def _run_qa_publish_stage(
     shot_artifacts: Sequence[_ShotArtifacts],
     dialogue_result: Optional[_DialogueStageResult],
     assemble_path: Path,
+    qa_mode: str,
 ) -> tuple[List[StageManifest], adk_helpers.ArtifactRef, StepResult]:
     stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
     final_video_path = _prepare_final_video(
@@ -2189,7 +2193,6 @@ def _run_qa_publish_stage(
     total_duration = dialogue_result.total_duration_s if dialogue_result else sum(shot.duration_sec for shot in plan.shots)
     frame_rate = float(plan.render_profile.video.max_fps or _default_video_fps())
     resolution = _resolve_render_resolution(plan)
-    qa_mode = _resolve_qa_mode(plan)
     qa_skipped = qa_mode == "skip"
     issues = _collect_qa_publish_issues(
         plan=plan,
@@ -2285,6 +2288,7 @@ def _run_qa_publish_stage(
         qa_report_uri=qa_report_ref.get("uri"),
         qa_passed=qa_passed,
         qa_mode=qa_mode,
+        qa_skipped=qa_skipped,
         playback_ready=final_video_path.exists(),
         notes="qa_skipped" if qa_skipped else None,
         metadata=manifest_metadata,
@@ -2423,18 +2427,23 @@ def _resolve_render_resolution(plan: MoviePlan) -> str:
     return "1280x720"
 
 
-def _resolve_qa_mode(plan: MoviePlan) -> str:
-    value: Optional[str] = None
+def _resolve_qa_mode(plan: MoviePlan, *, override: Optional[str] = None) -> str:
+    candidates: List[str] = []
+    if isinstance(override, str) and override.strip():
+        candidates.append(override)
     if plan.metadata:
         value = plan.metadata.get("qa_mode")
-    if not value and plan.render_profile.metadata:
+        if isinstance(value, str):
+            candidates.append(value)
+    if plan.render_profile.metadata:
         candidate = plan.render_profile.metadata.get("qa_mode")
         if isinstance(candidate, str):
-            value = candidate
-    normalized = (value or "full").strip().lower()
-    if normalized not in {"full", "skip"}:
-        return "full"
-    return normalized
+            candidates.append(candidate)
+    for value in candidates:
+        normalized = value.strip().lower()
+        if normalized in {"full", "skip"}:
+            return normalized
+    return "full"
 
 
 def _record_summary_event(

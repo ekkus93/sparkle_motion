@@ -176,7 +176,7 @@ class MoviePlan(BaseModel):
     shots: List[ShotSpec] = Field(..., min_length=1)
     dialogue_timeline: List[DialogueTimelineEntry] = Field(..., min_length=1)
     render_profile: RenderProfile
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -375,6 +375,7 @@ class StageManifest(BaseModel):
     qa_report_uri: Optional[str] = None
     qa_passed: Optional[bool] = None
     qa_mode: Optional[str] = None
+    qa_skipped: Optional[bool] = None
     playback_ready: Optional[bool] = None
     notes: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)

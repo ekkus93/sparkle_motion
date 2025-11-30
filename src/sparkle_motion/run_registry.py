@@ -35,6 +35,7 @@ class ArtifactEntry:
     qa_report_uri: Optional[str] = None
     qa_passed: Optional[bool] = None
     qa_mode: Optional[str] = None
+    qa_skipped: Optional[bool] = None
     playback_ready: Optional[bool] = None
     notes: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -59,6 +60,7 @@ class ArtifactEntry:
             "qa_report_uri": self.qa_report_uri,
             "qa_passed": self.qa_passed,
             "qa_mode": self.qa_mode,
+            "qa_skipped": self.qa_skipped,
             "playback_ready": self.playback_ready,
             "notes": self.notes,
             "metadata": self.metadata,
@@ -138,6 +140,7 @@ class RunState:
     render_profile: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     qa_mode: QAMode = "full"
+    qa_skipped: bool = False
     schema_uri: Optional[str] = None
 
     def append_step(self, record: Dict[str, Any]) -> None:
@@ -186,6 +189,7 @@ class RunRegistry:
                 render_profile=dict(render_profile or {}),
                 metadata=dict(run_metadata or {}),
                 qa_mode=qa_mode,
+                qa_skipped=qa_mode == "skip",
                 schema_uri=schema_uri,
             )
             self._runs[run_id] = state
@@ -253,6 +257,7 @@ class RunRegistry:
                     qa_report_uri=meta.get("qa_report_uri"),
                     qa_passed=meta.get("qa_passed"),
                     qa_mode=meta.get("qa_mode"),
+                    qa_skipped=meta.get("qa_skipped"),
                     playback_ready=meta.get("playback_ready"),
                     notes=meta.get("notes"),
                     metadata=dict(meta),
@@ -322,8 +327,18 @@ class RunRegistry:
 
         return _hook
 
-    def build_progress_handler(self, run_id: str) -> Callable[[Dict[str, Any]], None]:
-        def _handler(record_dict: Dict[str, Any]) -> None:
+    def build_progress_handler(self, run_id: str) -> Callable[[Any], None]:
+        """Return a progress callback that tolerates dataclass or dict input."""
+
+        def _handler(record_like: Any) -> None:
+            if hasattr(record_like, "as_dict"):
+                record_dict = record_like.as_dict()
+            elif isinstance(record_like, dict):
+                record_dict = record_like
+            else:  # pragma: no cover - defensive conversion guard
+                raise TypeError(
+                    f"Progress handler expected StepExecutionRecord or dict, got {type(record_like)!r}"
+                )
             self.record_step(run_id, record_dict)
 
         return _handler
@@ -384,6 +399,7 @@ class RunRegistry:
             "metadata": dict(state.metadata),
             "render_profile": dict(state.render_profile),
             "qa_mode": state.qa_mode,
+            "qa_skipped": state.qa_skipped,
             "schema_uri": state.schema_uri,
             "timeline": timeline,
             "log": timeline,
@@ -411,6 +427,7 @@ class RunRegistry:
             "artifact_uri": artifact_uri,
             "artifacts": artifacts,
             "qa_mode": qa_mode,
+            "qa_skipped": qa_mode == "skip",
             "meta": meta,
         }
 
