@@ -15,6 +15,7 @@ from typing import Any, Mapping, Optional, Sequence
 import yaml
 
 from sparkle_motion import adk_helpers, gpu_utils, telemetry
+from sparkle_motion.utils.env import fixture_mode_enabled
 from sparkle_motion.schemas import QAReport, QAReportPerShot
 
 LOG = logging.getLogger("qa_qwen2vl.adapter")
@@ -212,7 +213,7 @@ def _decide_engine(options: Mapping[str, Any]) -> EngineDecision:
         return EngineDecision(False, "fixture_only_option")
 
     env = os.environ
-    if env.get("ADK_USE_FIXTURE", "0").lower() in TRUTHY:
+    if fixture_mode_enabled(env):
         return EngineDecision(False, "adk_fixture_env")
     if env.get("QA_QWEN2VL_FIXTURE_ONLY", "0").lower() in TRUTHY:
         return EngineDecision(False, "env_fixture_only")

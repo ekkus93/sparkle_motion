@@ -1,0 +1,33 @@
+{
+  "status": "success",
+  "request_id": "__REQUEST_ID__",
+  "run_id": "__RUN_ID__",
+  "artifact_uris": [],
+  "steps": [],
+  "simulation_report": {
+    "plan_id": "plan-entrypoint",
+    "resource_summary": {
+      "total_estimated_runtime_s": 3.0,
+      "total_estimated_gpu_hours": 0.0008333333333333334
+    },
+    "policy_decisions": [],
+    "steps": [
+      {
+        "step_id": "shot-1:images",
+        "step_type": "images",
+        "estimated_runtime_s": 1.0,
+        "estimated_gpu_memory_mb": 512,
+        "simulated_artifact_uri": "dry-run://frames/shot-1"
+      },
+      {
+        "step_id": "shot-1:video",
+        "step_type": "video",
+        "estimated_runtime_s": 2.0,
+        "estimated_gpu_memory_mb": 2048,
+        "simulated_artifact_uri": "dry-run://video/shot-1"
+      }
+    ]
+  },
+  "queue": null,
+  "schema_uri": "artifact://sparkle-motion/schemas/movie_plan/v1"
+}

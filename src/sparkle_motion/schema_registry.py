@@ -8,7 +8,6 @@ corresponding entry exists in ``configs/schema_artifacts.yaml`` so this module
 can surface the URI + local fallback consistently for agents and FunctionTools.
 """
 
-import os
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
@@ -17,7 +16,8 @@ from typing import Dict, Iterable, Optional, Tuple
 
 import yaml
 
-_FIXTURE_ENV = "ADK_USE_FIXTURE"
+from sparkle_motion.utils.env import fixture_mode_enabled
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "schema_artifacts.yaml"
@@ -27,7 +27,8 @@ DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "schema_artifacts.yaml"
 class SchemaArtifact:
     name: str
     uri: str
-    local_path: Path
+    local_path: Path | None
+    prefer_local: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -64,14 +65,10 @@ def _resolve_path(path_str: str) -> Path:
     return path if path.is_absolute() else REPO_ROOT / path
 
 
-def _fixture_mode_enabled() -> bool:
-    return os.environ.get(_FIXTURE_ENV) == "1"
-
-
 def _should_prefer_local(prefer_local: Optional[bool]) -> Tuple[bool, bool]:
     if prefer_local is not None:
         return prefer_local, False
-    fixture = _fixture_mode_enabled()
+    fixture = fixture_mode_enabled(default=False)
     return fixture, fixture
 
 
@@ -79,9 +76,9 @@ def _warn(message: str) -> None:
     warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
-def _resolve_reference(*, name: str, uri: str, local_path: Path, prefer_local: Optional[bool]) -> Tuple[str, bool]:
+def _resolve_reference(*, name: str, uri: str, local_path: Optional[Path], prefer_local: Optional[bool]) -> Tuple[str, bool]:
     use_local, env_forced = _should_prefer_local(prefer_local)
-    if use_local:
+    if use_local and local_path is not None:
         if local_path.exists():
             if env_forced:
                 _warn(f"Fixture mode enabled; using local schema fallback for '{name}' ({local_path})")
@@ -89,6 +86,8 @@ def _resolve_reference(*, name: str, uri: str, local_path: Path, prefer_local: O
         _warn(
             f"Local schema path '{local_path}' for '{name}' does not exist; falling back to artifact URI {uri}"
         )
+    elif use_local and local_path is None:
+        _warn(f"Fixture mode enabled but schema '{name}' does not define a local_path; using artifact URI {uri}")
     return uri, False
 
 
@@ -106,10 +105,12 @@ def load_catalog(config_path: Path | None = None) -> SchemaCatalog:
 
     schemas: Dict[str, SchemaArtifact] = {}
     for name, entry in data["schemas"].items():
+        raw_local = entry.get("local_path")
         schemas[name] = SchemaArtifact(
             name=name,
             uri=entry["uri"],
-            local_path=_resolve_path(entry["local_path"]),
+            local_path=_resolve_path(raw_local) if raw_local else None,
+            prefer_local=entry.get("prefer_local"),
         )
 
     qa_policy_entry = data["qa_policy"]
@@ -127,12 +128,30 @@ def get_schema_uri(name: str) -> str:
 
 
 def get_schema_path(name: str) -> Path:
-    return load_catalog().get_schema(name).local_path
+    schema = load_catalog().get_schema(name)
+    if schema.local_path is None:
+        raise ValueError(
+            f"Schema '{name}' does not define a local path; artifact URI {schema.uri} must be fetched via resolve_schema_uri"
+        )
+    resolved, _ = _resolve_reference(
+        name=f"schema:{name}",
+        uri=schema.uri,
+        local_path=schema.local_path,
+        prefer_local=True,
+    )
+    if not resolved.startswith("file://"):
+        raise ValueError(f"Schema '{name}' resolved to non-file URI {resolved}; cannot return filesystem path")
+    return Path(resolved[7:])
 
 
 def resolve_schema_uri(name: str, *, prefer_local: Optional[bool] = None) -> str:
     schema = load_catalog().get_schema(name)
-    resolved, _ = _resolve_reference(name=f"schema:{name}", uri=schema.uri, local_path=schema.local_path, prefer_local=prefer_local)
+    resolved, _ = _resolve_reference(
+        name=f"schema:{name}",
+        uri=schema.uri,
+        local_path=schema.local_path,
+        prefer_local=prefer_local,
+    )
     return resolved
 
 

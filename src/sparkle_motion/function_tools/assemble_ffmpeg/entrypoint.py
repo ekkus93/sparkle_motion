@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Literal, Mapping
+from typing import Any, Dict, Mapping
 from pathlib import Path
 import os
 import logging
@@ -12,58 +12,27 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion import adk_factory, adk_helpers, observability, telemetry
+from sparkle_motion.utils.env import fixture_mode_enabled
 from sparkle_motion.function_tools.assemble_ffmpeg import adapter
+from sparkle_motion.function_tools.assemble_ffmpeg.models import (
+    AssembleAudio,
+    AssembleClip,
+    AssembleOptions,
+    AssembleRequest,
+    AssembleResponse,
+)
 
 LOG = logging.getLogger("assemble_ffmpeg.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
-class ClipModel(BaseModel):
-    uri: str
-    start_s: float = 0.0
-    end_s: float | None = None
-    metadata: Dict[str, Any] | None = None
-    transition: Dict[str, Any] | None = None
-
-
-class AudioModel(BaseModel):
-    uri: str
-    start_s: float = 0.0
-    end_s: float | None = None
-    metadata: Dict[str, Any] | None = None
-    gain_db: float | None = None
-
-
-class OptionsModel(BaseModel):
-    video_codec: str | None = Field(default="libx264")
-    audio_codec: str | None = Field(default="aac")
-    pix_fmt: str | None = Field(default="yuv420p")
-    crf: int | None = Field(default=18, ge=0)
-    preset: str | None = Field(default="veryslow")
-    audio_bitrate: str | None = Field(default="192k")
-    timeout_s: float | None = Field(default=120.0, gt=0)
-    retries: int | None = Field(default=0, ge=0)
-    fixture_only: bool | None = None
-
-
-class RequestModel(BaseModel):
-    plan_id: str | None = None
-    run_id: str | None = None
-    step_id: str | None = None
-    seed: int | None = None
-    clips: list[ClipModel]
-    audio: AudioModel | None = None
-    options: OptionsModel | None = None
-    metadata: Dict[str, Any] | None = None
-
-    @model_validator(mode="after")
-    def _validate_clips(self) -> "RequestModel":
-        if not self.clips:
-            raise ValueError("At least one clip is required")
-        return self
+ClipModel = AssembleClip
+AudioModel = AssembleAudio
+OptionsModel = AssembleOptions
+RequestModel = AssembleRequest
+ResponseModel = AssembleResponse
 
 
 def _serialize_validation_errors(errors: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
@@ -75,13 +44,6 @@ def _serialize_validation_errors(errors: list[Dict[str, Any]]) -> list[Dict[str,
             data["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v) for k, v in ctx.items()}
         cleaned.append(data)
     return cleaned
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    artifact_uri: str | None
-    request_id: str
-    metadata: Dict[str, Any] | None = None
 
 
 def make_app() -> FastAPI:
@@ -305,6 +267,6 @@ def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
         uri = None
     if not uri:
         uri = f"file://{path}"
-    if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and isinstance(uri, str) and uri.startswith("artifact://"):
+    if fixture_mode_enabled() and isinstance(uri, str) and uri.startswith("artifact://"):
         return f"file://{path}"
     return str(uri)

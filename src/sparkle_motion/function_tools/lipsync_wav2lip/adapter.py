@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, MutableMapping, Optional, Sequence
 
+from sparkle_motion.utils.env import fixture_mode_enabled
+
 LOG = logging.getLogger(__name__)
 TRUTHY = {"1", "true", "yes", "on"}
 DEFAULT_TIMEOUT_S = 900
@@ -92,7 +94,7 @@ def should_use_real_engine(*, force_fixture: Optional[bool] = None, env: Optiona
     data = env or os.environ
     if _is_truthy(data.get("LIPSYNC_WAV2LIP_FIXTURE_ONLY")):
         return False
-    if _is_truthy(data.get("ADK_USE_FIXTURE")):
+    if fixture_mode_enabled(data, default=False):
         return False
     if force_fixture is True:
         return False

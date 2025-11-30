@@ -12,17 +12,23 @@ import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Literal, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from sparkle_motion import adk_factory, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion.function_tools.qa_qwen2vl import adapter
+from sparkle_motion.function_tools.qa_qwen2vl.models import (
+    QaFramePayload,
+    QaQwen2VlOptions,
+    QaQwen2VlRequest,
+    QaQwen2VlResponse,
+)
 
 LOG = logging.getLogger("qa_qwen2vl.entrypoint")
 LOG.setLevel(logging.INFO)
@@ -56,70 +62,15 @@ def _sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, 
     return sanitized
 
 
-class FramePayload(BaseModel):
-    id: str | None = None
-    uri: str | None = None
-    data_base64: str | None = Field(default=None, alias="data_b64")
-    prompt: str | None = None
-
-    @model_validator(mode="after")
-    def _ensure_source(self) -> "FramePayload":
-        if not self.uri and not self.data_base64:
-            raise ValueError("each frame must provide uri or data_base64")
-        return self
-
-
-class OptionsModel(BaseModel):
-    fixture_only: bool | None = None
-    max_new_tokens: int | None = Field(default=None, ge=16, le=1024)
-    policy_path: str | None = None
-    fixture_seed: int | None = None
-    model_id: str | None = None
-    force_real_engine: bool | None = None
-    dtype: str | None = None
-    attention: str | None = None
-    min_pixels: int | None = Field(default=None, ge=64, le=4096)
-    max_pixels: int | None = Field(default=None, ge=64, le=6144)
-    cache_ttl_s: float | None = Field(default=None, ge=60.0, le=7200.0)
-    max_download_bytes: int | None = Field(default=None, ge=1024, le=50 * 1024 * 1024)
-    download_timeout_s: float | None = Field(default=None, ge=1.0, le=120.0)
-    metadata: Dict[str, Any] | None = None
-
-
-class RequestModel(BaseModel):
-    frames: List[FramePayload]
-    prompt: str | None = None
-    plan_id: str | None = None
-    run_id: str | None = None
-    step_id: str | None = None
-    movie_title: str | None = None
-    metadata: Dict[str, Any] | None = None
-    options: OptionsModel | None = None
-
-    @model_validator(mode="after")
-    def _validate_frames(self) -> "RequestModel":
-        if not self.frames:
-            raise ValueError("frames must be provided")
-        has_prompt = bool((self.prompt or "").strip()) or any((frame.prompt or "").strip() for frame in self.frames)
-        if not has_prompt:
-            raise ValueError("provide prompt either globally or per frame")
-        return self
-
-
-def _options_to_dict(options: OptionsModel | None) -> Dict[str, Any]:
+def _options_to_dict(options: QaQwen2VlOptions | None) -> Dict[str, Any]:
     if not options:
         return {}
     return options.model_dump(exclude_none=True)
 
 
-class ResponseModel(BaseModel):
-    status: Literal["success"]
-    request_id: str
-    decision: Literal["approve", "regenerate", "escalate", "pending"]
-    artifact_uri: str
-    metadata: Dict[str, Any]
-    report: Dict[str, Any]
-    human_task_id: str | None = None
+# Preserve historical attribute names for shared entrypoint tests.
+RequestModel = QaQwen2VlRequest
+ResponseModel = QaQwen2VlResponse
 
 
 def make_app() -> FastAPI:
@@ -185,7 +136,7 @@ def make_app() -> FastAPI:
         return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.post("/invoke")
-    def invoke(req: RequestModel) -> dict[str, Any]:
+    def invoke(req: QaQwen2VlRequest) -> dict[str, Any]:
         _ensure_ready(app)
         request_id = uuid.uuid4().hex
         LOG.info("invoke.received", extra={"request_id": request_id})
@@ -206,7 +157,7 @@ def make_app() -> FastAPI:
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            resp = ResponseModel(
+            resp = QaQwen2VlResponse(
                 status="success",
                 request_id=request_id,
                 decision=result.decision,
@@ -239,7 +190,7 @@ def _ensure_ready(app: FastAPI) -> None:
     raise HTTPException(status_code=503, detail="tool not ready")
 
 
-def _materialize_frames(req: RequestModel, *, download_limits: Tuple[int, float]) -> tuple[list[bytes], list[str], list[str]]:
+def _materialize_frames(req: QaQwen2VlRequest, *, download_limits: Tuple[int, float]) -> tuple[list[bytes], list[str], list[str]]:
     max_bytes, timeout_s = download_limits
     frames: list[bytes] = []
     prompts: list[str] = []
@@ -264,7 +215,7 @@ def _download_limits(options: Mapping[str, Any]) -> Tuple[int, float]:
     return max_bytes, timeout_s
 
 
-def _decode_frame(frame: FramePayload, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
+def _decode_frame(frame: QaFramePayload, idx: int, *, max_bytes: int, timeout_s: float) -> bytes:
     if frame.data_base64:
         try:
             data = base64.b64decode(frame.data_base64, validate=True)
@@ -320,7 +271,7 @@ def _fetch_remote_bytes(uri: str, idx: int, *, max_bytes: int, timeout_s: float)
         raise HTTPException(status_code=400, detail=f"frame[{idx}] download failed: {exc}") from exc
 
 
-def _build_adapter_opts(req: RequestModel, options_dict: Dict[str, Any]) -> Dict[str, Any]:
+def _build_adapter_opts(req: QaQwen2VlRequest, options_dict: Dict[str, Any]) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "plan_id": req.plan_id,
         "run_id": req.run_id,

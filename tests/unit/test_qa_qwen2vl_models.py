@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 import pytest
 from fastapi.testclient import TestClient
 
+from sparkle_motion.function_tools.qa_qwen2vl.models import QaQwen2VlRequest, QaQwen2VlResponse
+
 
 mod = import_module("sparkle_motion.function_tools.qa_qwen2vl.entrypoint")
-RequestModel = getattr(mod, "RequestModel")
 make_app = getattr(mod, "make_app")
 
 if TYPE_CHECKING:
@@ -20,14 +21,14 @@ def test_request_model_requires_prompt():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        RequestModel(frames=[{"data_b64": _b64(b"frame"), "id": "f1"}])
+        QaQwen2VlRequest(frames=[{"data_b64": _b64(b"frame"), "id": "f1"}])
 
 
 def test_request_model_requires_frames():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        RequestModel(prompt="ok", frames=[])
+        QaQwen2VlRequest(prompt="ok", frames=[])
 
 
 def test_invoke_writes_artifact_and_returns_success(
@@ -56,6 +57,9 @@ def test_invoke_writes_artifact_and_returns_success(
     j = resp.json()
     assert j.get("status") == "success"
     assert j.get("artifact_uri", "").startswith("file://")
+
+    envelope = QaQwen2VlResponse(**j)
+    assert envelope.report
 
 
 def _b64(data: bytes) -> str:

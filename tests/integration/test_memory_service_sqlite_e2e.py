@@ -12,7 +12,7 @@ from sparkle_motion import adk_helpers
 @pytest.fixture(autouse=True)
 def env_setup(monkeypatch, tmp_path):
     # ensure fixture mode is off and point to a sqlite file for persistence
-    monkeypatch.delenv("ADK_USE_FIXTURE", raising=False)
+    monkeypatch.setenv("ADK_USE_FIXTURE", "0")
     db_path = tmp_path / "memory_shared.db"
     monkeypatch.setenv("ADK_MEMORY_SQLITE", str(db_path))
     monkeypatch.setenv("DETERMINISTIC", "1")

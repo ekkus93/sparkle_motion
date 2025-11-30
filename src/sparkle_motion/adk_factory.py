@@ -7,6 +7,7 @@ from typing import Any, Dict, Literal, Mapping, Optional, Tuple
 
 from . import adk_helpers
 from . import observability
+from sparkle_motion.utils.env import fixture_mode_enabled
 
 AgentMode = Literal["per-tool", "shared"]
 
@@ -75,7 +76,7 @@ _agents: Dict[str, _AgentHandle] = {}
 
 
 def _fixture_enabled() -> bool:
-    return os.environ.get("ADK_USE_FIXTURE") == "1"
+    return fixture_mode_enabled()
 
 
 def _agent_key(cfg: AgentConfig) -> str:
@@ -89,8 +90,6 @@ def safe_probe_sdk() -> Optional[Tuple[object, Optional[object]]]:
     """Wrapper around adk_helpers.probe_sdk that never raises SystemExit."""
 
     def _log(event_type: str, payload: Mapping[str, Any]) -> None:
-        if _fixture_enabled():
-            return
         _emit_memory_event(event_type, payload)
 
     try:

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Literal, Mapping
+from typing import Any, Dict, Mapping
 from pathlib import Path
 import os
 import logging
@@ -12,53 +12,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion import adk_factory, adk_helpers, observability, telemetry
 from sparkle_motion.function_tools.videos_wan import adapter
+from sparkle_motion.utils.env import fixture_mode_enabled
+from sparkle_motion.function_tools.videos_wan.models import VideosWanRequest, VideosWanResponse
 
 LOG = logging.getLogger("videos_wan.entrypoint")
 LOG.setLevel(logging.INFO)
 
-
-class OptionsModel(BaseModel):
-    num_inference_steps: int | None = Field(default=None, ge=1, le=128)
-    guidance_scale: float | None = Field(default=None, ge=0.0)
-    negative_prompt: str | None = None
-    motion_bucket_id: int | None = Field(default=None, ge=0)
-    megapixels: float | None = Field(default=None, ge=0.0)
-    fixture_only: bool | None = None
-
-
-class RequestModel(BaseModel):
-    prompt: str
-    plan_id: str | None = None
-    run_id: str | None = None
-    step_id: str | None = None
-    seed: int | None = None
-    chunk_index: int | None = Field(default=None, ge=0)
-    chunk_count: int | None = Field(default=None, ge=1)
-    num_frames: int = Field(default=64, ge=1, le=2048)
-    fps: int = Field(default=24, ge=1, le=120)
-    width: int = Field(default=1280, ge=64, le=4096)
-    height: int = Field(default=720, ge=64, le=4096)
-    metadata: Dict[str, Any] | None = None
-    options: OptionsModel | None = None
-    start_frame_uri: str | None = None
-    end_frame_uri: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_prompt(self) -> "RequestModel":
-        if not self.prompt or not self.prompt.strip():
-            raise ValueError("prompt is required")
-        return self
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    artifact_uri: str | None
-    request_id: str
-    metadata: Dict[str, Any] | None = None
+# Preserve historical attribute names so shared entrypoint tests keep passing.
+RequestModel = VideosWanRequest
+ResponseModel = VideosWanResponse
 
 
 def make_app() -> FastAPI:
@@ -141,7 +106,7 @@ def make_app() -> FastAPI:
         return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.post("/invoke")
-    def invoke(req: RequestModel) -> dict[str, Any]:
+    def invoke(req: VideosWanRequest) -> dict[str, Any]:
         if not getattr(app.state, "ready", False):
             try:
                 delay = float(os.environ.get("MODEL_LOAD_DELAY", "0"))
@@ -192,7 +157,7 @@ def make_app() -> FastAPI:
             except Exception:
                 pass
 
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
+            resp = VideosWanResponse(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
@@ -204,7 +169,7 @@ def make_app() -> FastAPI:
 app = make_app()
 
 
-def _invoke_adapter(req: RequestModel) -> adapter.VideoRenderResult:
+def _invoke_adapter(req: VideosWanRequest) -> adapter.VideoRenderResult:
     options = req.options.model_dump(exclude_none=True) if req.options else {}
     metadata = dict(req.metadata or {})
     start_frame = _load_frame(req.start_frame_uri)
@@ -227,7 +192,7 @@ def _invoke_adapter(req: RequestModel) -> adapter.VideoRenderResult:
     )
 
 
-def _build_metadata(req: RequestModel, result: adapter.VideoRenderResult, request_id: str) -> Dict[str, Any]:
+def _build_metadata(req: VideosWanRequest, result: adapter.VideoRenderResult, request_id: str) -> Dict[str, Any]:
     metadata: Dict[str, Any] = dict(result.metadata)
     metadata.setdefault("engine", result.engine)
     metadata["duration_s"] = result.duration_s
@@ -256,7 +221,7 @@ def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
         uri = None
     if not uri:
         uri = f"file://{path}"
-    if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and isinstance(uri, str) and uri.startswith("artifact://"):
+    if fixture_mode_enabled() and isinstance(uri, str) and uri.startswith("artifact://"):
         return f"file://{path}"
     return str(uri)
 

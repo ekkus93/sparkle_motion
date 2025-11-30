@@ -38,6 +38,75 @@ Environment variables required for ADK integration tests / features:
 - `ADK_PROJECT`
 - `GOOGLE_APPLICATION_CREDENTIALS`
 
+### Configuring ADK authentication (`ADK_API_KEY`)
+
+Some workflows (schema publishing, artifact uploads, production agents) also require
+`ADK_API_KEY` so the ADK SDK/CLI can authenticate. Quick setup:
+
+1. **Obtain the key** from your ADK deployment (console/CLI) for the
+	`sparkle-motion` project, or ask the team operating the ADK environment to
+	issue one. Keys are not generated inside this repo.
+2. **Populate `data/content/.sparkle.env`** with the issued values:
+
+	```bash
+	# data/content/.sparkle.env
+	ADK_PROJECT=sparkle-motion
+	ADK_API_KEY=sk-...
+	```
+
+	The file already contains these variables with empty defaults; editing it keeps
+	secrets out of version control while remaining source-able for local work.
+3. **Load the values** before running scripts that touch ADK:
+
+	```bash
+	source data/content/.sparkle.env
+	export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account.json
+	```
+
+	Alternatively, export `ADK_PROJECT` and `ADK_API_KEY` directly in your shell
+	or CI environment variables.
+
+Without these variables the ADK CLI/SDK cannot create artifacts (e.g.,
+`scripts/publish_schemas.py` will fail with an auth error), so set them before
+running any publish/deploy steps.
+
+#### Step-by-step: creating an `ADK_API_KEY`
+
+1. **Locate the ADK control plane.** The URL/CLI profile is managed by your infra/ML
+	platform team. Check `resources/adk_projects.json` for hints or ping the owners for
+	the "ADK console" link and login instructions.
+2. **Sign in.** Either:
+	- Use the web console → log in with your corporate account and select the
+	  `sparkle-motion` project; or
+	- Use the CLI → run `adk auth login --project sparkle-motion` (the command opens a
+	  browser window to finish auth).
+3. **Create the key.** In the console, navigate to **Projects → sparkle-motion →
+	Security → API keys → Create key** (menu labels may vary slightly) and grant at
+	least "artifacts.write" scope. In the CLI you can run:
+
+	```bash
+	adk keys create --project sparkle-motion --display-name "sparkle-motion-local" \
+	  --scopes artifacts.read artifacts.write
+	```
+
+	The CLI prints a JSON blob that includes `apiKey`. Copy it immediately; most ADK
+	deployments only show the secret once.
+4. **Store the secret safely.** Paste the key into `data/content/.sparkle.env` (or
+	your secrets manager) and keep it out of version control. Example:
+
+	```bash
+	echo "ADK_API_KEY=sk-live-..." >> data/content/.sparkle.env
+	```
+5. **Load it before publishing.** Source the env file or export the variable in CI:
+
+	```bash
+	source data/content/.sparkle.env
+	export ADK_PROJECT=sparkle-motion
+	```
+
+If you do not have console access, file a request with the ADK owners—they are the
+only ones who can mint keys for the control plane.
+
 Set those in your environment when running ADK integration tests or using
 `google.adk`-powered features.
 

@@ -1,0 +1,29 @@
+{
+  "status": "success",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "request_id": "__REQUEST_ID__",
+  "metadata": {
+    "engine": "wan_fixture",
+    "engine_version": "fixtures/v1",
+    "prompt": "A serene lake under moonlight",
+    "num_frames": 32,
+    "fps": 16,
+    "width": 512,
+    "height": 512,
+    "seed": 12345,
+    "chunk_index": null,
+    "chunk_count": null,
+    "options": {
+      "guidance_scale": 4.5,
+      "fixture_only": true
+    },
+    "plan_id": "plan-789",
+    "shot_id": "shot-3",
+    "duration_s": 2.0,
+    "frame_count": 32,
+    "request_id": "__REQUEST_ID__",
+    "local_path": "__LOCAL_PATH__",
+    "step_id": "step-002",
+    "run_id": "run-001"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "status": "success",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "request_id": "__REQUEST_ID__",
+  "metadata": {
+    "engine": "wav2lip_fixture",
+    "artifact_digest": "88f0b7a158b94c44",
+    "face_video": "__FACE_PATH__",
+    "audio": "__AUDIO_PATH__",
+    "options": {},
+    "mode": "fixture",
+    "duration_s": "__DURATION__",
+    "plan_id": "plan-123",
+    "run_id": "run-456",
+    "step_id": "step-1",
+    "movie_title": "Test Film",
+    "request_id": "__REQUEST_ID__",
+    "tool": "lipsync_wav2lip"
+  },
+  "logs": {
+    "stdout": "fixture output",
+    "stderr": "",
+    "mode": "fixture",
+    "note": "fixture output; enable SMOKE_LIPSYNC for real inference"
+  }
+}

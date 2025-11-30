@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 import pytest
 from fastapi.testclient import TestClient
 
+from sparkle_motion.function_tools.lipsync_wav2lip.models import LipsyncWav2LipRequest, LipsyncWav2LipResponse
+
 
 mod = import_module("sparkle_motion.function_tools.lipsync_wav2lip.entrypoint")
-RequestModel = getattr(mod, "RequestModel")
 make_app = getattr(mod, "make_app")
 
 if TYPE_CHECKING:
@@ -29,11 +30,11 @@ def test_request_model_requires_face_and_audio():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        RequestModel()
+        LipsyncWav2LipRequest()
     with pytest.raises(ValidationError):
-        RequestModel(face={"data_b64": base64.b64encode(b"face").decode("ascii")})
+        LipsyncWav2LipRequest(face={"data_b64": base64.b64encode(b"face").decode("ascii")})
     with pytest.raises(ValidationError):
-        RequestModel(audio={"data_b64": base64.b64encode(b"audio").decode("ascii")})
+        LipsyncWav2LipRequest(audio={"data_b64": base64.b64encode(b"audio").decode("ascii")})
 
 
 def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path, deterministic_media_assets: MediaAssets):
@@ -49,3 +50,6 @@ def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path, deter
     j = resp.json()
     assert j.get("status") == "success"
     assert j.get("artifact_uri", "").startswith("file://")
+
+    envelope = LipsyncWav2LipResponse(**j)
+    assert envelope.logs

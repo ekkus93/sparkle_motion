@@ -10,7 +10,7 @@ def _reload_adk_factory(monkeypatch, *, fixture_mode: bool) -> object:
     if fixture_mode:
         monkeypatch.setenv("ADK_USE_FIXTURE", "1")
     else:
-        monkeypatch.delenv("ADK_USE_FIXTURE", raising=False)
+        monkeypatch.setenv("ADK_USE_FIXTURE", "0")
 
     ah = importlib.reload(importlib.import_module("sparkle_motion.adk_helpers"))
     if fixture_mode and hasattr(ah, "_InMemoryMemoryService"):

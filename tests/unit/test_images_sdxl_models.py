@@ -1,28 +1,22 @@
 import pytest
-
 from fastapi.testclient import TestClient
 
-from importlib import import_module
-
-
-mod = import_module("sparkle_motion.function_tools.images_sdxl.entrypoint")
-RequestModel = getattr(mod, "RequestModel")
-ResponseModel = getattr(mod, "ResponseModel")
-make_app = getattr(mod, "make_app")
+from sparkle_motion.function_tools.images_sdxl.entrypoint import make_app
+from sparkle_motion.function_tools.images_sdxl.models import ImagesSDXLRequest
 
 
 def test_request_model_requires_prompt() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        RequestModel()
+        ImagesSDXLRequest()
 
 
 def test_request_model_enforces_dimensions() -> None:
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        RequestModel(prompt="ok", width=65, height=64)
+        ImagesSDXLRequest(prompt="ok", width=65, height=64)
 
 
 def test_invoke_returns_artifact_list(monkeypatch, tmp_path):

@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "request_id": "__REQUEST_ID__",
+  "metadata": {
+    "engine": "fixture",
+    "engine_version": "assemble_ffmpeg_fixture_v1",
+    "clip_count": 1,
+    "audio_attached": false,
+    "digest": "__DIGEST__",
+    "options": {
+      "video_codec": "libx264",
+      "audio_codec": "aac",
+      "pix_fmt": "yuv420p",
+      "crf": 18,
+      "preset": "veryslow",
+      "audio_bitrate": "192k",
+      "timeout_s": 120.0,
+      "retries": 0,
+      "fixture_only": true
+    },
+    "plan_id": "plan-123",
+    "request_id": "__REQUEST_ID__",
+    "local_path": "__LOCAL_PATH__",
+    "duration_s": 0.0
+  }
+}

@@ -8,41 +8,25 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, Literal, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 
 from sparkle_motion import adk_factory, adk_helpers, gpu_utils, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion.function_tools.tts_chatterbox import adapter as chatterbox_adapter
+from sparkle_motion.utils.env import fixture_mode_enabled
+from sparkle_motion.function_tools.tts_chatterbox.models import TTSChatterboxRequest, TTSChatterboxResponse
 
 LOG = logging.getLogger("tts_chatterbox.entrypoint")
 LOG.setLevel(logging.INFO)
 
-
-class RequestModel(BaseModel):
-    prompt: Optional[str] = None
-    text: Optional[str] = None
-    voice_id: str = "emma"
-    language: Optional[str] = None
-    sample_rate: int = 24000
-    bit_depth: int = 16
-    seed: Optional[int] = None
-    metadata: Dict[str, Any] | None = None
-    plan_id: Optional[str] = None
-    step_id: Optional[str] = None
-    run_id: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _ensure_prompt_or_text(self) -> "RequestModel":
-        text = (self.text or "").strip()
-        prompt = (self.prompt or "").strip()
-        if not text and not prompt:
-            raise ValueError("Provide either 'text' or 'prompt'")
-        return self
+# Preserve historical attribute names so shared entrypoint tests keep passing.
+RequestModel = TTSChatterboxRequest
+ResponseModel = TTSChatterboxResponse
 
 
 def _serialize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -136,7 +120,7 @@ def make_app() -> FastAPI:
         return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.post("/invoke")
-    def invoke(req: RequestModel) -> dict[str, Any]:
+    def invoke(req: TTSChatterboxRequest) -> dict[str, Any]:
         if not getattr(app.state, "ready", False):
             try:
                 delay = float(os.environ.get("MODEL_LOAD_DELAY", "0"))
@@ -181,7 +165,7 @@ def make_app() -> FastAPI:
             except Exception:
                 pass
 
-            resp = ResponseModel(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
+            resp = TTSChatterboxResponse(status="success", artifact_uri=artifact_uri, request_id=request_id, metadata=metadata)
             return resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
         finally:
             with app.state.lock:
@@ -203,7 +187,7 @@ def _artifacts_dir() -> Path:
     return base
 
 
-def _run_synthesis(req: RequestModel) -> chatterbox_adapter.SynthesisResult:
+def _run_synthesis(req: TTSChatterboxRequest) -> chatterbox_adapter.SynthesisResult:
     text = (req.text or req.prompt or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="'text' or 'prompt' is required")
@@ -227,7 +211,7 @@ def _run_synthesis(req: RequestModel) -> chatterbox_adapter.SynthesisResult:
         raise HTTPException(status_code=500, detail="synthesis failed") from exc
 
 
-def _build_metadata(req: RequestModel, result: chatterbox_adapter.SynthesisResult, request_id: str) -> Dict[str, Any]:
+def _build_metadata(req: TTSChatterboxRequest, result: chatterbox_adapter.SynthesisResult, request_id: str) -> Dict[str, Any]:
     engine_meta = dict(result.metadata)
     metadata: Dict[str, Any] = {
         "request_id": request_id,
@@ -254,6 +238,6 @@ def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
     except Exception:
         artifact = {"uri": f"file://{path}", "metadata": metadata}
     uri = artifact.get("uri") or f"file://{path}"  # type: ignore[arg-type]
-    if os.environ.get("ADK_USE_FIXTURE", "0").strip().lower() in {"1", "true", "yes", "on"} and uri.startswith("artifact://"):
+    if fixture_mode_enabled() and uri.startswith("artifact://"):
         return f"file://{path}"
     return uri

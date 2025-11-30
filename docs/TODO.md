@@ -135,10 +135,11 @@
    - [ ] For the final deliverable helper, cover both local-path and remote-download paths: trigger ADK download fallback when `local_path` is absent, display the inline video, verify QA warnings when `qa_skipped` is true, and test the "resume from qa_publish" action when `video_final` is missing.
 
 #### Pipeline JSON contracts
-- [ ] Promote the documented request/response envelopes for
+- [x] Promote the documented request/response envelopes for
   `script_agent`/`production_agent` into canonical schema artifacts (MoviePlan,
   RunContext, StageManifest) and enforce them directly inside the FastAPI
-  entrypoints.
+  entrypoints. (Schemas now exported via `scripts/export_schemas.py`, stored
+  under `schemas/*.schema.json`, and the entrypoints/tests validate those models.)
 - [ ] For each FunctionTool (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
   `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`), implement typed
   request/response dataclasses (or Pydantic models) that match

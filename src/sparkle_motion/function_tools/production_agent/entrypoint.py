@@ -7,11 +7,10 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Mapping, Optional
 from urllib.parse import urlparse
+from typing import Any, Dict, List, Mapping, Optional, Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, model_validator
 
 from sparkle_motion import observability, telemetry, schema_registry
 from sparkle_motion.queue_runner import QueueTicket, enqueue_plan
@@ -25,49 +24,19 @@ from sparkle_motion.production_agent import (
 )
 from sparkle_motion.run_registry import ArtifactEntry, RunHalted, get_run_registry
 from sparkle_motion.schemas import MoviePlan, RunContext, StageManifest
+from sparkle_motion.function_tools.production_agent.models import (
+    ControlRequest,
+    ProductionAgentRequest,
+    ProductionAgentResponse,
+    QueueInfo,
+)
 
 LOG = logging.getLogger("production_agent.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
-class RequestModel(BaseModel):
-    plan: Optional[MoviePlan] = None
-    plan_uri: Optional[str] = Field(default=None, description="Optional path/URI to a MoviePlan JSON artifact")
-    mode: Literal["dry", "run"] = "dry"
-    qa_mode: Literal["full", "skip"] = "full"
-
-    @model_validator(mode="after")
-    def _ensure_plan_source(self) -> "RequestModel":
-        if not self.plan and not self.plan_uri:
-            raise ValueError("Provide either 'plan' or 'plan_uri'")
-        return self
-
-
-class QueueInfo(BaseModel):
-    ticket_id: str
-    plan_id: str
-    plan_title: str
-    step_id: str
-    eta_seconds: float
-    eta_epoch_s: float
-    attempt: int
-    max_attempts: int
-    message: str
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error", "queued", "stopped"]
-    request_id: str
-    run_id: str
-    artifact_uris: List[str] = Field(default_factory=list)
-    steps: List[Dict[str, Any]] = Field(default_factory=list)
-    simulation_report: Optional[Dict[str, Any]] = None
-    queue: Optional[QueueInfo] = None
-    schema_uri: Optional[str] = None
-
-
-class ControlRequest(BaseModel):
-    run_id: str
+RequestModel = ProductionAgentRequest
+ResponseModel = ProductionAgentResponse
 
 
 app = FastAPI(title="production_agent Entrypoint")

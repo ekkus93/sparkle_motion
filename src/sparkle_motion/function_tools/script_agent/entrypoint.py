@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
 import re
 import os
 import json
@@ -11,40 +10,27 @@ import asyncio
 from datetime import datetime, timezone
 from threading import Lock
 from contextlib import asynccontextmanager
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, model_validator
 
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion import adk_helpers
 from sparkle_motion import adk_factory, observability, telemetry, script_agent, schema_registry
+from sparkle_motion.utils.env import fixture_mode_enabled
 from sparkle_motion.schemas import MoviePlan
+from sparkle_motion.function_tools.script_agent.models import ScriptAgentRequest, ScriptAgentResponse
 
 LOG = logging.getLogger("script_agent.entrypoint")
 LOG.setLevel(logging.INFO)
 
 
-class RequestModel(BaseModel):
-    """Request schema for ScriptAgent with conservative validation.
-
-    At least one of `prompt`, `title`, or `shots` must be provided.
-    """
-    title: Optional[str] = None
-    shots: Optional[list[dict]] = None
-    prompt: Optional[str] = None
-
-    @model_validator(mode="after")
-    def at_least_one(self):
-        if not (self.prompt or self.title or self.shots):
-            raise ValueError("empty request: provide prompt, title, or shots")
-        return self
+RequestModel = ScriptAgentRequest
+ResponseModel = ScriptAgentResponse
 
 
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    artifact_uri: Optional[str] = None
-    request_id: str
-    schema_uri: Optional[str] = None
+def _fixture_ready_override() -> bool:
+    return fixture_mode_enabled() or os.environ.get("DETERMINISTIC", "0") == "1"
 
 
 def make_app() -> FastAPI:
@@ -55,13 +41,14 @@ def make_app() -> FastAPI:
         app.state.shutting_down = False
         app.state.inflight = 0
         app.state.lock = Lock()
-        try:
-            delay = float(os.environ.get("MODEL_LOAD_DELAY", "0"))
-        except Exception:
-            delay = 0.0
-        if delay > 0:
-            LOG.info("Warmup: delay=%s", delay)
-            await asyncio.sleep(delay)
+        if not fixture_mode_enabled():
+            try:
+                delay = float(os.environ.get("MODEL_LOAD_DELAY", "0"))
+            except Exception:
+                delay = 0.0
+            if delay > 0:
+                LOG.info("Warmup: delay=%s", delay)
+                await asyncio.sleep(delay)
 
         # Eagerly construct per-tool agent (fixture mode returns dummy agent)
         try:
@@ -103,10 +90,7 @@ def make_app() -> FastAPI:
 
     app = FastAPI(title="script_agent Entrypoint", lifespan=lifespan)
     app.state.lock = Lock()
-    # During fixture/test runs we prefer deterministic startup.
-    # If `ADK_USE_FIXTURE=1` we mark ready immediately so tests don't
-    # race on the lifespan startup timing.
-    app.state.ready = os.environ.get("ADK_USE_FIXTURE", "1") != "0"
+    app.state.ready = False
     app.state.shutting_down = False
     app.state.inflight = 0
 
@@ -118,10 +102,19 @@ def make_app() -> FastAPI:
 
     @app.get("/ready")
     def ready() -> dict[str, Any]:
-        return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
+        ready_flag = bool(getattr(app.state, "ready", False))
+        shutting_down = bool(getattr(app.state, "shutting_down", False))
+        if _fixture_ready_override():
+            ready_flag = True
+            shutting_down = False
+        return {"ready": ready_flag, "shutting_down": shutting_down}
 
     @app.post("/invoke")
     def invoke(req: RequestModel) -> dict[str, Any]:
+        if _fixture_ready_override():
+            app.state.ready = True
+            app.state.shutting_down = False
+
         if not getattr(app.state, "ready", False):
             raise HTTPException(status_code=503, detail="tool not ready")
         if getattr(app.state, "shutting_down", False):

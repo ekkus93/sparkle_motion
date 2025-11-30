@@ -1,0 +1,6 @@
+{
+  "status": "success",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "request_id": "__REQUEST_ID__",
+  "schema_uri": "artifact://sparkle-motion/schemas/movie_plan/v1"
+}

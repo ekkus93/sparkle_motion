@@ -8,64 +8,29 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import ValidationError
 
 from sparkle_motion import adk_factory, adk_helpers, gpu_utils, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion.function_tools.images_sdxl import adapter
+from sparkle_motion.function_tools.images_sdxl.models import (
+    ImagesSDXLArtifact,
+    ImagesSDXLRequest,
+    ImagesSDXLResponse,
+)
+from sparkle_motion.utils.env import fixture_mode_enabled
 
 LOG = logging.getLogger("images_sdxl.entrypoint")
 LOG.setLevel(logging.INFO)
 
-
-class ArtifactPayload(BaseModel):
-    artifact_uri: str
-    metadata: Dict[str, Any]
-
-
-class RequestModel(BaseModel):
-    prompt: str = Field(min_length=1)
-    negative_prompt: str | None = None
-    prompt_2: str | None = None
-    negative_prompt_2: str | None = None
-    metadata: Dict[str, Any] | None = None
-    plan_id: str | None = None
-    run_id: str | None = None
-    batch_start: int = Field(default=0, ge=0)
-    count: int = Field(default=1, ge=1, le=8)
-    seed: int | None = None
-    width: int = Field(default=1024, ge=64, le=2048)
-    height: int = Field(default=1024, ge=64, le=2048)
-    steps: int = Field(default=30, ge=1, le=200)
-    cfg_scale: float = Field(default=7.5, ge=0.0, le=30.0)
-    sampler: str = Field(default="ddim", min_length=1)
-    denoising_start: float | None = Field(default=None, ge=0.0, le=1.0)
-    denoising_end: float | None = Field(default=None, ge=0.0, le=1.0)
-
-    @model_validator(mode="after")
-    def _validate_prompt_and_dims(self) -> "RequestModel":
-        prompt = self.prompt.strip()
-        if not prompt:
-            raise ValueError("prompt must be non-empty")
-        self.prompt = prompt
-        if self.width % 8 or self.height % 8:
-            raise ValueError("width and height must be divisible by 8")
-        if self.denoising_start is not None and self.denoising_end is not None:
-            if self.denoising_end <= self.denoising_start:
-                raise ValueError("denoising_end must be greater than denoising_start")
-        return self
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    request_id: str
-    artifact_uri: str | None
-    artifacts: List[ArtifactPayload]
+ArtifactPayload = ImagesSDXLArtifact
+RequestModel = ImagesSDXLRequest
+ResponseModel = ImagesSDXLResponse
 
 
 def make_app() -> FastAPI:
@@ -144,7 +109,7 @@ def make_app() -> FastAPI:
     @app.post("/invoke")
     def invoke(req: RequestModel) -> dict[str, Any]:
         # In test/fixture mode, or deterministic runs, consider the tool ready
-        if os.environ.get("ADK_USE_FIXTURE", "0") == "1" or os.environ.get("DETERMINISTIC", "0") == "1":
+        if fixture_mode_enabled() or os.environ.get("DETERMINISTIC", "0") == "1":
             app.state.ready = True
             # When running under test fixtures, ensure we are not marked shutting down
             app.state.shutting_down = False
@@ -225,7 +190,7 @@ def _render_and_publish(req: RequestModel, *, request_id: str) -> List[ArtifactP
         metadata = _build_metadata(req, result.metadata, request_id=request_id, index=req.batch_start + idx)
         artifact_ref = _publish_image(result.path, metadata=metadata, run_id=req.run_id)
         uri = artifact_ref["uri"]
-        if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and uri.startswith("artifact://"):
+        if fixture_mode_enabled() and uri.startswith("artifact://"):
             uri = f"file://{result.path.resolve()}"
         payload = ArtifactPayload(artifact_uri=uri, metadata=dict(artifact_ref.get("metadata", metadata)))
         artifacts.append(payload)

@@ -1,0 +1,38 @@
+{
+  "status": "success",
+  "request_id": "__REQUEST_ID__",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "artifacts": [
+    {
+      "artifact_uri": "__ARTIFACT_URI__",
+      "metadata": {
+        "plan_id": "plan-123",
+        "engine": "fixture",
+        "engine_version": "images_sdxl_fixture_v1",
+        "prompt": "cinematic dusk cityscape",
+        "negative_prompt": null,
+        "seed": 42,
+        "index": 0,
+        "width": 1024,
+        "height": 1024,
+        "sampler": "ddim",
+        "steps": 30,
+        "cfg_scale": 7.5,
+        "phash": "9395dd34a2195dd1",
+        "request_id": "__REQUEST_ID__",
+        "run_id": "run-456",
+        "count": 1,
+        "batch_start": 0,
+        "tool": "images_sdxl",
+        "artifact_type": "image_frame",
+        "media_type": "image/png",
+        "size_bytes": 3147775,
+        "modified_ts": "__MODIFIED_TS__",
+        "source_path": "__SOURCE_PATH__",
+        "checksum_sha256": "555ebdfcf3acdfebc4c7de40d594b0a14d3fcc2afcbdf0386f2bf7f218fd26b5",
+        "fixture_mode": true,
+        "local_path": "__LOCAL_PATH__"
+      }
+    }
+  ]
+}

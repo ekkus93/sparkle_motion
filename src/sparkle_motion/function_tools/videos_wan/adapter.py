@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional
 
 from sparkle_motion import gpu_utils
+from sparkle_motion.utils.env import fixture_mode_enabled
 
 LOG = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def should_use_real_engine(
 		return False
 	if force_fixture is True:
 		return False
-	if _is_truthy(data.get("ADK_USE_FIXTURE")):
+	if fixture_mode_enabled(data, default=False):
 		return False
 	flags = ("SMOKE_VIDEOS", "SMOKE_ADAPTERS", "SMOKE_ADK")
 	return any(_is_truthy(data.get(flag)) for flag in flags)

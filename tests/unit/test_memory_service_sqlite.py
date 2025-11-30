@@ -7,7 +7,7 @@ from sparkle_motion import adk_helpers
 @pytest.fixture(autouse=True)
 def unset_fixture_env(monkeypatch):
     # Ensure we don't pick the in-memory fixture implementation
-    monkeypatch.delenv("ADK_USE_FIXTURE", raising=False)
+    monkeypatch.setenv("ADK_USE_FIXTURE", "0")
     yield
 
 

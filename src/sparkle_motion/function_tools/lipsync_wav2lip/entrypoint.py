@@ -12,77 +12,30 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from sparkle_motion import adk_factory, adk_helpers, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion.function_tools.lipsync_wav2lip import adapter
 from sparkle_motion.function_tools.lipsync_wav2lip.adapter import LipsyncError
+from sparkle_motion.function_tools.lipsync_wav2lip.models import (
+    LipsyncMediaPayload,
+    LipsyncWav2LipOptions,
+    LipsyncWav2LipRequest,
+    LipsyncWav2LipResponse,
+)
+from sparkle_motion.utils.env import fixture_mode_enabled
 
 LOG = logging.getLogger("lipsync_wav2lip.entrypoint")
 LOG.setLevel(logging.INFO)
 
-
-class MediaPayload(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    uri: str | None = None
-    path: str | None = None
-    data_base64: str | None = Field(default=None, alias="data_b64")
-
-    @model_validator(mode="after")
-    def _require_source(self) -> "MediaPayload":
-        if not (self.uri or self.path or self.data_base64):
-            raise ValueError("uri/path or data_b64 required")
-        return self
-
-
-class RequestOptions(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    fixture_only: bool | None = None
-    checkpoint_path: str | None = None
-    face_det_checkpoint: str | None = None
-    pads: list[int] | tuple[int, int, int, int] | None = None
-    resize_factor: int | None = Field(default=None, ge=1, le=8)
-    nosmooth: bool | None = None
-    crop: list[int] | tuple[int, int, int, int] | None = None
-    fps: float | None = Field(default=None, gt=0)
-    timeout_s: int | None = Field(default=None, ge=30, le=3600)
-    retries: int | None = Field(default=None, ge=0, le=3)
-    repo_path: str | None = None
-    script_path: str | None = None
-    python_bin: str | None = None
-    fixture_seed: int | None = None
-    allow_fixture_fallback: bool | None = True
-
-
-class RequestModel(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    face: MediaPayload
-    audio: MediaPayload
-    plan_id: str | None = None
-    run_id: str | None = None
-    step_id: str | None = None
-    movie_title: str | None = None
-    metadata: Dict[str, Any] | None = None
-    out_basename: str | None = None
-    options: RequestOptions | None = None
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    artifact_uri: str | None
-    request_id: str
-    metadata: Dict[str, Any]
-    logs: Dict[str, Any]
+# Keep legacy attribute names so shared entrypoint tests continue to reflect import contracts.
+RequestModel = LipsyncWav2LipRequest
+ResponseModel = LipsyncWav2LipResponse
 
 
 def make_app() -> FastAPI:
@@ -158,7 +111,7 @@ def make_app() -> FastAPI:
         return {"ready": bool(getattr(app.state, "ready", False)), "shutting_down": bool(getattr(app.state, "shutting_down", False))}
 
     @app.post("/invoke")
-    def invoke(req: RequestModel) -> dict[str, Any]:
+    def invoke(req: LipsyncWav2LipRequest) -> dict[str, Any]:
         _ensure_ready(app)
         request_id = uuid.uuid4().hex
         LOG.info("invoke.received", extra={"request_id": request_id})
@@ -179,7 +132,7 @@ def make_app() -> FastAPI:
 app = make_app()
 
 
-def _handle_invoke(req: RequestModel, *, request_id: str) -> dict[str, Any]:
+def _handle_invoke(req: LipsyncWav2LipRequest, *, request_id: str) -> dict[str, Any]:
     adapter_opts = _build_adapter_opts(req)
     target_path = _target_path(req, request_id=request_id)
     with tempfile.TemporaryDirectory(prefix="lipsync-") as tmp_dir:
@@ -198,10 +151,10 @@ def _handle_invoke(req: RequestModel, *, request_id: str) -> dict[str, Any]:
     metadata = _build_metadata(req, result.metadata, request_id=request_id)
     artifact_ref = _publish_artifact(result.path, metadata=metadata, run_id=req.run_id)
     artifact_uri = artifact_ref["uri"]
-    if os.environ.get("ADK_USE_FIXTURE", "0") == "1" and artifact_uri.startswith("artifact://"):
+    if fixture_mode_enabled() and artifact_uri.startswith("artifact://"):
         artifact_uri = f"file://{result.path.resolve()}"
 
-    response = ResponseModel(
+    response = LipsyncWav2LipResponse(
         status="success",
         artifact_uri=artifact_uri,
         request_id=request_id,
@@ -217,7 +170,7 @@ def _ensure_ready(app: FastAPI) -> None:
     ready = getattr(app.state, "ready", False)
     if ready:
         return
-    if os.environ.get("ADK_USE_FIXTURE", "0") == "1" or os.environ.get("DETERMINISTIC", "0") == "1":
+    if fixture_mode_enabled() or os.environ.get("DETERMINISTIC", "0") == "1":
         app.state.ready = True
         app.state.shutting_down = False
         return
@@ -245,7 +198,7 @@ def _emit_event(name: str, request_id: str, *, extra: Optional[Dict[str, Any]] =
         pass
 
 
-def _materialize_media(payload: MediaPayload, *, scratch: Path, label: str) -> Path:
+def _materialize_media(payload: LipsyncMediaPayload, *, scratch: Path, label: str) -> Path:
     if payload.data_base64:
         data = _decode_b64(payload.data_base64, label)
         dest = scratch / f"{label}{_guess_extension(payload)}"
@@ -262,7 +215,7 @@ def _materialize_media(payload: MediaPayload, *, scratch: Path, label: str) -> P
     raise HTTPException(status_code=400, detail=f"{label} unsupported uri scheme {parsed.scheme}")
 
 
-def _guess_extension(payload: MediaPayload) -> str:
+def _guess_extension(payload: LipsyncMediaPayload) -> str:
     if payload.uri:
         return Path(urlparse(payload.uri).path).suffix or ".bin"
     if payload.path:
@@ -277,7 +230,7 @@ def _decode_b64(value: str, label: str) -> bytes:
         raise HTTPException(status_code=400, detail=f"{label} data_b64 invalid") from exc
 
 
-def _target_path(req: RequestModel, *, request_id: str) -> Path:
+def _target_path(req: LipsyncWav2LipRequest, *, request_id: str) -> Path:
     base = Path(os.environ.get("ARTIFACTS_DIR", Path.cwd() / "artifacts"))
     dest = base / "lipsync_wav2lip"
     dest.mkdir(parents=True, exist_ok=True)
@@ -292,14 +245,14 @@ def _slugify(value: str) -> str:
     return cleaned[:80] or "artifact"
 
 
-def _build_adapter_opts(req: RequestModel) -> Dict[str, Any]:
+def _build_adapter_opts(req: LipsyncWav2LipRequest) -> Dict[str, Any]:
     if req.options is None:
         return {}
     opts = req.options.model_dump(exclude_none=True)
     return opts
 
 
-def _build_metadata(req: RequestModel, adapter_meta: Dict[str, Any], *, request_id: str) -> Dict[str, Any]:
+def _build_metadata(req: LipsyncWav2LipRequest, adapter_meta: Dict[str, Any], *, request_id: str) -> Dict[str, Any]:
     metadata = dict(req.metadata or {})
     metadata.update(adapter_meta)
     metadata.setdefault("plan_id", req.plan_id)

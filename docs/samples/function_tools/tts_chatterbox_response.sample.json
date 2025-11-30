@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "artifact_uri": "__ARTIFACT_URI__",
+  "request_id": "__REQUEST_ID__",
+  "metadata": {
+    "request_id": "__REQUEST_ID__",
+    "voice_id": "emma",
+    "language": "en-US",
+    "duration_s": 1.333,
+    "sample_rate": 24000,
+    "bit_depth": 16,
+    "watermarked": true,
+    "engine": "fixture",
+    "engine_metadata": {
+      "engine": "fixture",
+      "voice_id": "emma",
+      "language": "en-US",
+      "seed": "__SEED__",
+      "text_length": 24,
+      "mode": "fixture"
+    },
+    "local_path": "__LOCAL_PATH__",
+    "plan_id": "plan-123",
+    "step_id": "step-1",
+    "run_id": "run-456"
+  }
+}

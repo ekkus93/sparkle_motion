@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Sequence
 
+from sparkle_motion.utils.env import fixture_mode_enabled
+
 LOG = logging.getLogger(__name__)
 TRUTHY = {"1", "true", "yes", "on"}
 
@@ -74,7 +76,7 @@ class CommandTimeoutError(CommandError):
 
 def should_use_real_engine(env: Mapping[str, str] | None = None) -> bool:
     data = env or os.environ
-    if _is_truthy(data.get("ADK_USE_FIXTURE", "0")):
+    if fixture_mode_enabled(data, default=False):
         return False
     if _is_truthy(data.get("ASSEMBLE_FFMPEG_FIXTURE_ONLY", "0")):
         return False

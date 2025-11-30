@@ -19,6 +19,8 @@ from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple
 
 from typing_extensions import Literal, TypedDict
 
+from sparkle_motion.utils.env import fixture_mode_enabled
+
 from . import telemetry, schema_registry
 
 
@@ -343,7 +345,7 @@ def publish_artifact(
 
     resolved_run = run_id or _generate_run_id()
     metadata_dict = _build_artifact_metadata(path=path, artifact_type=artifact_type, media_type=media_type, metadata=metadata)
-    metadata_dict.setdefault("fixture_mode", os.environ.get("ADK_USE_FIXTURE") == "1")
+    metadata_dict.setdefault("fixture_mode", fixture_mode_enabled())
 
     backend = _current_backend().publish
     if backend:
@@ -365,7 +367,7 @@ def publish_artifact(
         _emit_publish_completed(result, source="backend")
         return result
 
-    fixture_mode = os.environ.get("ADK_USE_FIXTURE") == "1"
+    fixture_mode = fixture_mode_enabled()
 
     if dry_run and not fixture_mode:
         uri = f"dry-run://artifact/{artifact_type}/{uuid.uuid4().hex[:8]}"
@@ -549,7 +551,7 @@ def request_human_input(
         )
         return task_id
 
-    fixture_mode = os.environ.get("ADK_USE_FIXTURE") == "1"
+    fixture_mode = fixture_mode_enabled()
     if fixture_mode or dry_run:
         task_id = f"fixture-review-{uuid.uuid4().hex[:8]}"
         record = {"task_id": task_id, **payload}
@@ -1115,7 +1117,7 @@ def get_memory_service() -> object:
             raise RuntimeError("Backend memory service factory returned None")
         return svc
 
-    if os.environ.get("ADK_USE_FIXTURE") == "1":
+    if fixture_mode_enabled():
         # reuse a single in-memory instance so multiple tools in the same
         # process share session state during fixture-mode tests
         global _FIXTURE_MEMORY_SERVICE
@@ -1169,9 +1171,6 @@ def _normalize_timestamp(ts: Optional[datetime]) -> int:
     return int(dt.timestamp())
 
 
-def _fixture_mode_enabled() -> bool:
-    return os.environ.get("ADK_USE_FIXTURE") == "1"
-
 
 def write_memory_event(
     *,
@@ -1185,7 +1184,7 @@ def write_memory_event(
     if not event_type:
         raise ValueError("event_type is required")
 
-    fixture_mode = _fixture_mode_enabled()
+    fixture_mode = fixture_mode_enabled()
     normalized_run_id = run_id or os.environ.get("SPARKLE_RUN_ID") or "unknown"
     payload_dict = dict(payload or {})
     timestamp = _normalize_timestamp(ts)

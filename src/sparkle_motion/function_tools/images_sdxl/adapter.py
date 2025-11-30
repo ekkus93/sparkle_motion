@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from sparkle_motion import gpu_utils
 from sparkle_motion.utils.dedupe import compute_phash
+from sparkle_motion.utils.env import fixture_mode_enabled
 
 LOG = logging.getLogger(__name__)
 TRUTHY = {"1", "true", "yes", "on"}
@@ -29,7 +30,7 @@ class ImageRenderResult:
 
 def should_use_real_engine(env: Optional[Mapping[str, str]] = None) -> bool:
     data = env or os.environ
-    if data.get("ADK_USE_FIXTURE", "0").strip().lower() in TRUTHY:
+    if fixture_mode_enabled(data, default=False):
         return False
     for key in ("SMOKE_IMAGES", "SMOKE_ADAPTERS"):
         if data.get(key, "0").strip().lower() in TRUTHY:

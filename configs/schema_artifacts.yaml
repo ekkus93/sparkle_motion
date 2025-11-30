@@ -21,7 +21,20 @@ schemas:
   stage_manifest:
     uri: artifact://sparkle-motion/schemas/stage_manifest/v1
     local_path: artifacts/schemas/StageManifest.schema.json
-  # Duplicate capitalized entries removed; canonical snake_case entries preserved.
+  AssetRefs:
+    uri: artifact://sparkle-motion/schemas/AssetRefs/v6
+  Checkpoint:
+    uri: artifact://sparkle-motion/schemas/Checkpoint/v6
+  MoviePlan:
+    uri: artifact://sparkle-motion/schemas/MoviePlan/v6
+  QAReport:
+    uri: artifact://sparkle-motion/schemas/QAReport/v6
+  RunContext:
+    uri: artifact://sparkle-motion/schemas/RunContext/v2
+  StageEvent:
+    uri: artifact://sparkle-motion/schemas/StageEvent/v6
+  StageManifest:
+    uri: artifact://sparkle-motion/schemas/StageManifest/v2
 qa_policy:
   uri: artifact://sparkle-motion/qa_policy/v1
   bundle_path: artifacts/qa_policy/qa_policy_v1.tar.gz

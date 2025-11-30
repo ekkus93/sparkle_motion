@@ -19,6 +19,8 @@ SCHEMA_TARGETS: SchemaMap = {
     "QAReport": (sm_schemas.QAReport, "Automated QA output"),
     "StageEvent": (sm_schemas.StageEvent, "Run manifest StageEvent entries"),
     "Checkpoint": (sm_schemas.Checkpoint, "Per-stage checkpoint payload"),
+    "RunContext": (sm_schemas.RunContext, "Materialized production context for ProductionAgent"),
+    "StageManifest": (sm_schemas.StageManifest, "Structured /artifacts manifest rows"),
 }
 
 

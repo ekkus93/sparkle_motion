@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import shutil
-import pytest
-from fastapi.testclient import TestClient
-from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
+from fastapi.testclient import TestClient
 
-mod = import_module("sparkle_motion.function_tools.assemble_ffmpeg.entrypoint")
-RequestModel = getattr(mod, "RequestModel")
-make_app = getattr(mod, "make_app")
+from sparkle_motion.function_tools.assemble_ffmpeg import entrypoint, models
+
+RequestModel = models.AssembleRequest
+OptionsModel = models.AssembleOptions
+ResponseModel = models.AssembleResponse
+make_app = entrypoint.make_app
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -21,6 +23,33 @@ def test_request_model_requires_clips():
 
     with pytest.raises(ValidationError):
         RequestModel(clips=[])
+
+
+def test_request_model_defaults_for_clip():
+    req = RequestModel(clips=[{"uri": "file:///tmp/fake.mp4"}])
+    clip = req.clips[0]
+    assert clip.start_s == 0.0
+    assert clip.end_s is None
+    assert clip.metadata is None
+    assert req.audio is None
+
+
+def test_options_model_validates_ranges():
+    from pydantic import ValidationError
+
+    opts = OptionsModel()
+    assert opts.video_codec == "libx264"
+    assert opts.timeout_s == 120.0
+
+    with pytest.raises(ValidationError):
+        OptionsModel(timeout_s=0)
+
+
+def test_response_model_round_trip(tmp_path):
+    payload = ResponseModel(status="success", artifact_uri="file:///tmp/out.mp4", request_id="abc", metadata={"local_path": str(tmp_path)})
+    dumped = payload.model_dump()
+    assert dumped["status"] == "success"
+    assert dumped["metadata"]["local_path"] == str(tmp_path)
 
 
 def test_invoke_returns_metadata(monkeypatch, tmp_path, deterministic_media_assets: MediaAssets):
