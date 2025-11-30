@@ -3,7 +3,45 @@
   "request_id": "__REQUEST_ID__",
   "run_id": "__RUN_ID__",
   "artifact_uris": [],
-  "steps": [],
+  "steps": [
+    {
+      "plan_id": "plan-entrypoint",
+      "step_id": "plan-entrypoint:plan_intake",
+      "step_type": "plan_intake",
+      "status": "succeeded",
+      "start_time": "__START_TIME__",
+      "end_time": "__END_TIME__",
+      "duration_s": "__DURATION_S__",
+      "attempts": 1,
+      "model_id": null,
+      "device": null,
+      "memory_hint_mb": null,
+      "logs_uri": null,
+      "artifact_uri": null,
+      "error_type": null,
+      "meta": {
+        "stage": "plan_intake",
+        "artifact_type": "plan_run_context",
+        "media_type": "application/json",
+        "base_image_map": {
+          "frame_000": "hero start",
+          "frame_001": "hero end"
+        },
+        "schema_uris": {
+          "movie_plan": {
+            "uri": "artifact://sparkle-motion/schemas/movie_plan/v1",
+            "sha256": "4e1a95583889c616d1983c9369cd3021f425d85844371e8d728cff271fac157c"
+          },
+          "run_context": {
+            "uri": "artifact://sparkle-motion/schemas/run_context/v1",
+            "sha256": "2912029bd874161c58b3b8e2891c4af752884b9fb1c466c8bc02db4ddec2e317"
+          }
+        },
+        "policy_decisions": [],
+        "stage_manifest_count": 0
+      }
+    }
+  ],
   "simulation_report": {
     "plan_id": "plan-entrypoint",
     "resource_summary": {

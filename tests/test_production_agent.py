@@ -220,18 +220,17 @@ def test_execute_plan_modes(tmp_path: Path, sample_plan: MoviePlan, monkeypatch:
         monkeypatch.setenv("SMOKE_LIPSYNC", "1")
     result = execute_plan(sample_plan, mode=mode)
     assert isinstance(result, ProductionResult)
+    assert result.steps, "expected plan_intake step to be recorded"
+    first_step = result.steps[0]
+    assert first_step.step_type == "plan_intake"
+    assert first_step.status == "succeeded"
+    base_map = first_step.meta.get("base_image_map")
+    assert isinstance(base_map, dict) and base_map, "plan_intake should record base image map"
     if mode == "dry":
-        assert result.steps == []
         assert result.simulation_report is not None
     else:
-        assert result.steps, "expected plan_intake step to be recorded"
         assert result.simulation_report is None
         assert "production_agent_final_movie" in result[0]["uri"]
-        first_step = result.steps[0]
-        assert first_step.step_type == "plan_intake"
-        assert first_step.status == "succeeded"
-        base_map = first_step.meta.get("base_image_map")
-        assert isinstance(base_map, dict) and base_map, "plan_intake should record base image map"
 
 
 def test_plan_intake_uses_base_image_local_path(

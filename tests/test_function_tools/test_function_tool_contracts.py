@@ -76,9 +76,13 @@ def test_production_agent_response_matches_sample(tmp_path: Path, monkeypatch: p
     data = resp.json()
 
     sample = _load_sample("production_agent_response.sample.json")
-    normalized = dict(data)
+    normalized = json.loads(json.dumps(data))
     normalized["request_id"] = "__REQUEST_ID__"
     normalized["run_id"] = "__RUN_ID__"
+    for step in normalized.get("steps") or []:
+        step["start_time"] = "__START_TIME__"
+        step["end_time"] = "__END_TIME__"
+        step["duration_s"] = "__DURATION_S__"
 
     assert normalized == sample
 

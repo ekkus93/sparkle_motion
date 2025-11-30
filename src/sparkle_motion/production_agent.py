@@ -221,59 +221,57 @@ def execute_plan(
     plan_id = _plan_identifier(model)
     run_id = run_id or observability.get_session_id()
 
+    def _execute_plan_intake_stage(output_dir: Optional[Path]) -> tuple[StepExecutionRecord, _PlanIntakeResult]:
+        holder: Dict[str, _PlanIntakeResult] = {}
+
+        def _plan_intake_action() -> StepResult:
+            result = _run_plan_intake(model, plan_id=plan_id, run_id=run_id, output_dir=output_dir)
+            holder["result"] = result
+            if output_dir is not None and result.run_context_path is None:
+                raise ProductionAgentError("plan intake failed to persist run_context")
+            meta: Dict[str, Any] = {
+                "artifact_type": "plan_run_context",
+                "media_type": "application/json",
+                "plan_uri": str(result.plan_path) if result.plan_path else None,
+                "dialogue_timeline_uri": result.run_context.dialogue_timeline_uri,
+                "base_image_map": dict(result.run_context.base_image_map),
+                "schema_uris": result.schema_meta,
+                "policy_decisions": list(result.policy_decisions),
+            }
+            meta = {key: value for key, value in meta.items() if value is not None}
+            _record_stage_manifest_entries(run_id=run_id, manifests=result.stage_manifests)
+            meta.setdefault("stage_manifest_count", len(result.stage_manifests))
+            artifact_path = result.run_context_path
+            artifact_uri = artifact_path.as_posix() if artifact_path else None
+            return StepResult(path=artifact_path, artifact_uri=artifact_uri, meta=meta)
+
+        plan_record, _ = _run_step(
+            plan_id=plan_id,
+            run_id=run_id,
+            step_id=f"{plan_id}:plan_intake",
+            step_type="plan_intake",
+            gate_flag=None,
+            cfg=cfg,
+            action=_plan_intake_action,
+            meta={"stage": "plan_intake"},
+            progress_callback=progress_callback,
+            pre_step_hook=pre_step_hook,
+        )
+        plan_result = holder.get("result")
+        if plan_result is None:
+            raise ProductionAgentError("plan intake stage did not return a result")
+        return plan_record, plan_result
+
     if mode == "dry":
-        plan_intake_result = _run_plan_intake(model, plan_id=plan_id, run_id=run_id, output_dir=None)
+        plan_record, plan_intake_result = _execute_plan_intake_stage(output_dir=None)
         report = _simulate_execution_report(model, plan_intake_result.policy_decisions)
-        _record_summary_event(run_id, plan_id, "dry", [], simulation=report)
-        return ProductionResult([], steps=[], simulation_report=report)
+        _record_summary_event(run_id, plan_id, "dry", [plan_record], simulation=report)
+        return ProductionResult([], steps=[plan_record], simulation_report=report)
 
     output_dir = _resolve_output_dir(run_id, plan_id)
-    records: List[StepExecutionRecord] = []
+    plan_record, plan_intake_result = _execute_plan_intake_stage(output_dir)
+    records: List[StepExecutionRecord] = [plan_record]
     shot_artifacts: List[_ShotArtifacts] = []
-
-    plan_intake_holder: Dict[str, _PlanIntakeResult] = {}
-
-    def _plan_intake_action() -> StepResult:
-        result = _run_plan_intake(model, plan_id=plan_id, run_id=run_id, output_dir=output_dir)
-        plan_intake_holder["result"] = result
-        if result.run_context_path is None:
-            raise ProductionAgentError("plan intake failed to persist run_context")
-        meta: Dict[str, Any] = {
-            "artifact_type": "plan_run_context",
-            "media_type": "application/json",
-            "plan_uri": str(result.plan_path) if result.plan_path else None,
-            "dialogue_timeline_uri": result.run_context.dialogue_timeline_uri,
-            "base_image_map": dict(result.run_context.base_image_map),
-            "schema_uris": result.schema_meta,
-            "policy_decisions": list(result.policy_decisions),
-        }
-        # Remove None to keep metadata JSON-friendly
-        meta = {key: value for key, value in meta.items() if value is not None}
-        _record_stage_manifest_entries(run_id=run_id, manifests=result.stage_manifests)
-        meta.setdefault("stage_manifest_count", len(result.stage_manifests))
-        return StepResult(
-            path=result.run_context_path,
-            artifact_uri=str(result.run_context_path),
-            meta=meta,
-        )
-
-    plan_record, _ = _run_step(
-        plan_id=plan_id,
-        run_id=run_id,
-        step_id=f"{plan_id}:plan_intake",
-        step_type="plan_intake",
-        gate_flag=None,
-        cfg=cfg,
-        action=_plan_intake_action,
-        meta={"stage": "plan_intake"},
-        progress_callback=progress_callback,
-        pre_step_hook=pre_step_hook,
-    )
-    records.append(plan_record)
-
-    plan_intake_result = plan_intake_holder.get("result")
-    if plan_intake_result is None:
-        raise ProductionAgentError("plan intake stage did not return a result")
 
     base_images = plan_intake_result.base_image_lookup
     base_image_assets = plan_intake_result.base_image_assets

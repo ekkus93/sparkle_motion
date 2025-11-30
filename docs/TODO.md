@@ -164,7 +164,7 @@
   continuity contract (reuse shot N end frame as shot N+1 start frame) before
   invoking downstream tools (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Start/end
   frame continuity, Stage table rows). *(Schemas hardened + continuity assets persisted 2025-11-30; production tests assert frame-by-frame handoff.)*
-- [ ] Add a plan-intake stage that loads schema hashes from
+- [x] Add a plan-intake stage that loads schema hashes from
   `schema_registry`, materializes a `RunContext`, enforces policy gates, and
   records StageEvent/StageManifest entries as described in
   `docs/ARCHITECTURE.md` §Production run observability + THE_PLAN.md §Stage
