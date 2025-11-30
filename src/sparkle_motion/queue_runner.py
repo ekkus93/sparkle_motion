@@ -15,6 +15,7 @@ from .production_agent import (
     StepRateLimitExceededError,
     execute_plan,
 )
+from .run_registry import get_run_registry
 
 QueueStatus = Literal["queued", "resuming", "completed", "failed", "abandoned"]
 
@@ -37,6 +38,7 @@ class QueueTicket:
     message: str
     rate_limit_meta: Dict[str, Any]
     mode: Literal["dry", "run"]
+    run_id: str
     plan_payload: Mapping[str, Any] = field(repr=False)
 
     def eta_seconds(self) -> float:
@@ -58,11 +60,12 @@ class QueueTicket:
             "message": self.message,
             "rate_limit": self.rate_limit_meta,
             "mode": self.mode,
+            "run_id": self.run_id,
         }
 
 
 Scheduler = Callable[[Callable[[], None]], None]
-_EXECUTOR: Callable[[Mapping[str, Any], Literal["dry", "run"]], ProductionResult] = execute_plan
+_EXECUTOR: Callable[..., ProductionResult] = execute_plan
 _SCHEDULER: Scheduler
 
 
@@ -79,7 +82,7 @@ def set_scheduler(scheduler: Scheduler) -> None:
     _SCHEDULER = scheduler
 
 
-def set_executor(executor: Callable[[Mapping[str, Any], Literal["dry", "run"]], ProductionResult]) -> None:
+def set_executor(executor: Callable[..., ProductionResult]) -> None:
     global _EXECUTOR
     _EXECUTOR = executor
 
@@ -97,6 +100,7 @@ def enqueue_plan(
     plan_payload: Mapping[str, Any],
     mode: Literal["dry", "run"],
     queued_record: StepExecutionRecord,
+    run_id: str,
     max_attempts: int = 3,
 ) -> QueueTicket:
     if mode != "run":  # dry runs should not queue
@@ -118,6 +122,7 @@ def enqueue_plan(
         message=_format_message(plan_dict, queued_record, eta_epoch_s),
         rate_limit_meta=dict(queued_record.meta.get("rate_limit", {})),
         mode=mode,
+        run_id=run_id,
         plan_payload=plan_dict,
     )
     _persist_ticket(ticket)
@@ -136,10 +141,19 @@ def _schedule_resume(ticket: QueueTicket) -> None:
 
 
 def _resume_ticket(ticket: QueueTicket) -> None:
+    registry = get_run_registry()
     _record_event("resuming", ticket)
     ticket.status = "resuming"
     try:
-        _EXECUTOR(ticket.plan_payload, ticket.mode)
+        progress_cb = lambda record: registry.record_step(ticket.run_id, record.as_dict())
+        pre_step_hook = registry.pre_step_hook(ticket.run_id)
+        _EXECUTOR(
+            ticket.plan_payload,
+            mode=ticket.mode,
+            run_id=ticket.run_id,
+            progress_callback=progress_cb,
+            pre_step_hook=pre_step_hook,
+        )
         ticket.status = "completed"
         ticket.message = f"Plan {ticket.plan_id} resumed and completed"
         _record_event("completed", ticket)

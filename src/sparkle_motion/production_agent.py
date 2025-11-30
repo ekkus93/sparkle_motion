@@ -163,6 +163,8 @@ def execute_plan(
     mode: Literal["dry", "run"] = "dry",
     progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
     config: Optional[ProductionAgentConfig] = None,
+    run_id: Optional[str] = None,
+    pre_step_hook: Optional[Callable[[str], None]] = None,
 ) -> ProductionResult:
     """Execute or simulate a MoviePlan."""
 
@@ -171,7 +173,7 @@ def execute_plan(
     _validate_plan(model)
     policy_decisions = _run_policy_checks(model)
     plan_id = _plan_identifier(model)
-    run_id = observability.get_session_id()
+    run_id = run_id or observability.get_session_id()
 
     if mode == "dry":
         report = _simulate_execution_report(model, policy_decisions)
@@ -193,6 +195,7 @@ def execute_plan(
                 output_dir=output_dir,
                 cfg=cfg,
                 progress_callback=progress_callback,
+                pre_step_hook=pre_step_hook,
                 records=records,
                 voice_profiles=voice_profiles,
             )
@@ -210,6 +213,7 @@ def execute_plan(
             gate_flag=None,
             cfg=cfg,
             progress_callback=progress_callback,
+            pre_step_hook=pre_step_hook,
             action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
             meta={"shot_count": len(model.shots)},
         )
@@ -362,6 +366,7 @@ def _execute_shot(
     output_dir: Path,
     cfg: ProductionAgentConfig,
     progress_callback: Optional[Callable[[StepExecutionRecord], None]],
+    pre_step_hook: Optional[Callable[[str], None]],
     records: List[StepExecutionRecord],
     voice_profiles: Mapping[str, Mapping[str, Any]],
 ) -> _ShotArtifacts:
@@ -386,6 +391,7 @@ def _execute_shot(
         step_type="images",
         gate_flag=cfg.adapters_flag,
         cfg=cfg,
+        pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
         action=lambda: _render_frames(shot, output_dir),
         meta={"shot_id": shot.id},
@@ -400,6 +406,7 @@ def _execute_shot(
             step_type="tts",
             gate_flag=cfg.tts_flag,
             cfg=cfg,
+            pre_step_hook=pre_step_hook,
             progress_callback=progress_callback,
             action=lambda: _synthesize_dialogue(
                 shot,
@@ -423,6 +430,7 @@ def _execute_shot(
         step_type="video",
         gate_flag=cfg.adapters_flag,
         cfg=cfg,
+        pre_step_hook=pre_step_hook,
         progress_callback=progress_callback,
         action=lambda: _render_video_clip(shot, output_dir, plan_id, run_id, progress_callback),
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
@@ -437,6 +445,7 @@ def _execute_shot(
             step_type="lipsync",
             gate_flag=cfg.lipsync_flag,
             cfg=cfg,
+            pre_step_hook=pre_step_hook,
             progress_callback=progress_callback,
             action=lambda: _lipsync_clip(shot, output_dir),
             meta={"shot_id": shot.id},
@@ -457,6 +466,7 @@ def _run_step(
     action: Callable[[], StepActionReturn],
     meta: Optional[Dict[str, Any]] = None,
     progress_callback: Optional[Callable[[StepExecutionRecord], None]] = None,
+    pre_step_hook: Optional[Callable[[str], None]] = None,
 ) -> tuple[StepExecutionRecord, StepResult]:
 
     def _normalize_step_result(value: StepActionReturn) -> StepResult:
@@ -488,6 +498,8 @@ def _run_step(
         status = "failed"
         for attempt in range(1, max(cfg.max_attempts, 1) + 1):
             attempts = attempt
+            if pre_step_hook:
+                pre_step_hook(step_id)
             try:
                 step_result = _normalize_step_result(action())
                 artifact_path = step_result.path or (step_result.paths[0] if step_result.paths else None)

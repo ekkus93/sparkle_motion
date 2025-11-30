@@ -1,0 +1,306 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import threading
+from typing import Any, Callable, Dict, List, Literal, Optional
+
+from . import adk_helpers, telemetry
+
+RunStatus = Literal["pending", "running", "paused", "stopped", "failed", "succeeded", "queued"]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass
+class ArtifactEntry:
+    stage: str
+    artifact_type: str
+    name: str
+    artifact_uri: str
+    media_type: Optional[str] = None
+    local_path: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_now_iso)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "artifact_type": self.artifact_type,
+            "name": self.name,
+            "artifact_uri": self.artifact_uri,
+            "media_type": self.media_type,
+            "local_path": self.local_path,
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class ControlState:
+    pause_requested: bool = False
+    stop_requested: bool = False
+    gate: threading.Event = field(default_factory=lambda: threading.Event())
+    last_command: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        self.gate.set()
+
+
+@dataclass
+class RunState:
+    run_id: str
+    plan_id: str
+    plan_title: str
+    mode: Literal["dry", "run"]
+    status: RunStatus = "pending"
+    started_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
+    current_stage: Optional[str] = None
+    progress: float = 0.0
+    expected_steps: Optional[int] = None
+    steps: List[Dict[str, Any]] = field(default_factory=list)
+    artifacts: Dict[str, List[ArtifactEntry]] = field(default_factory=dict)
+    last_error: Optional[str] = None
+    control: ControlState = field(default_factory=ControlState)
+
+    def append_step(self, record: Dict[str, Any]) -> None:
+        self.steps.append(record)
+        self.current_stage = record.get("step_id")
+        self.progress = self._calculate_progress()
+        self.updated_at = _now_iso()
+
+    def _calculate_progress(self) -> float:
+        if not self.expected_steps:
+            return min(0.99, len(self.steps) / max(len(self.steps) + 1, 1))
+        return min(1.0, len(self.steps) / max(self.expected_steps, 1))
+
+
+class RunHalted(RuntimeError):
+    pass
+
+
+class RunRegistry:
+    def __init__(self) -> None:
+        self._runs: Dict[str, RunState] = {}
+        self._lock = threading.RLock()
+
+    def start_run(
+        self,
+        *,
+        run_id: str,
+        plan_id: str,
+        plan_title: str,
+        mode: Literal["dry", "run"],
+        expected_steps: Optional[int] = None,
+    ) -> RunState:
+        with self._lock:
+            state = RunState(
+                run_id=run_id,
+                plan_id=plan_id,
+                plan_title=plan_title,
+                mode=mode,
+                status="running" if mode == "run" else "pending",
+                current_stage=None,
+                expected_steps=expected_steps,
+            )
+            self._runs[run_id] = state
+        self._emit_event("run.start", state)
+        return state
+
+    def mark_queued(self, run_id: str, ticket_id: str) -> None:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                return
+            state.status = "queued"
+            state.updated_at = _now_iso()
+        self._emit_event("run.queued", state, extra={"ticket_id": ticket_id})
+
+    def complete_run(self, run_id: str) -> None:
+        self._update_status(run_id, "succeeded")
+
+    def fail_run(self, run_id: str, *, error: str) -> None:
+        self._update_status(run_id, "failed", error=error)
+
+    def stop_run(self, run_id: str, *, reason: str) -> None:
+        self._update_status(run_id, "stopped", error=reason)
+
+    def _update_status(self, run_id: str, status: RunStatus, *, error: Optional[str] = None) -> None:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                return
+            state.status = status
+            state.updated_at = _now_iso()
+            state.last_error = error
+        self._emit_event("run.status", state)
+
+    def discard_run(self, run_id: str) -> None:
+        with self._lock:
+            if run_id in self._runs:
+                del self._runs[run_id]
+
+    def record_step(self, run_id: str, record: Dict[str, Any]) -> None:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                return
+            state.append_step(record)
+            state.status = "running"
+            artifact_uri = record.get("artifact_uri")
+            if artifact_uri:
+                meta = record.get("meta") or {}
+                entry = ArtifactEntry(
+                    stage=record.get("step_type", "unknown"),
+                    artifact_type=meta.get("artifact_type", "step_artifact"),
+                    name=record.get("step_id", "artifact"),
+                    artifact_uri=str(artifact_uri),
+                    media_type=meta.get("media_type"),
+                    local_path=meta.get("local_path"),
+                    metadata=dict(meta),
+                )
+                state.artifacts.setdefault(entry.stage, []).append(entry)
+        self._emit_event("run.step", state, extra={"record": record})
+
+    def record_artifact(self, run_id: str, entry: ArtifactEntry) -> None:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                return
+            state.artifacts.setdefault(entry.stage, []).append(entry)
+            state.updated_at = _now_iso()
+        self._emit_event("run.artifact", state, extra={"artifact": entry.as_dict()})
+
+    def get_status(self, run_id: str) -> Dict[str, Any]:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                raise KeyError(run_id)
+            return self._serialize_state(state)
+
+    def get_artifacts(self, run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                raise KeyError(run_id)
+            if stage:
+                return [entry.as_dict() for entry in state.artifacts.get(stage, [])]
+            result: List[Dict[str, Any]] = []
+            for entries in state.artifacts.values():
+                result.extend(entry.as_dict() for entry in entries)
+            return result
+
+    def pre_step_hook(self, run_id: str) -> Callable[[str], None]:
+        def _hook(step_id: str) -> None:
+            with self._lock:
+                state = self._runs.get(run_id)
+                if not state:
+                    return
+                state.current_stage = step_id
+                state.status = "running"
+                state.updated_at = _now_iso()
+                control = state.control
+            if control.stop_requested:
+                raise RunHalted(f"Run {run_id} stopped")
+            if control.pause_requested:
+                control.gate.wait()
+                if control.stop_requested:
+                    raise RunHalted(f"Run {run_id} stopped")
+
+        return _hook
+
+    def build_progress_handler(self, run_id: str) -> Callable[[Dict[str, Any]], None]:
+        def _handler(record_dict: Dict[str, Any]) -> None:
+            self.record_step(run_id, record_dict)
+
+        return _handler
+
+    def request_pause(self, run_id: str) -> Dict[str, Any]:
+        return self._update_control(run_id, command="pause")
+
+    def request_resume(self, run_id: str) -> Dict[str, Any]:
+        return self._update_control(run_id, command="resume")
+
+    def request_stop(self, run_id: str) -> Dict[str, Any]:
+        return self._update_control(run_id, command="stop")
+
+    def _update_control(self, run_id: str, *, command: Literal["pause", "resume", "stop"]) -> Dict[str, Any]:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                raise KeyError(run_id)
+            control = state.control
+            if command == "pause":
+                control.pause_requested = True
+                control.gate.clear()
+                state.status = "paused"
+            elif command == "resume":
+                control.pause_requested = False
+                control.gate.set()
+                state.status = "running"
+            elif command == "stop":
+                control.stop_requested = True
+                control.gate.set()
+                state.status = "stopped"
+            control.last_command = {"command": command, "at": _now_iso()}
+            state.updated_at = _now_iso()
+        self._emit_event("run.control", state, extra={"command": command})
+        return self._serialize_state(state)
+
+    def _serialize_state(self, state: RunState) -> Dict[str, Any]:
+        return {
+            "run_id": state.run_id,
+            "plan_id": state.plan_id,
+            "plan_title": state.plan_title,
+            "mode": state.mode,
+            "status": state.status,
+            "started_at": state.started_at,
+            "updated_at": state.updated_at,
+            "current_stage": state.current_stage,
+            "progress": state.progress,
+            "last_error": state.last_error,
+            "steps": list(state.steps),
+            "artifact_counts": {stage: len(entries) for stage, entries in state.artifacts.items()},
+            "control": {
+                "pause_requested": state.control.pause_requested,
+                "stop_requested": state.control.stop_requested,
+                "last_command": dict(state.control.last_command or {}),
+            },
+        }
+
+    def _emit_event(self, event_type: str, state: RunState, *, extra: Optional[Dict[str, Any]] = None) -> None:
+        payload = {
+            "run_id": state.run_id,
+            "plan_id": state.plan_id,
+            "status": state.status,
+            "current_stage": state.current_stage,
+            "progress": state.progress,
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            adk_helpers.write_memory_event(run_id=state.run_id, event_type=f"production_agent.{event_type}", payload=payload)
+        except adk_helpers.MemoryWriteError:
+            pass
+        try:
+            telemetry.emit_event(f"production_agent.{event_type}", payload)
+        except Exception:
+            pass
+
+
+_registry = RunRegistry()
+
+
+def get_run_registry() -> RunRegistry:
+    return _registry
+
+
+__all__ = [
+    "ArtifactEntry",
+    "RunRegistry",
+    "RunHalted",
+    "get_run_registry",
+]

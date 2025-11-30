@@ -98,7 +98,7 @@ def test_enqueue_plan_persists_ticket_and_records_event(memory_hooks, scheduler_
     record = _make_record(rate_limit=_build_rate_limit_meta(eta_delta=0.1, retry_after=0.0))
     plan_payload = {"title": "Epic Plan", "metadata": {"plan_id": "plan-alpha"}}
 
-    ticket = queue_runner.enqueue_plan(plan_payload=plan_payload, mode="run", queued_record=record)
+    ticket = queue_runner.enqueue_plan(plan_payload=plan_payload, mode="run", queued_record=record, run_id="run-test")
 
     assert ticket.ticket_id in memory_stub.metadata
     stored = memory_stub.metadata[ticket.ticket_id]
@@ -113,14 +113,14 @@ def test_resume_ticket_completes_successfully(memory_hooks, scheduler_stub, fast
     _, events, _ = memory_hooks
     calls: List[Tuple[dict[str, Any], str]] = []
 
-    def _executor(plan_payload: dict[str, Any], mode: str) -> None:
+    def _executor(plan_payload: dict[str, Any], *, mode: str, run_id: str, **_: Any) -> None:
         calls.append((plan_payload, mode))
 
     queue_runner.set_executor(_executor)
     record = _make_record(rate_limit=_build_rate_limit_meta(eta_delta=0.05, retry_after=0.0))
     plan_payload = {"title": "Epic Plan", "metadata": {"plan_id": "plan-alpha"}}
 
-    ticket = queue_runner.enqueue_plan(plan_payload=plan_payload, mode="run", queued_record=record)
+    ticket = queue_runner.enqueue_plan(plan_payload=plan_payload, mode="run", queued_record=record, run_id="run-test")
     assert scheduler_stub, "resume task not scheduled"
 
     task = scheduler_stub.pop(0)
@@ -139,7 +139,7 @@ def test_resume_ticket_requeues_until_abandoned(memory_hooks, scheduler_stub, fa
         _make_record(rate_limit=_build_rate_limit_meta(eta_delta=0.02, retry_after=0.0)),
     ]
 
-    def _executor(_: dict[str, Any], __: str) -> None:
+    def _executor(*_: Any, **__: Any) -> None:
         raise StepQueuedError("still queued", record=records.pop(0))
 
     queue_runner.set_executor(_executor)
@@ -147,6 +147,7 @@ def test_resume_ticket_requeues_until_abandoned(memory_hooks, scheduler_stub, fa
         plan_payload={"title": "Epic", "metadata": {"plan_id": "plan-alpha"}},
         mode="run",
         queued_record=_make_record(rate_limit=_build_rate_limit_meta(eta_delta=0.01, retry_after=0.0)),
+        run_id="run-test",
         max_attempts=2,
     )
 
@@ -168,7 +169,7 @@ def test_resume_ticket_marks_failed_when_rate_limit_exceeded(memory_hooks, sched
     _, events, _ = memory_hooks
     rate_limit_record = _make_record(rate_limit=_build_rate_limit_meta(eta_delta=0.01, retry_after=0.0))
 
-    def _executor(_: dict[str, Any], __: str) -> None:
+    def _executor(*_: Any, **__: Any) -> None:
         raise StepRateLimitExceededError("budget exhausted", record=rate_limit_record)
 
     queue_runner.set_executor(_executor)
@@ -176,6 +177,7 @@ def test_resume_ticket_marks_failed_when_rate_limit_exceeded(memory_hooks, sched
         plan_payload={"title": "Epic", "metadata": {"plan_id": "plan-alpha"}},
         mode="run",
         queued_record=rate_limit_record,
+        run_id="run-test",
     )
 
     task = scheduler_stub.pop(0)
@@ -191,4 +193,4 @@ def test_enqueue_plan_rejects_dry_mode(memory_hooks, scheduler_stub) -> None:
     record = _make_record(rate_limit=_build_rate_limit_meta())
 
     with pytest.raises(ValueError, match="Queued flow only applies to run mode"):
-        queue_runner.enqueue_plan(plan_payload={"title": "Dry"}, mode="dry", queued_record=record)
+        queue_runner.enqueue_plan(plan_payload={"title": "Dry"}, mode="dry", queued_record=record, run_id="run-test")
