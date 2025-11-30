@@ -179,3 +179,21 @@ def test_generate_plan_rejects_timeline_with_gaps(monkeypatch):
 
     with pytest.raises(script_agent.PlanSchemaError):
         script_agent.generate_plan("timeline gaps", model_spec="stub-model")
+
+
+def test_generate_plan_requires_dialogue_timeline(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload.pop("dialogue_timeline", None)
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("missing timeline", model_spec="stub-model")
+
+
+def test_generate_plan_requires_render_profile(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload.pop("render_profile", None)
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError):
+        script_agent.generate_plan("missing render profile", model_spec="stub-model")

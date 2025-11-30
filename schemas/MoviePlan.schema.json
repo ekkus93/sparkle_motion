@@ -332,6 +332,7 @@
       "items": {
         "$ref": "#/$defs/BaseImageSpec"
       },
+      "minItems": 1,
       "title": "Base Images",
       "type": "array"
     },
@@ -360,6 +361,7 @@
           }
         ]
       },
+      "minItems": 1,
       "title": "Dialogue Timeline",
       "type": "array"
     },
@@ -377,6 +379,7 @@
       "items": {
         "$ref": "#/$defs/ShotSpec"
       },
+      "minItems": 1,
       "title": "Shots",
       "type": "array"
     },
@@ -387,6 +390,9 @@
   },
   "required": [
     "title",
+    "base_images",
+    "shots",
+    "dialogue_timeline",
     "render_profile"
   ],
   "title": "MoviePlan",

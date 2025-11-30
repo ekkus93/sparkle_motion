@@ -153,9 +153,9 @@ class MoviePlan(BaseModel):
     """
     title: str
     characters: List[CharacterSpec] = Field(default_factory=list)
-    base_images: List[BaseImageSpec] = Field(default_factory=list)
-    shots: List[ShotSpec] = Field(default_factory=list)
-    dialogue_timeline: List[DialogueTimelineEntry] = Field(default_factory=list)
+    base_images: List[BaseImageSpec] = Field(..., min_length=1)
+    shots: List[ShotSpec] = Field(..., min_length=1)
+    dialogue_timeline: List[DialogueTimelineEntry] = Field(..., min_length=1)
     render_profile: RenderProfile
     metadata: Dict[str, str] = Field(default_factory=dict)
 
