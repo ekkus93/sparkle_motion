@@ -72,7 +72,7 @@ def test_invoke_run_mode_writes_artifact(
 def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
     monkeypatch.setenv("SMOKE_TTS", "1")
-    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
+    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run", "qa_mode": "skip"})
     assert resp.status_code == 200
     run_id = resp.json()["run_id"]
 
@@ -81,6 +81,12 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     status_data = status_resp.json()
     assert status_data["run_id"] == run_id
     assert status_data["steps"], "status should include recorded steps"
+    assert status_data["qa_mode"] == "skip"
+    assert status_data["metadata"].get("qa_mode") == "skip"
+    assert status_data["render_profile"]["video"]["model_id"] == "wan-fixture"
+    assert status_data["timeline"] == status_data["log"]
+    assert status_data["timeline"], "timeline history should be populated"
+    assert status_data["timeline"][0]["qa_mode"] == "skip"
 
     artifacts_resp = client.get("/artifacts", params={"run_id": run_id})
     assert artifacts_resp.status_code == 200

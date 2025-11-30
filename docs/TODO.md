@@ -186,10 +186,12 @@
   contract, `docs/NOTEBOOK_AGENT_INTEGRATION.md` Final deliverable helper).
 
 #### Production agent observability & controls
-- [ ] Persist StepExecutionRecord history (and run metadata such as
+- [x] Persist StepExecutionRecord history (and run metadata such as
   `plan_id`, `render_profile`, and `qa_mode`) so the new `/status` endpoint can
   stream the timeline structure described in THE_PLAN.md §Colab dashboard and
-  `docs/ARCHITECTURE.md` §Production run observability.
+  `docs/ARCHITECTURE.md` §Production run observability. *(RunRegistry now stores
+  render profile + qa_mode metadata and emits timeline/log entries via `/status`
+  responses; FastAPI tests updated 2025-11-30.)*
 - [ ] Implement `/artifacts?run_id=&stage=` that serves structured manifests
   per stage, including thumbnails/audio/MP4 entries, and validate the
   `qa_publish` response contract (requires `artifact_type="video_final"`,

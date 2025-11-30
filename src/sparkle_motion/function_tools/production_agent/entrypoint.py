@@ -60,19 +60,37 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
     plan_model = req.plan or _load_plan_from_uri(req.plan_uri)
     if plan_model is None:
         raise HTTPException(status_code=400, detail="Unable to load MoviePlan payload")
+    plan_metadata = dict(plan_model.metadata or {})
+    plan_metadata["qa_mode"] = req.qa_mode
+    plan_model.metadata = plan_metadata
     try:
         schema_uri = schema_registry.movie_plan_schema().uri
     except Exception:
         schema_uri = None
 
     run_id = _generate_run_id()
-    run_context = RunContext.from_plan(plan_model, run_id=run_id, schema_uri=schema_uri)
+    run_context = RunContext.from_plan(
+        plan_model,
+        run_id=run_id,
+        schema_uri=schema_uri,
+        metadata={"qa_mode": req.qa_mode},
+    )
     plan_payload = plan_model.model_dump()
 
     plan_id = run_context.plan_id
     plan_title = run_context.plan_title
     expected_steps = _estimate_expected_steps(plan_model)
-    registry.start_run(run_id=run_id, plan_id=plan_id, plan_title=plan_title, mode=req.mode, expected_steps=expected_steps)
+    registry.start_run(
+        run_id=run_id,
+        plan_id=plan_id,
+        plan_title=plan_title,
+        mode=req.mode,
+        expected_steps=expected_steps,
+        render_profile=run_context.render_profile,
+        run_metadata=run_context.metadata,
+        qa_mode=req.qa_mode,
+        schema_uri=schema_uri,
+    )
 
     def _progress(record: StepExecutionRecord) -> None:
         registry.record_step(run_id, record.as_dict())

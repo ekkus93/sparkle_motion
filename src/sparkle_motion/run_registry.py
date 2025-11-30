@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 from . import adk_helpers, telemetry
 
 RunStatus = Literal["pending", "running", "paused", "stopped", "failed", "succeeded", "queued"]
+QAMode = Literal["full", "skip"]
 
 
 def _now_iso() -> str:
@@ -91,6 +92,10 @@ class RunState:
     artifacts: Dict[str, List[ArtifactEntry]] = field(default_factory=dict)
     last_error: Optional[str] = None
     control: ControlState = field(default_factory=ControlState)
+    render_profile: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    qa_mode: QAMode = "full"
+    schema_uri: Optional[str] = None
 
     def append_step(self, record: Dict[str, Any]) -> None:
         self.steps.append(record)
@@ -121,6 +126,10 @@ class RunRegistry:
         plan_title: str,
         mode: Literal["dry", "run"],
         expected_steps: Optional[int] = None,
+        render_profile: Optional[Dict[str, Any]] = None,
+        run_metadata: Optional[Dict[str, Any]] = None,
+        qa_mode: QAMode = "full",
+        schema_uri: Optional[str] = None,
     ) -> RunState:
         with self._lock:
             state = RunState(
@@ -131,6 +140,10 @@ class RunRegistry:
                 status="running" if mode == "run" else "pending",
                 current_stage=None,
                 expected_steps=expected_steps,
+                render_profile=dict(render_profile or {}),
+                metadata=dict(run_metadata or {}),
+                qa_mode=qa_mode,
+                schema_uri=schema_uri,
             )
             self._runs[run_id] = state
         self._emit_event("run.start", state)
@@ -290,6 +303,7 @@ class RunRegistry:
         return self._serialize_state(state)
 
     def _serialize_state(self, state: RunState) -> Dict[str, Any]:
+        timeline = [self._format_timeline_entry(record, state.qa_mode) for record in state.steps]
         return {
             "run_id": state.run_id,
             "plan_id": state.plan_id,
@@ -300,6 +314,7 @@ class RunRegistry:
             "updated_at": state.updated_at,
             "current_stage": state.current_stage,
             "progress": state.progress,
+            "expected_steps": state.expected_steps,
             "last_error": state.last_error,
             "steps": list(state.steps),
             "artifact_counts": {stage: len(entries) for stage, entries in state.artifacts.items()},
@@ -308,6 +323,37 @@ class RunRegistry:
                 "stop_requested": state.control.stop_requested,
                 "last_command": dict(state.control.last_command or {}),
             },
+            "metadata": dict(state.metadata),
+            "render_profile": dict(state.render_profile),
+            "qa_mode": state.qa_mode,
+            "schema_uri": state.schema_uri,
+            "timeline": timeline,
+            "log": timeline,
+        }
+
+    def _format_timeline_entry(self, record: Dict[str, Any], qa_mode: QAMode) -> Dict[str, Any]:
+        meta = dict(record.get("meta") or {})
+        artifacts: List[str] = []
+        artifact_uri = record.get("artifact_uri")
+        if artifact_uri:
+            artifacts.append(str(artifact_uri))
+        extra_artifacts = meta.get("artifacts")
+        if isinstance(extra_artifacts, list):
+            artifacts.extend(str(item) for item in extra_artifacts)
+        return {
+            "step_id": record.get("step_id"),
+            "stage": record.get("step_type"),
+            "status": record.get("status"),
+            "started_at": record.get("start_time"),
+            "completed_at": record.get("end_time"),
+            "duration_s": record.get("duration_s"),
+            "attempts": record.get("attempts"),
+            "model_id": record.get("model_id"),
+            "device": record.get("device"),
+            "artifact_uri": artifact_uri,
+            "artifacts": artifacts,
+            "qa_mode": qa_mode,
+            "meta": meta,
         }
 
     def _emit_event(self, event_type: str, state: RunState, *, extra: Optional[Dict[str, Any]] = None) -> None:
