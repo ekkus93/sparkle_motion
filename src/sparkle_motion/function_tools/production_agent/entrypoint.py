@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
-from typing import Any, Dict, List, Mapping, Optional, Literal
+from typing import Any, Dict, List, Mapping, Optional, Literal, Sequence
 
 from fastapi import FastAPI, HTTPException
 
@@ -156,9 +156,13 @@ def artifacts(run_id: str, stage: Optional[str] = None) -> Dict[str, Any]:
         try:
             manifest = _entry_to_manifest(entry, run_id)
             manifests.append(manifest)
+        except HTTPException:
+            raise
         except Exception as exc:  # pragma: no cover - defensive validation guard
             LOG.exception("Failed to validate manifest entry", extra={"run_id": run_id, "stage": entry.get("stage"), "error": str(exc)})
             raise HTTPException(status_code=500, detail="Manifest validation failed") from exc
+    if stage and stage.strip().lower() == "qa_publish":
+        _ensure_video_final_manifest_present(manifests)
     return {"run_id": run_id, "artifacts": manifests}
 
 
@@ -292,7 +296,9 @@ def _entry_to_manifest(entry: Mapping[str, Any], run_id: str) -> Dict[str, Any]:
         "created_at": entry.get("created_at", datetime.now(timezone.utc).isoformat()),
     }
     manifest = StageManifest.model_validate(payload)
-    return manifest.model_dump()
+    manifest_dict = manifest.model_dump()
+    _validate_video_final_manifest(manifest_dict)
+    return manifest_dict
 
 
 def _generate_run_id() -> str:
@@ -327,7 +333,7 @@ def _estimate_expected_steps(plan: MoviePlan | Mapping[str, Any]) -> Optional[in
         shots_iter = plan.get("shots") if isinstance(plan, Mapping) else None
         if not isinstance(shots_iter, list):
             return None
-    total = 1  # final assemble/qa
+    total = 2  # assemble + qa_publish
     for shot in shots_iter:
         shot_mapping: Mapping[str, Any]
         if isinstance(shot, dict):
@@ -342,6 +348,67 @@ def _estimate_expected_steps(plan: MoviePlan | Mapping[str, Any]) -> Optional[in
         if shot_mapping.get("is_talking_closeup"):
             total += 1
     return total
+
+
+def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
+    if manifest.get("stage_id") != "qa_publish":
+        return
+    if manifest.get("artifact_type") != "video_final":
+        return
+    errors: List[str] = []
+
+    def _require_str(field: str) -> None:
+        value = manifest.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{field} missing")
+
+    _require_str("artifact_uri")
+    _require_str("local_path")
+    _require_str("mime_type")
+    _require_str("resolution_px")
+    _require_str("qa_report_uri")
+    _require_str("qa_mode")
+
+    checksum = manifest.get("checksum_sha256")
+    if not isinstance(checksum, str) or len(checksum) != 64:
+        errors.append("checksum_sha256 invalid")
+
+    size_bytes = manifest.get("size_bytes")
+    if not isinstance(size_bytes, int) or size_bytes <= 0:
+        errors.append("size_bytes invalid")
+
+    duration_s = manifest.get("duration_s")
+    if not isinstance(duration_s, (int, float)) or duration_s <= 0:
+        errors.append("duration_s invalid")
+
+    frame_rate = manifest.get("frame_rate")
+    if not isinstance(frame_rate, (int, float)) or frame_rate <= 0:
+        errors.append("frame_rate invalid")
+
+    storage_hint = manifest.get("storage_hint")
+    if storage_hint not in {"adk", "local"}:
+        errors.append("storage_hint invalid")
+
+    if storage_hint == "adk":
+        _require_str("download_url")
+
+    qa_passed = manifest.get("qa_passed")
+    if not isinstance(qa_passed, bool):
+        errors.append("qa_passed invalid")
+
+    playback_ready = manifest.get("playback_ready")
+    if not isinstance(playback_ready, bool):
+        errors.append("playback_ready invalid")
+
+    if errors:
+        raise HTTPException(status_code=500, detail="Invalid qa_publish manifest: " + ", ".join(errors))
+
+
+def _ensure_video_final_manifest_present(manifests: Sequence[Mapping[str, Any]]) -> None:
+    for manifest in manifests:
+        if manifest.get("artifact_type") == "video_final" and manifest.get("stage_id") == "qa_publish":
+            return
+    raise HTTPException(status_code=409, detail="qa_publish manifest missing video_final entry")
 
 
 __all__ = ["app", "invoke", "RequestModel", "ResponseModel"]

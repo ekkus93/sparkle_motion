@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import shutil
 import time
 import wave
 from pathlib import Path
@@ -373,6 +374,43 @@ def execute_plan(
         artifact_type=cfg.artifact_type,
         metadata={"plan_id": plan_id, "shot_count": len(model.shots)},
     )
+
+    qa_publish_holder: Dict[str, adk_helpers.ArtifactRef] = {}
+
+    def _qa_publish_action() -> StepResult:
+        dialogue_result = dialogue_stage_holder.get("result")
+        manifests, qa_artifact_ref, step_result = _run_qa_publish_stage(
+            plan=model,
+            plan_id=plan_id,
+            run_id=run_id,
+            output_dir=output_dir,
+            shot_artifacts=shot_artifacts,
+            dialogue_result=dialogue_result,
+            assemble_path=final_result.path,
+        )
+        qa_publish_holder["artifact"] = qa_artifact_ref
+        _record_stage_manifest_entries(run_id=run_id, manifests=manifests)
+        return step_result
+
+    try:
+        qa_record, _ = _run_step(
+            plan_id=plan_id,
+            run_id=run_id,
+            step_id=f"{plan_id}:qa_publish",
+            step_type="qa_publish",
+            gate_flag=None,
+            cfg=cfg,
+            progress_callback=progress_callback,
+            pre_step_hook=pre_step_hook,
+            action=_qa_publish_action,
+            meta={"stage": "qa_publish", "shot_count": len(model.shots)},
+        )
+        records.append(qa_record)
+    except StepRateLimitError as exc:
+        records.append(exc.record)
+        _record_summary_event(run_id, plan_id, "run", records)
+        raise
+
     telemetry.emit_event(
         "production_agent.execute_plan.completed",
         {
@@ -382,7 +420,11 @@ def execute_plan(
         },
     )
     _record_summary_event(run_id, plan_id, "run", records)
-    return ProductionResult([artifact_ref], steps=records)
+    artifacts: List[adk_helpers.ArtifactRef] = [artifact_ref]
+    qa_artifact = qa_publish_holder.get("artifact")
+    if qa_artifact:
+        artifacts.append(qa_artifact)
+    return ProductionResult(artifacts, steps=records)
 
 
 def _coerce_plan(plan: MoviePlan | Mapping[str, Any]) -> MoviePlan:
@@ -1825,6 +1867,275 @@ def _assemble_plan(plan: MoviePlan, shots: Sequence[_ShotArtifacts], output_dir:
     }
     dest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return dest
+
+
+def _run_qa_publish_stage(
+    *,
+    plan: MoviePlan,
+    plan_id: str,
+    run_id: str,
+    output_dir: Path,
+    shot_artifacts: Sequence[_ShotArtifacts],
+    dialogue_result: Optional[_DialogueStageResult],
+    assemble_path: Path,
+) -> tuple[List[StageManifest], adk_helpers.ArtifactRef, StepResult]:
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    final_video_path = _prepare_final_video(
+        plan_id=plan_id,
+        output_dir=output_dir,
+        shot_artifacts=shot_artifacts,
+        assemble_path=assemble_path,
+    )
+    timeline_audio_path = dialogue_result.timeline_audio_path if dialogue_result else None
+    total_duration = dialogue_result.total_duration_s if dialogue_result else sum(shot.duration_sec for shot in plan.shots)
+    frame_rate = float(plan.render_profile.video.max_fps or _default_video_fps())
+    resolution = _resolve_render_resolution(plan)
+    qa_mode = _resolve_qa_mode(plan)
+    qa_skipped = qa_mode == "skip"
+    issues = _collect_qa_publish_issues(
+        plan=plan,
+        shot_artifacts=shot_artifacts,
+        final_video_path=final_video_path,
+        timeline_audio_path=timeline_audio_path,
+    )
+    qa_passed = not issues and not qa_skipped
+    qa_report_path, _ = _write_qa_publish_report(
+        plan=plan,
+        plan_id=plan_id,
+        run_id=run_id,
+        output_dir=output_dir,
+        issues=issues,
+        qa_mode=qa_mode,
+        qa_passed=qa_passed,
+        qa_skipped=qa_skipped,
+        duration_s=total_duration,
+        frame_rate=frame_rate,
+        resolution=resolution,
+    )
+    qa_report_ref = adk_helpers.publish_artifact(
+        local_path=qa_report_path,
+        artifact_type="qa_publish_report",
+        media_type="application/json",
+        metadata={
+            "plan_id": plan_id,
+            "run_id": run_id,
+            "qa_mode": qa_mode,
+            "qa_passed": qa_passed,
+            "issue_count": len(issues),
+        },
+        run_id=run_id,
+    )
+    checksum = _hash_file_path(final_video_path)
+    size_bytes = final_video_path.stat().st_size if final_video_path.exists() else None
+    video_metadata = {
+        "plan_id": plan_id,
+        "run_id": run_id,
+        "qa_mode": qa_mode,
+        "qa_passed": qa_passed,
+        "qa_skipped": qa_skipped,
+        "issue_count": len(issues),
+        "issues": issues,
+        "duration_s": total_duration,
+        "frame_rate": frame_rate,
+        "resolution_px": resolution,
+        "checksum_sha256": checksum,
+        "stage": "qa_publish",
+    }
+    video_artifact_ref = adk_helpers.publish_artifact(
+        local_path=final_video_path,
+        artifact_type="video_final",
+        media_type="video/mp4",
+        metadata=video_metadata,
+        run_id=run_id,
+    )
+    storage_hint = "adk" if video_artifact_ref.get("storage") == "adk" else "local"
+    artifact_meta = video_artifact_ref.get("metadata") or {}
+    download_url = artifact_meta.get("download_url") if storage_hint == "adk" else None
+    if storage_hint == "adk" and not download_url:
+        download_url = video_artifact_ref.get("uri")
+    manifest_metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": "qa_publish",
+            "qa_mode": qa_mode,
+            "qa_skipped": qa_skipped,
+            "issue_count": len(issues),
+            "issues": issues,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+            "qa_report_uri": qa_report_ref.get("uri"),
+            "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
+            "assemble_path": assemble_path.as_posix(),
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id="qa_publish",
+        artifact_type="video_final",
+        name=final_video_path.name,
+        artifact_uri=str(video_artifact_ref["uri"]),
+        media_type="video/mp4",
+        local_path=final_video_path.as_posix(),
+        download_url=download_url,
+        storage_hint=storage_hint,
+        mime_type="video/mp4",
+        size_bytes=size_bytes,
+        duration_s=total_duration,
+        frame_rate=frame_rate,
+        resolution_px=resolution,
+        checksum_sha256=checksum,
+        qa_report_uri=qa_report_ref.get("uri"),
+        qa_passed=qa_passed,
+        qa_mode=qa_mode,
+        playback_ready=final_video_path.exists(),
+        notes="qa_skipped" if qa_skipped else None,
+        metadata=manifest_metadata,
+    )
+    step_result = StepResult(
+        path=final_video_path,
+        paths=(final_video_path,),
+        artifact_uri=str(video_artifact_ref["uri"]),
+        meta={
+            "stage": "qa_publish",
+            "artifact_type": "video_final",
+            "media_type": "video/mp4",
+            "local_path": final_video_path.as_posix(),
+            "download_url": download_url,
+            "storage_hint": storage_hint,
+            "mime_type": "video/mp4",
+            "size_bytes": size_bytes,
+            "duration_s": total_duration,
+            "frame_rate": frame_rate,
+            "resolution_px": resolution,
+            "checksum_sha256": checksum,
+            "qa_report_uri": qa_report_ref.get("uri"),
+            "qa_report_local_path": qa_report_path.as_posix(),
+            "qa_passed": qa_passed,
+            "qa_mode": qa_mode,
+            "qa_skipped": qa_skipped,
+            "issue_count": len(issues),
+            "issues": issues,
+            "playback_ready": final_video_path.exists(),
+        },
+    )
+    return [manifest], video_artifact_ref, step_result
+
+
+def _prepare_final_video(
+    *,
+    plan_id: str,
+    output_dir: Path,
+    shot_artifacts: Sequence[_ShotArtifacts],
+    assemble_path: Path,
+) -> Path:
+    dest = output_dir / "final" / f"{plan_id}-video_final.mp4"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    candidates: List[Optional[Path]] = []
+    if assemble_path.suffix.lower() in {".mp4", ".mov", ".mkv"}:
+        candidates.append(assemble_path)
+    for art in shot_artifacts:
+        if art.lipsync_path:
+            candidates.append(art.lipsync_path)
+        if art.video_path:
+            candidates.append(art.video_path)
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            shutil.copyfile(candidate, dest)
+            return dest
+    placeholder = {
+        "plan_id": plan_id,
+        "generated_at": _now_iso(),
+        "note": "qa_publish placeholder",
+    }
+    dest.write_text(json.dumps(placeholder, ensure_ascii=False, indent=2), encoding="utf-8")
+    return dest
+
+
+def _collect_qa_publish_issues(
+    *,
+    plan: MoviePlan,
+    shot_artifacts: Sequence[_ShotArtifacts],
+    final_video_path: Path,
+    timeline_audio_path: Optional[Path],
+) -> List[str]:
+    issues: List[str] = []
+    artifacts_by_shot = {art.shot_id: art for art in shot_artifacts}
+    if not final_video_path.exists():
+        issues.append("final_video_missing")
+    if timeline_audio_path is not None and not timeline_audio_path.exists():
+        issues.append("timeline_audio_missing")
+    for shot in plan.shots:
+        art = artifacts_by_shot.get(shot.id)
+        if art is None:
+            issues.append(f"missing_artifacts:{shot.id}")
+            continue
+        if art.video_path is None or not art.video_path.exists():
+            issues.append(f"video_missing:{shot.id}")
+        if shot.dialogue and not art.dialogue_paths:
+            issues.append(f"dialogue_missing:{shot.id}")
+    return issues
+
+
+def _write_qa_publish_report(
+    *,
+    plan: MoviePlan,
+    plan_id: str,
+    run_id: str,
+    output_dir: Path,
+    issues: Sequence[str],
+    qa_mode: str,
+    qa_passed: bool,
+    qa_skipped: bool,
+    duration_s: float,
+    frame_rate: float,
+    resolution: str,
+) -> tuple[Path, Dict[str, Any]]:
+    report_path = output_dir / "final" / f"{plan_id}-qa_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "plan_id": plan_id,
+        "run_id": run_id,
+        "title": plan.title,
+        "qa_mode": qa_mode,
+        "qa_passed": qa_passed,
+        "qa_skipped": qa_skipped,
+        "issues": list(issues),
+        "issue_count": len(issues),
+        "duration_s": duration_s,
+        "frame_rate": frame_rate,
+        "resolution_px": resolution,
+        "generated_at": _now_iso(),
+    }
+    payload.setdefault("summary", "pass" if qa_passed else "manual_review")
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report_path, payload
+
+
+def _resolve_render_resolution(plan: MoviePlan) -> str:
+    candidates: List[Any] = []
+    if plan.render_profile.metadata:
+        candidates.extend(plan.render_profile.metadata.get(key) for key in ("resolution", "resolution_px"))
+    if plan.metadata:
+        candidates.extend(plan.metadata.get(key) for key in ("resolution", "resolution_px"))
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            return f"{value[0]}x{value[1]}"
+    return "1280x720"
+
+
+def _resolve_qa_mode(plan: MoviePlan) -> str:
+    value: Optional[str] = None
+    if plan.metadata:
+        value = plan.metadata.get("qa_mode")
+    if not value and plan.render_profile.metadata:
+        candidate = plan.render_profile.metadata.get("qa_mode")
+        if isinstance(candidate, str):
+            value = candidate
+    normalized = (value or "full").strip().lower()
+    if normalized not in {"full", "skip"}:
+        return "full"
+    return normalized
 
 
 def _record_summary_event(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional
+
 from fastapi.testclient import TestClient
 import pytest
 
 from sparkle_motion import schema_registry
+import sparkle_motion.function_tools.production_agent.entrypoint as production_entrypoint
 from sparkle_motion.function_tools.production_agent.entrypoint import app
 
 
@@ -96,3 +99,93 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     assert resume_resp.status_code == 200
     stop_resp = client.post("/control/stop", json={"run_id": run_id})
     assert stop_resp.status_code == 200
+
+
+def test_artifacts_endpoint_returns_video_final_manifest(
+    client: TestClient,
+    sample_plan: dict,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+
+    artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "qa_publish"})
+    assert artifacts_resp.status_code == 200
+    data = artifacts_resp.json()
+    entries = data["artifacts"]
+    assert entries, "video_final manifest should be present"
+    final_entry = entries[0]
+    assert final_entry["artifact_type"] == "video_final"
+    assert final_entry["stage_id"] == "qa_publish"
+    assert isinstance(final_entry["qa_passed"], bool)
+    assert isinstance(final_entry["playback_ready"], bool)
+    assert final_entry["checksum_sha256"]
+    if final_entry["storage_hint"] == "adk":
+        assert final_entry["download_url"], "download_url required for adk storage"
+    else:
+        assert final_entry["local_path"], "local_path required for local storage"
+
+
+def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {
+                "stage": "qa_publish",
+                "artifact_type": "video_final",
+                "name": "video_final.mp4",
+                "artifact_uri": "artifact://sparkle/video_final",
+                "media_type": "video/mp4",
+                "local_path": "/tmp/video_final.mp4",
+                "storage_hint": "local",
+                "mime_type": "video/mp4",
+                "size_bytes": 0,  # invalid
+                "duration_s": 1.0,
+                "frame_rate": 24.0,
+                "resolution_px": "1280x720",
+                "checksum_sha256": "a" * 64,
+                "qa_report_uri": "artifact://sparkle/qa_report",
+                "qa_passed": True,
+                "qa_mode": "full",
+                "playback_ready": True,
+                "metadata": {},
+            }
+        ]
+
+    monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
+    resp = client.get("/artifacts", params={"run_id": "invalid-run", "stage": "qa_publish"})
+    assert resp.status_code == 500
+    assert "size_bytes" in resp.json()["detail"]
+
+
+def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {
+                "stage": "qa_publish",
+                "artifact_type": "qa_report",
+                "name": "qa_report.json",
+                "artifact_uri": "artifact://sparkle/qa_report",
+                "media_type": "application/json",
+                "local_path": "/tmp/qa_report.json",
+                "storage_hint": "local",
+                "mime_type": "application/json",
+                "size_bytes": 128,
+                "duration_s": None,
+                "frame_rate": None,
+                "resolution_px": None,
+                "checksum_sha256": None,
+                "qa_report_uri": None,
+                "qa_passed": True,
+                "qa_mode": "full",
+                "playback_ready": True,
+                "metadata": {},
+            }
+        ]
+
+    monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
+    resp = client.get("/artifacts", params={"run_id": "missing-final", "stage": "qa_publish"})
+    assert resp.status_code == 409
+    assert "video_final" in resp.json()["detail"]

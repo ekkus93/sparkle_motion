@@ -290,6 +290,34 @@ def test_record_stage_manifest_entries_publish_events(monkeypatch: pytest.Monkey
     registry.discard_run("run-events")
 
 
+def test_qa_publish_stage_emits_video_final_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    run_id = "run-qa-publish"
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id="plan-qa", plan_title=sample_plan.title, mode="run")
+    result = execute_plan(sample_plan, mode="run", run_id=run_id)
+    artifacts = registry.get_artifacts(run_id, stage="qa_publish")
+    assert artifacts, "expected qa_publish manifest entry"
+    final_entry = artifacts[-1]
+    assert final_entry["artifact_type"] == "video_final"
+    assert final_entry["qa_passed"] is True
+    assert final_entry["local_path"]
+    assert Path(final_entry["local_path"]).exists()
+    assert final_entry["checksum_sha256"] and len(final_entry["checksum_sha256"]) == 64
+    expected_duration = sum(shot.duration_sec for shot in sample_plan.shots)
+    assert pytest.approx(expected_duration) == final_entry["duration_s"]
+    assert any(artifact.get("artifact_type") == "video_final" for artifact in result)
+    registry.discard_run(run_id)
+
+
 @pytest.mark.parametrize(
     "flags",
     [

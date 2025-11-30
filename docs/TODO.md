@@ -180,7 +180,7 @@
   per-shot video QA with retry budgets + `qa_skipped` annotations when
   `qa_mode="skip"` is requested (reference `docs/NOTEBOOK_AGENT_INTEGRATION.md`
   §§Base images + QA, Clip-level QA + retries, THE_PLAN.md §§Video QA rows).
-- [ ] Add the terminal `qa_publish` stage that inspects the final MP4/audio
+- [x] Add the terminal `qa_publish` stage that inspects the final MP4/audio
   pair, writes QA reports, and publishes the `video_final` manifest entry that
   downstream `/artifacts` consumers expect (THE_PLAN.md §Final deliverable
   contract, `docs/NOTEBOOK_AGENT_INTEGRATION.md` Final deliverable helper).
