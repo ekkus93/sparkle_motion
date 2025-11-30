@@ -766,7 +766,11 @@ artifacts remain in storage. Resume requests simply point at the same
 	```
 
 	The same rows drive whatever UI widget lists the individual per-line clips (the manifest’s
-	`metadata.entry_count` clarifies how many to expect).
+	`metadata.entry_count` clarifies how many to expect). Each `/artifacts` response now includes
+	per-stage `preview` metadata with the first image/audio/video entries plus aggregates such as
+	`media_summary` (counts, total duration, playback readiness) and `qa_summary`. Use those fields to
+	show quick badges (e.g., “2 audio clips · 44s total”) or pick the default player without scanning
+	the full manifest manually.
 - **Pause / resume / stop**: add control endpoints to production_agent so the
 	notebook can orchestrate long-running jobs:
 	- `POST /control/pause` → `{ "run_id": "..." }`
@@ -844,7 +848,13 @@ pause/resume/stop long productions without leaving the notebook.
 			resp.raise_for_status()
 			payload = resp.json()
 			stage_section = payload["stages"][0]  # stage filter keeps this scoped to qa_publish
-			print(f"qa_publish emitted {stage_section['count']} artifact(s): {stage_section['artifact_types']}")
+			preview_video = stage_section["preview"]["video"]
+			media_summary = stage_section["media_summary"].get("video", {})
+			print(
+			    "qa_publish emitted"
+			    f" {stage_section['count']} artifact(s): {stage_section['artifact_types']} |"
+			    f" video preview ready={preview_video['playback_ready']}"
+			)
 			return next(item for item in stage_section["artifacts"] if item.get("artifact_type") == "video_final")
 
 		final_entry = fetch_final_entry(RUN_ID)

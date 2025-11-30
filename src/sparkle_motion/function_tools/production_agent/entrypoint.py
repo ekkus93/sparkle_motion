@@ -202,20 +202,10 @@ def artifacts(run_id: str, stage: Optional[str] = None) -> Dict[str, Any]:
 
     stage_sections: List[Dict[str, Any]] = []
     for stage_id, manifest_entries in manifests_by_stage.items():
-        artifact_types = sorted({entry["artifact_type"] for entry in manifest_entries})
-        media_types = sorted({entry["mime_type"] for entry in manifest_entries if entry.get("mime_type")})
-        stage_sections.append(
-            {
-                "stage_id": stage_id,
-                "count": len(manifest_entries),
-                "artifact_types": artifact_types,
-                "media_types": media_types,
-                "artifacts": manifest_entries,
-            }
-        )
+        stage_sections.append(_summarize_stage_section(stage_id, manifest_entries))
 
     if stage_filter:
-        artifacts_payload = manifests_by_stage.get(stage_filter, [])
+        artifacts_payload = stage_sections[0]["artifacts"] if stage_sections else []
     else:
         artifacts_payload = [entry for section in stage_sections for entry in section["artifacts"]]
 
@@ -434,6 +424,10 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
     if not isinstance(checksum, str) or len(checksum) != 64:
         errors.append("checksum_sha256 invalid")
 
+    media_type_value = manifest.get("media_type") or manifest.get("mime_type")
+    if not isinstance(media_type_value, str) or not media_type_value.lower().startswith("video/"):
+        errors.append("media_type invalid")
+
     size_bytes = manifest.get("size_bytes")
     if not isinstance(size_bytes, int) or size_bytes <= 0:
         errors.append("size_bytes invalid")
@@ -450,8 +444,12 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
     if storage_hint not in {"adk", "local"}:
         errors.append("storage_hint invalid")
 
+    download_url = manifest.get("download_url")
     if storage_hint == "adk":
-        _require_str("download_url")
+        if not isinstance(download_url, str) or not download_url.strip():
+            errors.append("download_url missing for adk storage")
+    elif download_url not in (None, "") and not isinstance(download_url, str):
+        errors.append("download_url invalid")
 
     qa_passed = manifest.get("qa_passed")
     if not isinstance(qa_passed, bool):
@@ -470,6 +468,108 @@ def _ensure_video_final_manifest_present(manifests: Sequence[Mapping[str, Any]])
         if manifest.get("artifact_type") == "video_final" and manifest.get("stage_id") == "qa_publish":
             return
     raise HTTPException(status_code=409, detail="qa_publish manifest missing video_final entry")
+
+
+def _summarize_stage_section(stage_id: str, manifest_entries: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    artifacts = list(manifest_entries)
+    artifact_types = sorted({entry["artifact_type"] for entry in artifacts})
+    media_types = sorted({(entry.get("mime_type") or entry.get("media_type")) for entry in artifacts if entry.get("mime_type") or entry.get("media_type")})
+    preview = _build_stage_previews(artifacts)
+    media_summary = _aggregate_media_summary(artifacts)
+    qa_summary = _aggregate_qa_summary(artifacts)
+    created_first, created_last = _created_at_range(artifacts)
+    total_size = sum(entry.get("size_bytes") or 0 for entry in artifacts if isinstance(entry.get("size_bytes"), int))
+    total_duration = sum(entry.get("duration_s") or 0.0 for entry in artifacts if isinstance(entry.get("duration_s"), (int, float)))
+    return {
+        "stage_id": stage_id,
+        "count": len(artifacts),
+        "artifact_types": artifact_types,
+        "media_types": media_types,
+        "media_summary": media_summary,
+        "qa_summary": qa_summary,
+        "preview": preview,
+        "size_bytes_total": total_size,
+        "duration_s_total": total_duration,
+        "created_at": {
+            "first": created_first,
+            "last": created_last,
+        },
+        "artifacts": artifacts,
+    }
+
+
+def _build_stage_previews(artifacts: Sequence[Mapping[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
+    preview: Dict[str, Optional[Dict[str, Any]]] = {"image": None, "audio": None, "video": None, "other": None}
+    for entry in artifacts:
+        category = _classify_media_category(entry)
+        if category in preview and preview[category] is None:
+            preview[category] = _build_preview_entry(entry)
+        if category == "other" and preview["other"] is None:
+            preview["other"] = _build_preview_entry(entry)
+        if all(preview.values()):
+            break
+    return preview
+
+
+def _classify_media_category(entry: Mapping[str, Any]) -> str:
+    media_type_value = (entry.get("mime_type") or entry.get("media_type") or "").lower()
+    if media_type_value.startswith("video/"):
+        return "video"
+    if media_type_value.startswith("audio/"):
+        return "audio"
+    if media_type_value.startswith("image/"):
+        return "image"
+    return "other"
+
+
+def _build_preview_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
+    metadata = dict(entry.get("metadata") or {})
+    thumbnail = metadata.get("thumbnail") or metadata.get("thumbnail_uri") or metadata.get("preview_image")
+    if not thumbnail and _classify_media_category(entry) == "image":
+        thumbnail = entry.get("artifact_uri") or entry.get("local_path")
+    return {
+        "artifact_type": entry.get("artifact_type"),
+        "stage_id": entry.get("stage_id"),
+        "artifact_uri": entry.get("artifact_uri"),
+        "local_path": entry.get("local_path"),
+        "download_url": entry.get("download_url"),
+        "media_type": entry.get("media_type") or entry.get("mime_type"),
+        "thumbnail_uri": thumbnail,
+        "duration_s": entry.get("duration_s"),
+        "size_bytes": entry.get("size_bytes"),
+        "qa_passed": entry.get("qa_passed"),
+        "qa_mode": entry.get("qa_mode"),
+        "playback_ready": entry.get("playback_ready"),
+    }
+
+
+def _aggregate_media_summary(artifacts: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    summary: Dict[str, Dict[str, Any]] = {}
+    for entry in artifacts:
+        category = _classify_media_category(entry)
+        bucket = summary.setdefault(category, {"count": 0, "total_duration_s": 0.0, "playback_ready": False})
+        bucket["count"] += 1
+        if isinstance(entry.get("duration_s"), (int, float)):
+            bucket["total_duration_s"] += float(entry["duration_s"])
+        if entry.get("playback_ready"):
+            bucket["playback_ready"] = True
+    return summary
+
+
+def _aggregate_qa_summary(artifacts: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
+    values = [entry.get("qa_passed") for entry in artifacts if entry.get("qa_passed") is not None]
+    if not values:
+        return {"total": 0, "passed": 0, "failed": 0}
+    passed = sum(1 for value in values if value is True)
+    failed = sum(1 for value in values if value is False)
+    return {"total": len(values), "passed": passed, "failed": failed}
+
+
+def _created_at_range(artifacts: Sequence[Mapping[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+    timestamps = [entry.get("created_at") for entry in artifacts if isinstance(entry.get("created_at"), str)]
+    if not timestamps:
+        return None, None
+    return min(timestamps), max(timestamps)
 
 
 __all__ = ["app", "invoke", "RequestModel", "ResponseModel"]

@@ -97,6 +97,10 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     assert artifacts_data["total_artifacts"] == len(artifacts_data["artifacts"]) == sum(section["count"] for section in artifacts_data["stages"])
     dialogue_stage = next(section for section in artifacts_data["stages"] if section["stage_id"] == "dialogue_audio")
     assert dialogue_stage["count"] == len(dialogue_stage["artifacts"])
+    assert "preview" in dialogue_stage and dialogue_stage["preview"].get("audio")
+    media_summary = dialogue_stage.get("media_summary", {})
+    assert "audio" in media_summary
+    assert media_summary["audio"]["count"] >= 1
     timeline_entries = [item for item in dialogue_stage["artifacts"] if item["artifact_type"] == "tts_timeline_audio"]
     assert timeline_entries, "dialogue audio manifest entries should be exposed"
     assert timeline_entries[0]["stage_id"] == "dialogue_audio"
@@ -139,6 +143,9 @@ def test_artifacts_endpoint_returns_video_final_manifest(
         assert final_entry["download_url"], "download_url required for adk storage"
     else:
         assert final_entry["local_path"], "local_path required for local storage"
+    stage_section = data["stages"][0]
+    assert stage_section["preview"].get("video"), "video preview metadata should be available"
+    assert stage_section["qa_summary"]["total"] >= 1
 
 
 def test_artifacts_endpoint_stage_filter_isolated(
@@ -160,6 +167,8 @@ def test_artifacts_endpoint_stage_filter_isolated(
     assert stage_section["stage_id"] == "dialogue_audio"
     assert data["artifacts"] == stage_section["artifacts"]
     assert stage_section["count"] == len(stage_section["artifacts"])
+    assert "size_bytes_total" in stage_section
+    assert set(stage_section["preview"].keys()) == {"image", "audio", "video", "other"}
 
 
 def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,6 +200,37 @@ def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestCli
     resp = client.get("/artifacts", params={"run_id": "invalid-run", "stage": "qa_publish"})
     assert resp.status_code == 500
     assert "size_bytes" in resp.json()["detail"]
+
+
+def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {
+                "stage": "qa_publish",
+                "artifact_type": "video_final",
+                "name": "video_final.mp4",
+                "artifact_uri": "artifact://sparkle/video_final",
+                "media_type": "video/mp4",
+                "local_path": "/tmp/video_final.mp4",
+                "storage_hint": "adk",
+                "mime_type": "video/mp4",
+                "size_bytes": 1024,
+                "duration_s": 1.0,
+                "frame_rate": 24.0,
+                "resolution_px": "1280x720",
+                "checksum_sha256": "a" * 64,
+                "qa_report_uri": "artifact://sparkle/qa_report",
+                "qa_passed": True,
+                "qa_mode": "full",
+                "playback_ready": True,
+                "metadata": {},
+            }
+        ]
+
+    monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
+    resp = client.get("/artifacts", params={"run_id": "adk-missing", "stage": "qa_publish"})
+    assert resp.status_code == 500
+    assert "download_url" in resp.json()["detail"]
 
 
 def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

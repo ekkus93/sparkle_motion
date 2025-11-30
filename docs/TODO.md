@@ -192,7 +192,7 @@
   `docs/ARCHITECTURE.md` §Production run observability. *(RunRegistry now stores
   render profile + qa_mode metadata and emits timeline/log entries via `/status`
   responses; FastAPI tests updated 2025-11-30.)*
-- [ ] Implement `/artifacts?run_id=&stage=` that serves structured manifests
+- [x] Implement `/artifacts?run_id=&stage=` that serves structured manifests
   per stage, including thumbnails/audio/MP4 entries, and validate the
   `qa_publish` response contract (requires `artifact_type="video_final"`,
   `artifact_uri`, `local_path`, `download_url`, checksum) before responding as
