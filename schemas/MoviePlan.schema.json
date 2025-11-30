@@ -3,14 +3,50 @@
     "BaseImageSpec": {
       "description": "Keyframe specification shared across all shots.",
       "properties": {
+        "asset_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Uri"
+        },
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "local_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Local Path"
         },
         "metadata": {
           "additionalProperties": true,
           "title": "Metadata",
           "type": "object"
+        },
+        "mime_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mime Type"
         },
         "prompt": {
           "title": "Prompt",

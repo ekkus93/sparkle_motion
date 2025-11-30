@@ -7,6 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Union
 
 from pydantic import ValidationError
@@ -408,10 +409,16 @@ def _run_plan_intake(
         "run_context": _schema_metadata(schema_registry.run_context_schema()),
     }
 
-    base_image_map = {
-        image_id: (asset.path.as_posix() if asset.path else asset.spec.prompt)
-        for image_id, asset in base_image_assets.items()
-    }
+    base_image_map: Dict[str, str] = {}
+    for image_id, asset in base_image_assets.items():
+        entry: Optional[str] = None
+        if asset.path is not None:
+            entry = asset.path.as_posix()
+        else:
+            uri_value = asset.spec.asset_uri or asset.spec.metadata.get("asset_uri")
+            if isinstance(uri_value, str) and uri_value.strip():
+                entry = uri_value
+        base_image_map[image_id] = entry or asset.spec.prompt
 
     run_context = RunContext.from_plan(
         plan,
@@ -436,19 +443,98 @@ def _run_plan_intake(
     )
 
 
+def _base_image_extension(spec: BaseImageSpec, source_path: Optional[Path]) -> str:
+    mime = (spec.mime_type or spec.metadata.get("mime_type") or "").strip().lower()
+    if mime in {"image/png", "image/apng"}:
+        return ".png"
+    if mime in {"image/jpeg", "image/jpg"}:
+        return ".jpg"
+    if mime == "image/webp":
+        return ".webp"
+    if source_path and source_path.suffix:
+        return source_path.suffix
+    return ".bin"
+
+
+def _read_base_image_payload(spec: BaseImageSpec) -> tuple[Optional[bytes], Optional[Path]]:
+    for path in _base_image_candidate_paths(spec):
+        try:
+            return path.read_bytes(), path
+        except OSError:
+            continue
+    return None, None
+
+
+def _base_image_candidate_paths(spec: BaseImageSpec) -> List[Path]:
+    candidates: List[Path] = []
+    for value in (
+        spec.local_path,
+        spec.metadata.get("local_path"),
+        spec.metadata.get("asset_path"),
+    ):
+        path = _maybe_path_from_string(value)
+        if path is not None:
+            candidates.append(path)
+    for value in (spec.asset_uri, spec.metadata.get("asset_uri")):
+        path = _maybe_path_from_uri(value)
+        if path is not None:
+            candidates.append(path)
+    return candidates
+
+
+def _maybe_path_from_string(value: Any) -> Optional[Path]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        path = Path(value).expanduser()
+    except (OSError, TypeError):
+        return None
+    return path if path.exists() else None
+
+
+def _maybe_path_from_uri(value: Any) -> Optional[Path]:
+    if not value or not isinstance(value, str):
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"", "file"}:
+        return None
+    target = parsed.path if parsed.scheme else value
+    try:
+        path = Path(unquote(target)).expanduser()
+    except (OSError, TypeError):
+        return None
+    return path if path.exists() else None
+
+
 def _build_base_image_assets(base_images: Sequence[BaseImageSpec], plan_dir: Optional[Path]) -> Dict[str, _BaseImageAsset]:
+    def _write_metadata(spec: BaseImageSpec, target_dir: Path) -> Path:
+        target = target_dir / f"{spec.id}.json"
+        payload = _model_dump(spec)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        return target
+
     assets: Dict[str, _BaseImageAsset] = {}
     base_image_dir = plan_dir / "base_images" if plan_dir else None
     if base_image_dir is not None:
         base_image_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in base_images:
-        payload_dict = _model_dump(spec)
-        payload_bytes = json.dumps(payload_dict, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
-        asset_path: Optional[Path] = None
+        metadata_path: Optional[Path] = None
         if base_image_dir is not None:
-            asset_path = base_image_dir / f"{spec.id}.json"
+            metadata_path = _write_metadata(spec, base_image_dir)
+
+        payload_bytes, source_path = _read_base_image_payload(spec)
+        if payload_bytes is None:
+            payload_bytes = json.dumps(_model_dump(spec), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+
+        asset_path = source_path
+        if base_image_dir is not None:
+            suffix = _base_image_extension(spec, source_path)
+            asset_path = base_image_dir / f"{spec.id}{suffix}"
             asset_path.write_bytes(payload_bytes)
+        elif asset_path is None:
+            asset_path = source_path or metadata_path
+
         assets[spec.id] = _BaseImageAsset(spec=spec, path=asset_path, payload_bytes=payload_bytes)
     return assets
 

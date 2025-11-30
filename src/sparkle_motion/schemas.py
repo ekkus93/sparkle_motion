@@ -40,6 +40,9 @@ class BaseImageSpec(BaseModel):
 
     id: str
     prompt: str
+    asset_uri: Optional[str] = None
+    local_path: Optional[str] = None
+    mime_type: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 

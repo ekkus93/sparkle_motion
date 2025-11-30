@@ -231,6 +231,28 @@ def test_execute_plan_modes(tmp_path: Path, sample_plan: MoviePlan, monkeypatch:
         assert isinstance(base_map, dict) and base_map, "plan_intake should record base image map"
 
 
+def test_plan_intake_uses_base_image_local_path(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+    deterministic_media_assets: "MediaAssets",
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    source = tmp_path / "inputs" / "frame_local.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(deterministic_media_assets.image, source)
+    sample_plan.base_images[0].local_path = str(source)
+    sample_plan.base_images[0].mime_type = "image/png"
+
+    result = production_agent._run_plan_intake(sample_plan, plan_id="plan-assets", run_id="run-assets", output_dir=tmp_path)
+    asset = result.base_image_assets[sample_plan.base_images[0].id]
+    assert asset.path and asset.path.exists()
+    assert asset.path.suffix == ".png"
+    assert asset.payload_bytes == source.read_bytes()
+    mapped = result.run_context.base_image_map[sample_plan.base_images[0].id]
+    assert mapped == asset.path.as_posix()
+
+
 @pytest.mark.parametrize(
     "flags",
     [
