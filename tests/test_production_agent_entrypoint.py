@@ -93,11 +93,14 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     artifacts_data = artifacts_resp.json()
     assert artifacts_data["run_id"] == run_id
     assert isinstance(artifacts_data["artifacts"], list)
-    assert all("artifact_uri" in item and "stage_id" in item for item in artifacts_data["artifacts"])
-    dialogue_entries = [item for item in artifacts_data["artifacts"] if item["artifact_type"] == "tts_timeline_audio"]
-    assert dialogue_entries, "dialogue audio manifest entries should be exposed"
-    assert dialogue_entries[0]["stage_id"] == "dialogue_audio"
-    assert dialogue_entries[0]["name"].endswith("tts_timeline.wav")
+    assert isinstance(artifacts_data.get("stages"), list)
+    assert artifacts_data["total_artifacts"] == len(artifacts_data["artifacts"]) == sum(section["count"] for section in artifacts_data["stages"])
+    dialogue_stage = next(section for section in artifacts_data["stages"] if section["stage_id"] == "dialogue_audio")
+    assert dialogue_stage["count"] == len(dialogue_stage["artifacts"])
+    timeline_entries = [item for item in dialogue_stage["artifacts"] if item["artifact_type"] == "tts_timeline_audio"]
+    assert timeline_entries, "dialogue audio manifest entries should be exposed"
+    assert timeline_entries[0]["stage_id"] == "dialogue_audio"
+    assert timeline_entries[0]["name"].endswith("tts_timeline.wav")
 
     pause_resp = client.post("/control/pause", json={"run_id": run_id})
     assert pause_resp.status_code == 200
@@ -121,8 +124,11 @@ def test_artifacts_endpoint_returns_video_final_manifest(
     artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "qa_publish"})
     assert artifacts_resp.status_code == 200
     data = artifacts_resp.json()
-    entries = data["artifacts"]
+    assert data["run_id"] == run_id
+    assert len(data["stages"]) == 1
+    entries = data["stages"][0]["artifacts"]
     assert entries, "video_final manifest should be present"
+    assert data["artifacts"] == entries, "stage-filtered response should flatten to the same entries"
     final_entry = entries[0]
     assert final_entry["artifact_type"] == "video_final"
     assert final_entry["stage_id"] == "qa_publish"
@@ -133,6 +139,27 @@ def test_artifacts_endpoint_returns_video_final_manifest(
         assert final_entry["download_url"], "download_url required for adk storage"
     else:
         assert final_entry["local_path"], "local_path required for local storage"
+
+
+def test_artifacts_endpoint_stage_filter_isolated(
+    client: TestClient,
+    sample_plan: dict,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+
+    artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "dialogue_audio"})
+    assert artifacts_resp.status_code == 200
+    data = artifacts_resp.json()
+    assert len(data["stages"]) == 1
+    stage_section = data["stages"][0]
+    assert stage_section["stage_id"] == "dialogue_audio"
+    assert data["artifacts"] == stage_section["artifacts"]
+    assert stage_section["count"] == len(stage_section["artifacts"])
 
 
 def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,5 +220,35 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
 
     monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
     resp = client.get("/artifacts", params={"run_id": "missing-final", "stage": "qa_publish"})
+    assert resp.status_code == 409
+    assert "video_final" in resp.json()["detail"]
+
+
+def test_artifacts_endpoint_validates_video_final_on_aggregate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_grouped(run_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        return {
+            "qa_publish": [
+                {
+                    "run_id": run_id,
+                    "stage": "qa_publish",
+                    "artifact_type": "qa_report",
+                    "name": "qa_report.json",
+                    "artifact_uri": "artifact://sparkle/qa_report",
+                    "media_type": "application/json",
+                    "local_path": "/tmp/qa_report.json",
+                    "storage_hint": "local",
+                    "mime_type": "application/json",
+                    "size_bytes": 128,
+                    "qa_report_uri": "artifact://sparkle/qa_report",
+                    "qa_passed": True,
+                    "qa_mode": "full",
+                    "playback_ready": True,
+                    "metadata": {},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(production_entrypoint.registry, "get_artifacts_by_stage", _fake_grouped)
+    resp = client.get("/artifacts", params={"run_id": "aggregate-missing"})
     assert resp.status_code == 409
     assert "video_final" in resp.json()["detail"]

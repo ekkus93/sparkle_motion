@@ -165,23 +165,66 @@ def status(run_id: str) -> Dict[str, Any]:
 
 @app.get("/artifacts")
 def artifacts(run_id: str, stage: Optional[str] = None) -> Dict[str, Any]:
+    stage_filter = stage.strip() if stage else None
     try:
-        entries = registry.get_artifacts(run_id, stage=stage)
+        if stage_filter:
+            grouped_entries: Dict[str, List[Dict[str, Any]]] = {stage_filter: registry.get_artifacts(run_id, stage=stage_filter)}
+        else:
+            grouped_entries = registry.get_artifacts_by_stage(run_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown run_id {run_id}") from exc
-    manifests: List[Dict[str, Any]] = []
-    for entry in entries:
-        try:
-            manifest = _entry_to_manifest(entry, run_id)
-            manifests.append(manifest)
-        except HTTPException:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive validation guard
-            LOG.exception("Failed to validate manifest entry", extra={"run_id": run_id, "stage": entry.get("stage"), "error": str(exc)})
-            raise HTTPException(status_code=500, detail="Manifest validation failed") from exc
-    if stage and stage.strip().lower() == "qa_publish":
-        _ensure_video_final_manifest_present(manifests)
-    return {"run_id": run_id, "artifacts": manifests}
+
+    manifests_by_stage: Dict[str, List[Dict[str, Any]]] = {}
+    total_count = 0
+    for stage_id, entries in grouped_entries.items():
+        stage_manifests: List[Dict[str, Any]] = []
+        for entry in entries:
+            try:
+                manifest = _entry_to_manifest(entry, run_id)
+            except HTTPException:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive validation guard
+                LOG.exception(
+                    "Failed to validate manifest entry",
+                    extra={"run_id": run_id, "stage": entry.get("stage"), "error": str(exc)},
+                )
+                raise HTTPException(status_code=500, detail="Manifest validation failed") from exc
+            stage_manifests.append(manifest)
+        manifests_by_stage[stage_id] = stage_manifests
+        total_count += len(stage_manifests)
+
+    qa_stage_entries = manifests_by_stage.get("qa_publish")
+    stage_filter_normalized = stage_filter.lower() if stage_filter else None
+    if stage_filter_normalized == "qa_publish":
+        _ensure_video_final_manifest_present(qa_stage_entries or [])
+    elif qa_stage_entries:
+        _ensure_video_final_manifest_present(qa_stage_entries)
+
+    stage_sections: List[Dict[str, Any]] = []
+    for stage_id, manifest_entries in manifests_by_stage.items():
+        artifact_types = sorted({entry["artifact_type"] for entry in manifest_entries})
+        media_types = sorted({entry["mime_type"] for entry in manifest_entries if entry.get("mime_type")})
+        stage_sections.append(
+            {
+                "stage_id": stage_id,
+                "count": len(manifest_entries),
+                "artifact_types": artifact_types,
+                "media_types": media_types,
+                "artifacts": manifest_entries,
+            }
+        )
+
+    if stage_filter:
+        artifacts_payload = manifests_by_stage.get(stage_filter, [])
+    else:
+        artifacts_payload = [entry for section in stage_sections for entry in section["artifacts"]]
+
+    return {
+        "run_id": run_id,
+        "artifacts": artifacts_payload,
+        "stages": stage_sections,
+        "total_artifacts": total_count,
+    }
 
 
 @app.post("/control/pause")

@@ -735,22 +735,32 @@ artifacts remain in storage. Resume requests simply point at the same
 	(or `google.colab.widgets.TabBar`) so previews stay entirely Python-driven.
 	Include `stage="dialogue_audio"` in the sample notebook snippet so operators immediately
 	see the stitched `tts_timeline.wav` row alongside per-line dialogue manifests without
-	guessing which filter to use. Example helper:
+	guessing which filter to use. The `/artifacts` response now returns a `stages` array with
+	per-stage summaries (`count`, `artifact_types`, `media_types`) plus the flattened
+	`artifacts` list, so helpers should lean on that metadata instead of re-filtering
+	by hand. Example helper:
 
 	```python
 	import requests
 	from IPython.display import Audio, display
 
-	def fetch_dialogue_audio(run_id: str) -> list[dict]:
+	def fetch_dialogue_audio(run_id: str) -> tuple[list[dict], dict]:
 	    resp = requests.get(
 	        f"{PROD_BASE}/artifacts",
 	        params={"run_id": run_id, "stage": "dialogue_audio"},
 	        timeout=10,
 	    )
 	    resp.raise_for_status()
-	    return resp.json()["artifacts"]
+	    payload = resp.json()
+	    stage_section = payload["stages"][0]  # stage filter ensures exactly one section
+	    return stage_section["artifacts"], {
+	        "count": stage_section["count"],
+	        "artifact_types": stage_section["artifact_types"],
+	        "media_types": stage_section["media_types"],
+	    }
 
-	dialogue_rows = fetch_dialogue_audio(RUN_ID)
+	dialogue_rows, dialogue_meta = fetch_dialogue_audio(RUN_ID)
+	print(f"Loaded {dialogue_meta['count']} dialogue artifacts ({', '.join(dialogue_meta['media_types'])})")
 	timeline = next(entry for entry in dialogue_rows if entry["artifact_type"] == "tts_timeline_audio")
 	display(Audio(filename=timeline["local_path"], autoplay=False))
 	```
@@ -831,9 +841,11 @@ pause/resume/stop long productions without leaving the notebook.
 		        params={"run_id": run_id, "stage": "qa_publish"},
 		        timeout=10,
 		    )
-		    resp.raise_for_status()
-		    manifest = resp.json()["artifacts"]
-		    return next(item for item in manifest if item.get("artifact_type") == "video_final")
+			resp.raise_for_status()
+			payload = resp.json()
+			stage_section = payload["stages"][0]  # stage filter keeps this scoped to qa_publish
+			print(f"qa_publish emitted {stage_section['count']} artifact(s): {stage_section['artifact_types']}")
+			return next(item for item in stage_section["artifacts"] if item.get("artifact_type") == "video_final")
 
 		final_entry = fetch_final_entry(RUN_ID)
 		local_path = Path(final_entry.get("local_path", "/tmp/video_final.mp4"))

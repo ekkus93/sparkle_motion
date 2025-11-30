@@ -245,6 +245,16 @@ class RunRegistry:
                 result.extend(entry.as_dict() for entry in entries)
             return result
 
+    def get_artifacts_by_stage(self, run_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state:
+                raise KeyError(run_id)
+            grouped: Dict[str, List[Dict[str, Any]]] = {}
+            for stage_name, entries in state.artifacts.items():
+                grouped[stage_name] = [entry.as_dict() for entry in entries]
+            return grouped
+
     def pre_step_hook(self, run_id: str) -> Callable[[str], None]:
         def _hook(step_id: str) -> None:
             with self._lock:
