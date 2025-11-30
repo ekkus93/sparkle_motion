@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import time
+import wave
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, MutableMapping, Optional, Sequence, Union
@@ -13,9 +14,10 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Mutabl
 from pydantic import ValidationError
 
 from . import adk_helpers, observability, telemetry, videos_agent, tts_agent, schema_registry
+from .run_registry import ArtifactEntry, get_run_registry
 from .images_agent import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
-from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec, RunContext, StageEvent
+from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec, RunContext, StageEvent, StageManifest
 
 
 class ProductionAgentError(RuntimeError):
@@ -176,6 +178,27 @@ class _PlanIntakeResult:
     plan_path: Optional[Path]
     dialogue_timeline_path: Optional[Path]
     schema_meta: Dict[str, Dict[str, str]]
+    stage_manifests: List[StageManifest] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _DialogueStageResult:
+    line_entries: List[Dict[str, Any]]
+    line_paths: List[Path]
+    summary_path: Path
+    timeline_audio_path: Path
+    total_duration_s: float
+    sample_rate: int
+    channels: int
+    sample_width: int
+    stage_manifests: List[StageManifest]
+
+
+@dataclass(frozen=True)
+class _TimelineSegment:
+    kind: Literal["dialogue", "silence"]
+    duration: float
+    path: Optional[Path]
 
 
 def execute_plan(
@@ -223,6 +246,8 @@ def execute_plan(
         }
         # Remove None to keep metadata JSON-friendly
         meta = {key: value for key, value in meta.items() if value is not None}
+        _record_stage_manifest_entries(run_id=run_id, manifests=result.stage_manifests)
+        meta.setdefault("stage_manifest_count", len(result.stage_manifests))
         return StepResult(
             path=result.run_context_path,
             artifact_uri=str(result.run_context_path),
@@ -250,6 +275,55 @@ def execute_plan(
     base_images = plan_intake_result.base_image_lookup
     base_image_assets = plan_intake_result.base_image_assets
     voice_profiles = _character_voice_map(model)
+
+    dialogue_stage_holder: Dict[str, _DialogueStageResult] = {}
+
+    def _dialogue_stage_action() -> StepResult:
+        result = _run_dialogue_stage(
+            model,
+            plan_id=plan_id,
+            run_id=run_id,
+            output_dir=output_dir,
+            voice_profiles=voice_profiles,
+        )
+        dialogue_stage_holder["result"] = result
+        _record_stage_manifest_entries(run_id=run_id, manifests=result.stage_manifests)
+        meta_payload = {
+            "stage": "dialogue_audio",
+            "entry_count": len(result.line_entries),
+            "line_artifacts": result.line_entries,
+            "dialogue_paths": [path.as_posix() for path in result.line_paths],
+            "timeline_audio_path": result.timeline_audio_path.as_posix(),
+            "timeline_summary_path": result.summary_path.as_posix(),
+            "total_duration_s": result.total_duration_s,
+            "sample_rate": result.sample_rate,
+            "channels": result.channels,
+        }
+        return StepResult(
+            path=result.timeline_audio_path,
+            paths=tuple(result.line_paths + [result.timeline_audio_path]),
+            artifact_uri=result.timeline_audio_path.as_posix(),
+            meta=meta_payload,
+        )
+
+    try:
+        dialogue_record, _ = _run_step(
+            plan_id=plan_id,
+            run_id=run_id,
+            step_id=f"{plan_id}:dialogue_audio",
+            step_type="dialogue_audio",
+            gate_flag=cfg.tts_flag,
+            cfg=cfg,
+            action=_dialogue_stage_action,
+            meta={"stage": "dialogue_audio", "entry_count": len(model.dialogue_timeline)},
+            progress_callback=progress_callback,
+            pre_step_hook=pre_step_hook,
+        )
+        records.append(dialogue_record)
+    except StepRateLimitError as exc:
+        records.append(exc.record)
+        _record_summary_event(run_id, plan_id, "run", records)
+        raise
 
     try:
         for shot in model.shots:
@@ -431,6 +505,18 @@ def _run_plan_intake(
     )
     run_context_path = _persist_run_context(run_context, plan_dir)
 
+    stage_manifests = _build_plan_intake_manifests(
+        plan=plan,
+        plan_id=plan_id,
+        run_id=run_id,
+        plan_path=plan_path,
+        dialogue_timeline_path=timeline_path,
+        run_context_path=run_context_path,
+        schema_meta=schema_meta,
+        policy_decisions=policy_decisions,
+        base_image_map=base_image_map,
+    )
+
     return _PlanIntakeResult(
         base_image_lookup=base_image_lookup,
         base_image_assets=base_image_assets,
@@ -440,7 +526,319 @@ def _run_plan_intake(
         plan_path=plan_path,
         dialogue_timeline_path=timeline_path,
         schema_meta=schema_meta,
+        stage_manifests=stage_manifests,
     )
+
+
+def _run_dialogue_stage(
+    plan: MoviePlan,
+    *,
+    plan_id: str,
+    run_id: str,
+    output_dir: Optional[Path],
+    voice_profiles: Mapping[str, Mapping[str, Any]],
+) -> _DialogueStageResult:
+    if output_dir is None:
+        raise ProductionAgentError("dialogue stage requires an output directory in run mode")
+
+    timeline_dir = output_dir / "audio" / "timeline"
+    timeline_dir.mkdir(parents=True, exist_ok=True)
+    timeline_audio_path = timeline_dir / "tts_timeline.wav"
+    summary_path = timeline_dir / "dialogue_timeline_audio.json"
+
+    line_entries: List[Dict[str, Any]] = []
+    line_paths: List[Path] = []
+    segments: List[_TimelineSegment] = []
+
+    for index, entry in enumerate(plan.dialogue_timeline):
+        entry_type = getattr(entry, "type", "dialogue")
+        start_time = getattr(entry, "start_time_sec", 0.0)
+        duration = getattr(entry, "duration_sec", 0.0)
+        base_payload: Dict[str, Any] = {
+            "index": index,
+            "type": entry_type,
+            "start_time_sec": start_time,
+            "duration_sec": duration,
+            "character_id": getattr(entry, "character_id", None),
+        }
+        if entry_type == "silence":
+            segments.append(_TimelineSegment(kind="silence", duration=duration, path=None))
+            line_entries.append({**base_payload, "text": None, "artifact_uri": None, "local_path": None})
+            continue
+
+        text = getattr(entry, "text", "")
+        if not text or not text.strip():
+            raise ProductionAgentError(f"Dialogue timeline entry {index} must include text")
+        voice_config = _voice_config_for_character(getattr(entry, "character_id", None), voice_profiles, None)
+        step_label = f"dialogue_timeline:{index:04d}"
+        artifact = tts_agent.synthesize(
+            text,
+            voice_config=voice_config,
+            plan_id=plan_id,
+            step_id=step_label,
+            run_id=run_id,
+            output_dir=timeline_dir,
+        )
+        metadata = dict(artifact.get("metadata") or {})
+        source_path = metadata.get("source_path")
+        local_path = Path(source_path) if source_path else timeline_dir / f"timeline_{index:04d}.wav"
+        if not local_path.exists():
+            local_path.write_bytes(b"")
+        line_paths.append(local_path)
+        segments.append(
+            _TimelineSegment(
+                kind="dialogue",
+                duration=float(metadata.get("duration_s") or duration or 0.0),
+                path=local_path,
+            )
+        )
+        entry_payload: Dict[str, Any] = {
+            **base_payload,
+            "text": text,
+            "artifact_uri": artifact.get("uri"),
+            "local_path": local_path.as_posix(),
+            "voice_id": metadata.get("voice_id"),
+            "provider_id": metadata.get("provider_id"),
+            "duration_audio_s": metadata.get("duration_s"),
+            "sample_rate": metadata.get("sample_rate"),
+            "bit_depth": metadata.get("bit_depth"),
+            "watermarked": metadata.get("watermarked"),
+        }
+        voice_meta = metadata.get("voice_metadata")
+        if isinstance(voice_meta, Mapping):
+            entry_payload["voice_metadata"] = dict(voice_meta)
+        adapter_meta = metadata.get("adapter_metadata")
+        if isinstance(adapter_meta, Mapping):
+            entry_payload["adapter_metadata"] = dict(adapter_meta)
+        line_entries.append(entry_payload)
+
+    if not segments:
+        raise ProductionAgentError("dialogue_timeline must contain at least one entry to synthesize")
+
+    total_duration, sample_rate, sample_width, channels = _stitch_timeline_audio(segments, timeline_audio_path)
+
+    summary_payload = {
+        "plan_id": plan_id,
+        "run_id": run_id,
+        "entry_count": len(line_entries),
+        "lines": line_entries,
+        "timeline_audio": {
+            "path": timeline_audio_path.as_posix(),
+            "duration_s": total_duration,
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "sample_width_bytes": sample_width,
+        },
+    }
+    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    manifests: List[StageManifest] = []
+
+    def _manifest_metadata(extra: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "plan_id": plan_id,
+            "stage": "dialogue_audio",
+            "entry_count": len(line_entries),
+            "stage_manifest_schema": stage_manifest_schema_meta,
+        }
+        if extra:
+            payload.update(extra)
+        return _stage_event_metadata(payload)
+
+    manifests.append(
+        StageManifest(
+            run_id=run_id,
+            stage_id="dialogue_audio",
+            artifact_type="dialogue_timeline_audio",
+            name=summary_path.name,
+            artifact_uri=summary_path.as_posix(),
+            media_type="application/json",
+            local_path=summary_path.as_posix(),
+            storage_hint="local",
+            mime_type="application/json",
+            size_bytes=summary_path.stat().st_size,
+            metadata=_manifest_metadata({"summary": True}),
+            playback_ready=False,
+        )
+    )
+
+    manifests.append(
+        StageManifest(
+            run_id=run_id,
+            stage_id="dialogue_audio",
+            artifact_type="tts_timeline_audio",
+            name=timeline_audio_path.name,
+            artifact_uri=timeline_audio_path.as_posix(),
+            media_type="audio/wav",
+            local_path=timeline_audio_path.as_posix(),
+            storage_hint="local",
+            mime_type="audio/wav",
+            size_bytes=timeline_audio_path.stat().st_size,
+            duration_s=total_duration,
+            metadata=_manifest_metadata(
+                {
+                    "sample_rate": sample_rate,
+                    "channels": channels,
+                    "sample_width_bytes": sample_width,
+                }
+            ),
+            playback_ready=True,
+        )
+    )
+
+    return _DialogueStageResult(
+        line_entries=line_entries,
+        line_paths=line_paths,
+        summary_path=summary_path,
+        timeline_audio_path=timeline_audio_path,
+        total_duration_s=total_duration,
+        sample_rate=sample_rate,
+        channels=channels,
+        sample_width=sample_width,
+        stage_manifests=manifests,
+    )
+
+
+def _stitch_timeline_audio(segments: Sequence[_TimelineSegment], timeline_path: Path) -> tuple[float, int, int, int]:
+    sample_rate: Optional[int] = None
+    sample_width: Optional[int] = None
+    channels: Optional[int] = None
+    total_duration = 0.0
+    timeline_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with wave.open(str(timeline_path), "wb") as writer:
+        for segment in segments:
+            if segment.kind == "dialogue":
+                if segment.path is None or not segment.path.exists():
+                    raise ProductionAgentError("dialogue segment missing audio payload")
+                with wave.open(str(segment.path), "rb") as reader:
+                    sr = reader.getframerate()
+                    sw = reader.getsampwidth()
+                    ch = reader.getnchannels()
+                    frame_count = reader.getnframes()
+                    if sample_rate is None:
+                        sample_rate, sample_width, channels = sr, sw, ch
+                        writer.setnchannels(channels)
+                        writer.setsampwidth(sample_width)
+                        writer.setframerate(sample_rate)
+                    elif sr != sample_rate or sw != sample_width or ch != channels:
+                        raise ProductionAgentError("dialogue audio segments must share sample parameters")
+                    writer.writeframes(reader.readframes(frame_count))
+                    total_duration += frame_count / sr
+            else:
+                if sample_rate is None:
+                    sample_rate, sample_width, channels = 22050, 2, 1
+                    writer.setnchannels(channels)
+                    writer.setsampwidth(sample_width)
+                    writer.setframerate(sample_rate)
+                frames_needed = max(1, int(round(segment.duration * sample_rate)))
+                silence_chunk_frames = 4096
+                silence_frame = b"\x00" * sample_width * channels
+                written = 0
+                while written < frames_needed:
+                    batch = min(silence_chunk_frames, frames_needed - written)
+                    writer.writeframes(silence_frame * batch)
+                    written += batch
+                total_duration += frames_needed / sample_rate
+
+    if sample_rate is None or sample_width is None or channels is None:
+        raise ProductionAgentError("Failed to synthesize dialogue timeline audio")
+    return total_duration, sample_rate, sample_width, channels
+
+
+def _build_plan_intake_manifests(
+    *,
+    plan: MoviePlan,
+    plan_id: str,
+    run_id: str,
+    plan_path: Optional[Path],
+    dialogue_timeline_path: Optional[Path],
+    run_context_path: Optional[Path],
+    schema_meta: Mapping[str, Dict[str, str]],
+    policy_decisions: Sequence[str],
+    base_image_map: Mapping[str, str],
+) -> List[StageManifest]:
+    manifests: List[StageManifest] = []
+    stage_id = "plan_intake"
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+
+    def _make_metadata(schema_key: Optional[str], extra: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {
+            "plan_id": plan_id,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+        }
+        if schema_key:
+            schema_info = schema_meta.get(schema_key)
+            if schema_info:
+                metadata["schema"] = schema_info
+        if extra:
+            metadata.update(extra)
+        return metadata
+
+    def _append_manifest(
+        *,
+        path: Optional[Path],
+        artifact_type: str,
+        name: str,
+        schema_key: Optional[str],
+        extra_meta: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        if path is None:
+            return
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = None
+        metadata_payload = _stage_event_metadata(_make_metadata(schema_key, extra_meta))
+        manifest = StageManifest(
+            run_id=run_id,
+            stage_id=stage_id,
+            artifact_type=artifact_type,
+            name=name,
+            artifact_uri=path.as_posix(),
+            media_type="application/json",
+            local_path=path.as_posix(),
+            storage_hint="local",
+            mime_type="application/json",
+            size_bytes=size_bytes,
+            metadata=metadata_payload,
+            playback_ready=True,
+        )
+        manifests.append(manifest)
+
+    _append_manifest(
+        path=plan_path,
+        artifact_type="movie_plan",
+        name="movie_plan.json",
+        schema_key="movie_plan",
+        extra_meta={
+            "shot_count": len(plan.shots),
+            "base_image_count": len(plan.base_images),
+        },
+    )
+    _append_manifest(
+        path=dialogue_timeline_path,
+        artifact_type="dialogue_timeline",
+        name="dialogue_timeline.json",
+        schema_key=None,
+        extra_meta={
+            "entry_count": len(plan.dialogue_timeline),
+        },
+    )
+    _append_manifest(
+        path=run_context_path,
+        artifact_type="plan_run_context",
+        name="run_context.json",
+        schema_key="run_context",
+        extra_meta={
+            "policy_decisions": list(policy_decisions),
+            "base_image_map": dict(base_image_map),
+            "dialogue_timeline_uri": dialogue_timeline_path.as_posix() if dialogue_timeline_path else None,
+        },
+    )
+
+    return manifests
 
 
 def _base_image_extension(spec: BaseImageSpec, source_path: Optional[Path]) -> str:
@@ -1009,6 +1407,49 @@ def _record_stage_event(
         adk_helpers.write_memory_event(run_id=run_id, event_type="production_agent.stage_event", payload=payload)
     except adk_helpers.MemoryWriteError:
         pass
+
+
+def _record_stage_manifest_entries(*, run_id: str, manifests: Sequence[StageManifest]) -> None:
+    if not manifests:
+        return
+    registry = get_run_registry()
+    for manifest in manifests:
+        payload = manifest.model_dump() if hasattr(manifest, "model_dump") else manifest.dict()
+        try:
+            adk_helpers.write_memory_event(
+                run_id=run_id,
+                event_type="production_agent.stage_manifest",
+                payload=payload,
+            )
+        except adk_helpers.MemoryWriteError:
+            pass
+        entry = ArtifactEntry(
+            stage=manifest.stage_id,
+            artifact_type=manifest.artifact_type,
+            name=manifest.name,
+            artifact_uri=manifest.artifact_uri,
+            media_type=manifest.media_type,
+            local_path=manifest.local_path,
+            download_url=manifest.download_url,
+            storage_hint=manifest.storage_hint,
+            mime_type=manifest.mime_type,
+            size_bytes=manifest.size_bytes,
+            duration_s=manifest.duration_s,
+            frame_rate=manifest.frame_rate,
+            resolution_px=manifest.resolution_px,
+            checksum_sha256=manifest.checksum_sha256,
+            qa_report_uri=manifest.qa_report_uri,
+            qa_passed=manifest.qa_passed,
+            qa_mode=manifest.qa_mode,
+            playback_ready=manifest.playback_ready,
+            notes=manifest.notes,
+            metadata=dict(manifest.metadata),
+            created_at=manifest.created_at,
+        )
+        try:
+            registry.record_artifact(run_id, entry)
+        except Exception:
+            continue
 
 
 def _stage_event_metadata(meta: Mapping[str, Any]) -> Dict[str, Any]:

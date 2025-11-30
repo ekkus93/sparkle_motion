@@ -68,6 +68,7 @@ def test_invoke_run_mode_writes_artifact(
 
 def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_TTS", "1")
     resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
     assert resp.status_code == 200
     run_id = resp.json()["run_id"]
@@ -84,6 +85,10 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     assert artifacts_data["run_id"] == run_id
     assert isinstance(artifacts_data["artifacts"], list)
     assert all("artifact_uri" in item and "stage_id" in item for item in artifacts_data["artifacts"])
+    dialogue_entries = [item for item in artifacts_data["artifacts"] if item["artifact_type"] == "tts_timeline_audio"]
+    assert dialogue_entries, "dialogue audio manifest entries should be exposed"
+    assert dialogue_entries[0]["stage_id"] == "dialogue_audio"
+    assert dialogue_entries[0]["name"].endswith("tts_timeline.wav")
 
     pause_resp = client.post("/control/pause", json={"run_id": run_id})
     assert pause_resp.status_code == 200

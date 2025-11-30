@@ -153,17 +153,17 @@
   `docs/samples/function_tools/*.sample.json`).
 
 #### MoviePlan parity & stage orchestration
-- [ ] Extend `sparkle_motion.schemas.MoviePlan` (and script_agent output) to
+- [x] Extend `sparkle_motion.schemas.MoviePlan` (and script_agent output) to
   include the documented `base_images` inventory, top-level
   `dialogue_timeline`, and required `render_profile.video.model_id`, enforcing
   `len(base_images) == len(shots) + 1` and dialogue duration ≡ total shot
   runtime before any production_agent call (`docs/NOTEBOOK_AGENT_INTEGRATION.md`
-  §§Dialogue timeline/Base images, Render profile block).
-- [ ] Update shot data structures + validators so shots reference start/end
+  §§Dialogue timeline/Base images, Render profile block). *(Schemas + tests updated 2025-11-30; validators now reject mismatched base-image counts and timeline drift.)*
+- [x] Update shot data structures + validators so shots reference start/end
   base-image IDs instead of prompts, and teach production_agent to honor the
   continuity contract (reuse shot N end frame as shot N+1 start frame) before
   invoking downstream tools (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Start/end
-  frame continuity, Stage table rows).
+  frame continuity, Stage table rows). *(Schemas hardened + continuity assets persisted 2025-11-30; production tests assert frame-by-frame handoff.)*
 - [ ] Add a plan-intake stage that loads schema hashes from
   `schema_registry`, materializes a `RunContext`, enforces policy gates, and
   records StageEvent/StageManifest entries as described in

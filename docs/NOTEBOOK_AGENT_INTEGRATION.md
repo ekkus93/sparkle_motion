@@ -728,6 +728,30 @@ artifacts remain in storage. Resume requests simply point at the same
 	`asset_uri`, `media_type`, labels, and optional thumbnails. The control panel
 	renders these with `widgets.Image`, `widgets.Audio`, and `IPython.display.Video`
 	(or `google.colab.widgets.TabBar`) so previews stay entirely Python-driven.
+	Include `stage="dialogue_audio"` in the sample notebook snippet so operators immediately
+	see the stitched `tts_timeline.wav` row alongside per-line dialogue manifests without
+	guessing which filter to use. Example helper:
+
+	```python
+	import requests
+	from IPython.display import Audio, display
+
+	def fetch_dialogue_audio(run_id: str) -> list[dict]:
+	    resp = requests.get(
+	        f"{PROD_BASE}/artifacts",
+	        params={"run_id": run_id, "stage": "dialogue_audio"},
+	        timeout=10,
+	    )
+	    resp.raise_for_status()
+	    return resp.json()["artifacts"]
+
+	dialogue_rows = fetch_dialogue_audio(RUN_ID)
+	timeline = next(entry for entry in dialogue_rows if entry["artifact_type"] == "tts_timeline_audio")
+	display(Audio(filename=timeline["local_path"], autoplay=False))
+	```
+
+	The same rows drive whatever UI widget lists the individual per-line clips (the manifest’s
+	`metadata.entry_count` clarifies how many to expect).
 - **Pause / resume / stop**: add control endpoints to production_agent so the
 	notebook can orchestrate long-running jobs:
 	- `POST /control/pause` → `{ "run_id": "..." }`

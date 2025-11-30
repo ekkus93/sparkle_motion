@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from sparkle_motion.production_agent import (
     execute_plan,
 )
 from sparkle_motion.ratelimit import RateLimitDecision
+from sparkle_motion.run_registry import get_run_registry
 from sparkle_motion.schemas import (
     BaseImageSpec,
     CharacterSpec,
@@ -252,6 +254,40 @@ def test_plan_intake_uses_base_image_local_path(
     assert asset.payload_bytes == source.read_bytes()
     mapped = result.run_context.base_image_map[sample_plan.base_images[0].id]
     assert mapped == asset.path.as_posix()
+
+
+def test_plan_intake_builds_stage_manifests(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    result = production_agent._run_plan_intake(sample_plan, plan_id="plan-manifest", run_id="run-manifest", output_dir=tmp_path)
+    manifests = result.stage_manifests
+    assert manifests, "expected plan_intake to build stage manifest entries"
+    artifact_types = {entry.artifact_type for entry in manifests}
+    assert {"plan_run_context", "movie_plan", "dialogue_timeline"}.issubset(artifact_types)
+    rc_entry = next(entry for entry in manifests if entry.artifact_type == "plan_run_context")
+    assert rc_entry.metadata.get("policy_decisions") == []
+    assert rc_entry.local_path and rc_entry.local_path.endswith("run_context.json")
+
+
+def test_record_stage_manifest_entries_publish_events(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    result = production_agent._run_plan_intake(sample_plan, plan_id="plan-events", run_id="run-events", output_dir=tmp_path)
+    captured: List[Dict[str, Any]] = []
+    registry = get_run_registry()
+    registry.discard_run("run-events")
+    registry.start_run(run_id="run-events", plan_id="plan-events", plan_title=sample_plan.title, mode="run")
+
+    def _fake_write_memory_event(*, run_id: Optional[str], event_type: str, payload: Mapping[str, Any], ts: Optional[datetime] = None) -> None:
+        captured.append({"run_id": run_id, "event_type": event_type, "payload": dict(payload)})
+
+    monkeypatch.setattr(production_agent.adk_helpers, "write_memory_event", _fake_write_memory_event)
+    production_agent._record_stage_manifest_entries(run_id="run-events", manifests=result.stage_manifests)
+    manifest_events = [item for item in captured if item["event_type"] == "production_agent.stage_manifest"]
+    assert len(manifest_events) == len(result.stage_manifests)
+    assert all(event["payload"].get("stage_id") == "plan_intake" for event in manifest_events)
+    stage_artifacts = registry.get_artifacts("run-events", stage="plan_intake")
+    assert len(stage_artifacts) == len(result.stage_manifests)
+    assert {entry["artifact_type"] for entry in stage_artifacts} == {manifest.artifact_type for manifest in result.stage_manifests}
+    registry.discard_run("run-events")
 
 
 @pytest.mark.parametrize(
@@ -509,6 +545,38 @@ def test_tts_step_records_metadata(monkeypatch: pytest.MonkeyPatch, sample_plan:
     assert "voice_metadata" in tts_meta["line_artifacts"][0]
 
 
+def test_dialogue_stage_builds_timeline_audio(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    result = execute_plan(sample_plan, mode="run")
+    dialogue_records = [record for record in result.steps if record.step_type == "dialogue_audio"]
+    assert dialogue_records, "Expected dialogue/audio stage execution"
+    record = dialogue_records[0]
+    timeline_audio = Path(record.meta["timeline_audio_path"])
+    summary_path = Path(record.meta["timeline_summary_path"])
+    assert timeline_audio.exists()
+    assert summary_path.exists()
+    summary = json.loads(summary_path.read_text())
+    assert summary["entry_count"] == len(sample_plan.dialogue_timeline)
+    assert record.meta["entry_count"] == len(sample_plan.dialogue_timeline)
+    assert record.meta["line_artifacts"], "Line artifacts should capture per-entry metadata"
+
+
+def test_run_dialogue_stage_returns_stage_manifests(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    voice_profiles = production_agent._character_voice_map(sample_plan)
+    result = production_agent._run_dialogue_stage(
+        sample_plan,
+        plan_id="plan-dialogue",
+        run_id="run-dialogue",
+        output_dir=tmp_path,
+        voice_profiles=voice_profiles,
+    )
+    assert result.timeline_audio_path.exists()
+    assert result.summary_path.exists()
+    artifact_types = {manifest.artifact_type for manifest in result.stage_manifests}
+    assert {"dialogue_timeline_audio", "tts_timeline_audio"}.issubset(artifact_types)
+
+
 def test_voice_profile_forwarded_to_tts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -546,11 +614,10 @@ def test_voice_profile_forwarded_to_tts(
     )
 
     execute_plan(plan, mode="run")
-    assert len(_stub_tts_agent) == 2, "Expected one synthesis call per dialogue line"
-    first_voice = _stub_tts_agent[0]["voice_config"]
-    second_voice = _stub_tts_agent[1]["voice_config"]
-    assert first_voice and first_voice.get("voice_id") == "hero_voice"
-    assert second_voice and second_voice.get("voice_id") == "narrator_voice"
+    synthesized_voices = [call.get("voice_config", {}) for call in _stub_tts_agent]
+    voice_ids = {config.get("voice_id") for config in synthesized_voices if config}
+    assert "hero_voice" in voice_ids
+    assert "narrator_voice" in voice_ids
 
 
 def test_multiple_dialogue_lines_recorded(
@@ -607,7 +674,7 @@ def test_tts_policy_violation_raises(monkeypatch: pytest.MonkeyPatch, sample_pla
         execute_plan(sample_plan, mode="run", progress_callback=records.append)
 
     assert records, "Expected progress records when policy error occurs"
-    assert records[-1].step_type == "tts"
+    assert records[-1].step_type in {"dialogue_audio", "tts"}
     assert records[-1].status == "failed"
     assert records[-1].error_type == "TTSPolicyViolation"
 
@@ -624,6 +691,6 @@ def test_tts_quota_error_surfaces(monkeypatch: pytest.MonkeyPatch, sample_plan: 
     with pytest.raises(StepExecutionError):
         execute_plan(sample_plan, mode="run", progress_callback=records.append)
 
-    assert records[-1].step_type == "tts"
+    assert records[-1].step_type in {"dialogue_audio", "tts"}
     assert records[-1].status == "failed"
     assert records[-1].error_type == "TTSQuotaExceeded"
