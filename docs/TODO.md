@@ -197,7 +197,7 @@
   `qa_publish` response contract (requires `artifact_type="video_final"`,
   `artifact_uri`, `local_path`, `download_url`, checksum) before responding as
   mandated by THE_PLAN.md §Final deliverable contract.
-- [ ] Add `/control/pause`, `/control/resume`, and `/control/stop` endpoints
+- [x] Add `/control/pause`, `/control/resume`, and `/control/stop` endpoints
   that wrap the production_agent execution loop with asyncio gates so notebook
   buttons can pause/resume/stop jobs without killing processes
   (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §Production run dashboard, THE_PLAN.md

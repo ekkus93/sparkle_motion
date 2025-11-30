@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
@@ -65,15 +66,57 @@ class ArtifactEntry:
         }
 
 
+class AsyncControlGate:
+    """Dual-mode gate that mirrors state between threading and asyncio events."""
+
+    def __init__(self) -> None:
+        self._sync_event = threading.Event()
+        self._sync_event.set()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._async_event: Optional[asyncio.Event] = None
+        self._gate_lock = threading.RLock()
+
+    def wait_sync(self) -> None:
+        self._sync_event.wait()
+
+    async def wait_async(self) -> None:
+        event = self._ensure_async_event()
+        await event.wait()
+
+    def set(self) -> None:
+        self._sync_event.set()
+        self._notify_async("set")
+
+    def clear(self) -> None:
+        self._sync_event.clear()
+        self._notify_async("clear")
+
+    def _ensure_async_event(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        with self._gate_lock:
+            if self._async_event is None or self._loop is not loop:
+                self._async_event = asyncio.Event()
+                self._loop = loop
+                if self._sync_event.is_set():
+                    self._async_event.set()
+            return self._async_event
+
+    def _notify_async(self, action: Literal["set", "clear"]) -> None:
+        with self._gate_lock:
+            event = self._async_event
+            loop = self._loop
+        if not event or not loop or loop.is_closed():
+            return
+        callback = event.set if action == "set" else event.clear
+        loop.call_soon_threadsafe(callback)
+
+
 @dataclass
 class ControlState:
     pause_requested: bool = False
     stop_requested: bool = False
-    gate: threading.Event = field(default_factory=lambda: threading.Event())
+    gate: AsyncControlGate = field(default_factory=AsyncControlGate)
     last_command: Optional[Dict[str, Any]] = None
-
-    def __post_init__(self) -> None:
-        self.gate.set()
 
 
 @dataclass
@@ -262,13 +305,18 @@ class RunRegistry:
                 if not state:
                     return
                 state.current_stage = step_id
-                state.status = "running"
+                state.status = "paused" if state.control.pause_requested else "running"
                 state.updated_at = _now_iso()
                 control = state.control
             if control.stop_requested:
                 raise RunHalted(f"Run {run_id} stopped")
             if control.pause_requested:
-                control.gate.wait()
+                control.gate.wait_sync()
+                with self._lock:
+                    resumed_state = self._runs.get(run_id)
+                    if resumed_state:
+                        resumed_state.status = "running"
+                        resumed_state.updated_at = _now_iso()
                 if control.stop_requested:
                     raise RunHalted(f"Run {run_id} stopped")
 
@@ -395,6 +443,7 @@ def get_run_registry() -> RunRegistry:
 
 __all__ = [
     "ArtifactEntry",
+    "AsyncControlGate",
     "RunRegistry",
     "RunHalted",
     "get_run_registry",
