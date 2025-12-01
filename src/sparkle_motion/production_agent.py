@@ -19,7 +19,12 @@ except Exception:  # pragma: no cover - optional dependency
     qa_entrypoint = None
 
 from . import adk_helpers, observability, telemetry, videos_stage, tts_stage, schema_registry
-from .dialogue_timeline import DialogueTimelineError, DialogueSynthesizer, build_dialogue_timeline
+from .dialogue_timeline import (
+    DialogueTimelineBuilder,
+    DialogueTimelineError,
+    DialogueSynthesizer,
+    build_dialogue_timeline,
+)
 from .run_registry import ArtifactEntry, get_run_registry
 from .images_stage import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
@@ -613,14 +618,17 @@ def _run_dialogue_stage(
     def _resolve_voice(character_id: Optional[str]) -> Mapping[str, Any]:
         return _voice_config_for_character(character_id, voice_profiles, None)
 
+    builder = DialogueTimelineBuilder(
+        synthesizer=_AgentSynthesizer(),
+        voice_resolver=_resolve_voice,
+    )
+
     try:
-        build = build_dialogue_timeline(
+        build = builder.build(
             plan,
             plan_id=plan_id,
             run_id=run_id,
             output_dir=output_dir,
-            synthesizer=_AgentSynthesizer(),
-            voice_resolver=_resolve_voice,
         )
     except DialogueTimelineError as exc:
         raise ProductionAgentError(str(exc)) from exc

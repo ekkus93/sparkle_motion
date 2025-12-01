@@ -24,6 +24,7 @@ from sparkle_motion.production_agent import (
 )
 from sparkle_motion.ratelimit import RateLimitDecision
 from sparkle_motion.run_registry import get_run_registry
+from sparkle_motion.dialogue_timeline import DialogueTimelineBuild
 from sparkle_motion.schemas import (
     BaseImageSpec,
     CharacterSpec,
@@ -705,6 +706,98 @@ def test_dialogue_stage_builds_timeline_audio(monkeypatch: pytest.MonkeyPatch, s
     assert first_entry["timeline_padding_s"] >= 0.0
     total_plan_duration = sum(line.get("duration_sec", 0.0) for line in summary["lines"])
     assert pytest.approx(summary["timeline_audio"]["duration_s"], rel=1e-3) == total_plan_duration
+
+
+def test_run_dialogue_stage_uses_timeline_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    class _FakeBuilder:
+        def __init__(
+            self,
+            *,
+            synthesizer: Any,
+            voice_resolver: Any,
+            timeline_subdir: str = "audio/timeline",
+            timeline_audio_filename: str = "tts_timeline.wav",
+            summary_filename: str = "dialogue_timeline_audio.json",
+        ) -> None:
+            captured["builder_init"] = {
+                "timeline_subdir": timeline_subdir,
+                "timeline_audio_filename": timeline_audio_filename,
+                "summary_filename": summary_filename,
+            }
+            self._summary_filename = summary_filename
+            self._timeline_filename = timeline_audio_filename
+
+        def build(self, plan: MoviePlan, *, plan_id: str, run_id: str, output_dir: Path) -> DialogueTimelineBuild:
+            captured["build_args"] = {"plan_id": plan_id, "run_id": run_id, "plan_title": plan.title}
+            line_dir = output_dir / "lines"
+            line_dir.mkdir(parents=True, exist_ok=True)
+            line_path = line_dir / "line.wav"
+            line_path.write_bytes(b"00")
+            timeline_path = output_dir / self._timeline_filename
+            timeline_path.parent.mkdir(parents=True, exist_ok=True)
+            timeline_path.write_bytes(b"11")
+            summary_path = output_dir / self._summary_filename
+            summary_payload = {"entry_count": 1, "lines": [{"index": 0, "text": "stub"}]}
+            summary_path.write_text(json.dumps(summary_payload), encoding="utf-8")
+            offsets = {0: {"start_time_s": 0.0, "end_time_s": 1.0, "written_duration_s": 1.0}}
+            return DialogueTimelineBuild(
+                line_entries=[{"index": 0, "text": "stub", "start_time_sec": 0.0, "duration_sec": 1.0}],
+                line_paths=[line_path],
+                summary_path=summary_path,
+                summary_payload=summary_payload,
+                timeline_audio_path=timeline_path,
+                total_duration_s=1.0,
+                sample_rate=22050,
+                channels=1,
+                sample_width=2,
+                timeline_offsets=offsets,
+            )
+
+    monkeypatch.setattr(production_agent, "DialogueTimelineBuilder", _FakeBuilder)
+    result = production_agent._run_dialogue_stage(
+        sample_plan,
+        plan_id="plan-builder",
+        run_id="run-builder",
+        output_dir=tmp_path,
+        voice_profiles=production_agent._character_voice_map(sample_plan),
+    )
+
+    assert captured["build_args"]["plan_id"] == "plan-builder"
+    assert result.line_entries[0]["text"] == "stub"
+    assert result.summary_path.exists()
+    assert result.timeline_audio_path.exists()
+
+
+def test_dialogue_stage_reflects_plan_edits(
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    sample_plan.shots[0].duration_sec = 4.0
+    sample_plan.shots[0].dialogue[0].text = "Edited line"
+    sample_plan.dialogue_timeline[0].text = "Edited line"
+    sample_plan.dialogue_timeline[0].duration_sec = 4.0
+    if len(sample_plan.dialogue_timeline) > 1:
+        sample_plan.dialogue_timeline[1].start_time_sec = 4.0
+
+    result = production_agent._run_dialogue_stage(
+        sample_plan,
+        plan_id="plan-edit",
+        run_id="run-edit",
+        output_dir=tmp_path,
+        voice_profiles=production_agent._character_voice_map(sample_plan),
+    )
+
+    summary = json.loads(result.summary_path.read_text())
+    first_line = summary["lines"][0]
+    assert first_line["text"] == "Edited line"
+    assert pytest.approx(first_line["duration_sec"], rel=1e-3) == 4.0
+    assert pytest.approx(summary["lines"][1]["start_time_sec"], rel=1e-3) == 4.0
 
 
 def test_run_dialogue_stage_returns_stage_manifests(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:

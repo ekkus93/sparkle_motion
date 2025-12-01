@@ -8,6 +8,7 @@ import wave
 import pytest
 
 from sparkle_motion.dialogue_timeline import (
+    DialogueTimelineBuilder,
     DialogueSynthesizer,
     DialogueTimelineBuild,
     DialogueTimelineError,
@@ -205,3 +206,36 @@ def test_build_dialogue_timeline_requires_text(tmp_path: Path) -> None:
             synthesizer=synth,
             voice_resolver=_resolver,
         )
+
+    def test_dialogue_timeline_builder_uses_dependencies(tmp_path: Path) -> None:
+        entries = [
+            ("dialogue", 0.5, "Builder line", "hero"),
+        ]
+        plan = _make_plan(entries)
+        synth = FakeSynthesizer([0.5])
+        resolved_ids: List[Optional[str]] = []
+
+        def _recording_resolver(character_id: Optional[str]) -> Dict[str, Any]:
+            resolved_ids.append(character_id)
+            return {"voice_id": f"voice-{character_id or 'default'}"}
+
+        builder = DialogueTimelineBuilder(
+            synthesizer=synth,
+            voice_resolver=_recording_resolver,
+            timeline_subdir="builder",
+            timeline_audio_filename="custom_timeline.wav",
+            summary_filename="custom_summary.json",
+        )
+
+        result = builder.build(
+            plan,
+            plan_id="plan-builder",
+            run_id="run-builder",
+            output_dir=tmp_path,
+        )
+
+        assert result.summary_path.name == "custom_summary.json"
+        assert result.timeline_audio_path.name == "custom_timeline.wav"
+        assert result.summary_path.parent == tmp_path / "builder"
+        assert synth.calls and synth.calls[0]["plan_id"] == "plan-builder"
+        assert resolved_ids == [plan.dialogue_timeline[0].character_id]

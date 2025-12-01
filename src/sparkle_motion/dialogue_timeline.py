@@ -33,6 +33,37 @@ VoiceResolver = Callable[[Optional[str]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
+class DialogueTimelineBuilder:
+    """Helper that wires a synthesizer and voice resolver into the builder API."""
+
+    synthesizer: DialogueSynthesizer
+    voice_resolver: VoiceResolver
+    timeline_subdir: str = "audio/timeline"
+    timeline_audio_filename: str = "tts_timeline.wav"
+    summary_filename: str = "dialogue_timeline_audio.json"
+
+    def build(
+        self,
+        plan: MoviePlan,
+        *,
+        plan_id: str,
+        run_id: str,
+        output_dir: Path,
+    ) -> DialogueTimelineBuild:
+        return build_dialogue_timeline(
+            plan,
+            plan_id=plan_id,
+            run_id=run_id,
+            output_dir=output_dir,
+            synthesizer=self.synthesizer,
+            voice_resolver=self.voice_resolver,
+            timeline_subdir=self.timeline_subdir,
+            timeline_audio_filename=self.timeline_audio_filename,
+            summary_filename=self.summary_filename,
+        )
+
+
+@dataclass(frozen=True)
 class DialogueLineSpec:
     index: int
     entry_type: Literal["dialogue", "silence"]
