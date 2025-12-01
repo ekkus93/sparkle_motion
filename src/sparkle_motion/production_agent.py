@@ -371,6 +371,15 @@ def execute_plan(
             action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
             meta={"shot_count": len(model.shots)},
         )
+        _record_stage_manifest_entries(
+            run_id=run_id,
+            manifests=_build_assemble_stage_manifests(
+                run_id=run_id,
+                plan_id=plan_id,
+                assemble_path=final_result.path,
+                shot_count=len(model.shots),
+            ),
+        )
         records.append(final_record)
     except StepRateLimitError as exc:
         records.append(exc.record)
@@ -807,6 +816,281 @@ def _build_plan_intake_manifests(
     return manifests
 
 
+def _file_size(path: Optional[Path]) -> Optional[int]:
+    if path is None:
+        return None
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _build_shot_frames_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    summary_path: Optional[Path],
+    start_frame_path: Optional[str],
+    end_frame_path: Optional[str],
+) -> List[StageManifest]:
+    if summary_path is None:
+        return []
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": "images",
+            "shot_id": shot.id,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+            "start_base_image_id": shot.start_base_image_id,
+            "end_base_image_id": shot.end_base_image_id,
+            "start_frame_path": start_frame_path,
+            "end_frame_path": end_frame_path,
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:images",
+        artifact_type="shot_frames",
+        name=summary_path.name,
+        artifact_uri=summary_path.as_posix(),
+        media_type="application/json",
+        local_path=summary_path.as_posix(),
+        storage_hint="local",
+        mime_type="application/json",
+        size_bytes=_file_size(summary_path),
+        metadata=metadata,
+        playback_ready=True,
+    )
+    return [manifest]
+
+
+def _build_shot_video_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    video_path: Optional[Path],
+) -> List[StageManifest]:
+    if video_path is None:
+        return []
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": "video",
+            "shot_id": shot.id,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+            "duration_s": shot.duration_sec,
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:video",
+        artifact_type="shot_video",
+        name=video_path.name,
+        artifact_uri=video_path.as_posix(),
+        media_type="video/mp4",
+        local_path=video_path.as_posix(),
+        storage_hint="local",
+        mime_type="video/mp4",
+        size_bytes=_file_size(video_path),
+        duration_s=shot.duration_sec,
+        playback_ready=video_path.exists(),
+        metadata=metadata,
+    )
+    return [manifest]
+
+
+def _build_shot_tts_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    summary_path: Optional[Path],
+    dialogue_paths: Sequence[Path],
+    tts_meta: Optional[Mapping[str, Any]],
+) -> List[StageManifest]:
+    if summary_path is None:
+        return []
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    metadata_payload: Dict[str, Any] = {
+        "plan_id": plan_id,
+        "stage": "tts",
+        "shot_id": shot.id,
+        "stage_manifest_schema": stage_manifest_schema_meta,
+        "dialogue_paths": [path.as_posix() for path in dialogue_paths],
+    }
+    if tts_meta:
+        metadata_payload.update(
+            {
+                "lines": tts_meta.get("lines_synthesized"),
+                "total_duration_s": tts_meta.get("total_duration_s"),
+                "provider_id": tts_meta.get("provider_id"),
+                "voice_id": tts_meta.get("voice_id"),
+                "voice_metadata": tts_meta.get("voice_metadata"),
+            }
+        )
+    metadata = _stage_event_metadata(metadata_payload)
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:tts",
+        artifact_type="shot_dialogue_audio",
+        name=summary_path.name,
+        artifact_uri=summary_path.as_posix(),
+        media_type="application/json",
+        local_path=summary_path.as_posix(),
+        storage_hint="local",
+        mime_type="application/json",
+        size_bytes=_file_size(summary_path),
+        playback_ready=True,
+        metadata=metadata,
+    )
+    return [manifest]
+
+
+def _build_shot_lipsync_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    lipsync_path: Optional[Path],
+) -> List[StageManifest]:
+    if lipsync_path is None:
+        return []
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": "lipsync",
+            "shot_id": shot.id,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:lipsync",
+        artifact_type="shot_lipsync_video",
+        name=lipsync_path.name,
+        artifact_uri=lipsync_path.as_posix(),
+        media_type="video/mp4",
+        local_path=lipsync_path.as_posix(),
+        storage_hint="local",
+        mime_type="video/mp4",
+        size_bytes=_file_size(lipsync_path),
+        duration_s=shot.duration_sec,
+        playback_ready=lipsync_path.exists(),
+        metadata=metadata,
+    )
+    return [manifest]
+
+
+def _build_shot_qa_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    stage: Literal["qa_base_images", "qa_video"],
+    output_dir: Path,
+    qa_record: Optional[StepExecutionRecord],
+    qa_mode: str,
+) -> List[StageManifest]:
+    if qa_record is None:
+        return []
+    qa_meta = dict(qa_record.meta or {})
+    qa_meta.setdefault("qa_mode", qa_mode)
+    qa_passed = bool(qa_meta.get("qa_passed", qa_mode == "skip"))
+    qa_skipped = bool(qa_meta.get("qa_skipped", qa_mode == "skip"))
+    qa_dir = output_dir / "qa" / stage
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = qa_dir / f"{shot.id}.json"
+    payload = {
+        "plan_id": plan_id,
+        "shot_id": shot.id,
+        "qa_stage": stage,
+        "qa_mode": qa_meta.get("qa_mode", qa_mode),
+        "qa_passed": qa_passed,
+        "qa_skipped": qa_skipped,
+        "qa_decision": qa_meta.get("qa_decision"),
+        "qa_report_uri": qa_meta.get("qa_report_uri"),
+        "issue_count": qa_meta.get("issue_count"),
+        "qa_metadata": qa_meta.get("qa_metadata"),
+        "qa_report": qa_meta.get("qa_report"),
+        "human_task_id": qa_meta.get("human_task_id"),
+        "frames_inspected": qa_meta.get("frames_inspected"),
+    }
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    artifact_type = "shot_qa_base_images" if stage == "qa_base_images" else "shot_qa_video"
+    metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": stage,
+            "shot_id": shot.id,
+            "qa_passed": qa_passed,
+            "qa_skipped": qa_skipped,
+            "qa_decision": qa_meta.get("qa_decision"),
+            "issue_count": qa_meta.get("issue_count"),
+            "qa_report_uri": qa_meta.get("qa_report_uri"),
+            "stage_manifest_schema": stage_manifest_schema_meta,
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:{stage}",
+        artifact_type=artifact_type,
+        name=summary_path.name,
+        artifact_uri=summary_path.as_posix(),
+        media_type="application/json",
+        local_path=summary_path.as_posix(),
+        storage_hint="local",
+        mime_type="application/json",
+        size_bytes=_file_size(summary_path),
+        metadata=metadata,
+        qa_report_uri=qa_meta.get("qa_report_uri"),
+        qa_passed=qa_passed,
+        qa_mode=qa_meta.get("qa_mode", qa_mode),
+        qa_skipped=qa_skipped,
+    )
+    return [manifest]
+
+
+def _build_assemble_stage_manifests(
+    *,
+    run_id: str,
+    plan_id: str,
+    assemble_path: Optional[Path],
+    shot_count: int,
+) -> List[StageManifest]:
+    if assemble_path is None:
+        return []
+    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+    metadata = _stage_event_metadata(
+        {
+            "plan_id": plan_id,
+            "stage": "assemble",
+            "shot_count": shot_count,
+            "stage_manifest_schema": stage_manifest_schema_meta,
+        }
+    )
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id="assemble",
+        artifact_type="assembly_plan",
+        name=assemble_path.name,
+        artifact_uri=assemble_path.as_posix(),
+        media_type="application/json",
+        local_path=assemble_path.as_posix(),
+        storage_hint="local",
+        mime_type="application/json",
+        size_bytes=_file_size(assemble_path),
+        playback_ready=True,
+        metadata=metadata,
+    )
+    return [manifest]
+
+
 def _base_image_extension(spec: BaseImageSpec, source_path: Optional[Path]) -> str:
     mime = (spec.mime_type or spec.metadata.get("mime_type") or "").strip().lower()
     if mime in {"image/png", "image/apng"}:
@@ -1129,6 +1413,31 @@ def _execute_shot(
         )
         artifacts.frames_path = frames_result.path
 
+    frame_meta = dict(frames_result.meta or {})
+    _record_stage_manifest_entries(
+        run_id=run_id,
+        manifests=_build_shot_frames_manifests(
+            run_id=run_id,
+            plan_id=plan_id,
+            shot=shot,
+            summary_path=frames_result.path,
+            start_frame_path=frame_meta.get("start_frame_path"),
+            end_frame_path=frame_meta.get("end_frame_path"),
+        ),
+    )
+    _record_stage_manifest_entries(
+        run_id=run_id,
+        manifests=_build_shot_qa_manifests(
+            run_id=run_id,
+            plan_id=plan_id,
+            shot=shot,
+            stage="qa_base_images",
+            output_dir=output_dir,
+            qa_record=qa_record,
+            qa_mode=qa_mode,
+        ),
+    )
+
     if shot.dialogue:
         _, tts_result = _run_with_tracking(
             plan_id=plan_id,
@@ -1153,6 +1462,20 @@ def _execute_shot(
             },
         )
         artifacts.dialogue_paths = list(tts_result.paths or ([tts_result.path] if tts_result.path else []))
+        tts_meta_payload = dict(tts_result.meta or {})
+        summary_path_str = tts_meta_payload.get("summary_path")
+        summary_path = Path(summary_path_str) if summary_path_str else None
+        _record_stage_manifest_entries(
+            run_id=run_id,
+            manifests=_build_shot_tts_manifests(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot=shot,
+                summary_path=summary_path,
+                dialogue_paths=artifacts.dialogue_paths,
+                tts_meta=tts_meta_payload.get("tts"),
+            ),
+        )
 
     video_retry_count = 0
     _video_record, video_result = _run_with_tracking(
@@ -1232,6 +1555,28 @@ def _execute_shot(
         )
         artifacts.video_path = video_result.path
 
+    _record_stage_manifest_entries(
+        run_id=run_id,
+        manifests=_build_shot_video_manifests(
+            run_id=run_id,
+            plan_id=plan_id,
+            shot=shot,
+            video_path=artifacts.video_path,
+        ),
+    )
+    _record_stage_manifest_entries(
+        run_id=run_id,
+        manifests=_build_shot_qa_manifests(
+            run_id=run_id,
+            plan_id=plan_id,
+            shot=shot,
+            stage="qa_video",
+            output_dir=output_dir,
+            qa_record=qa_video_record,
+            qa_mode=qa_mode,
+        ),
+    )
+
     if shot.is_talking_closeup and artifacts.dialogue_paths and artifacts.video_path:
         _, lipsync_result = _run_with_tracking(
             plan_id=plan_id,
@@ -1246,6 +1591,15 @@ def _execute_shot(
             meta={"shot_id": shot.id},
         )
         artifacts.lipsync_path = lipsync_result.path
+        _record_stage_manifest_entries(
+            run_id=run_id,
+            manifests=_build_shot_lipsync_manifests(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot=shot,
+                lipsync_path=artifacts.lipsync_path,
+            ),
+        )
 
     return artifacts
 
@@ -1898,8 +2252,19 @@ def _synthesize_dialogue(
     }
     if isinstance(primary_voice_metadata, Mapping):
         tts_meta["voice_metadata"] = dict(primary_voice_metadata)
+    summary_payload = {
+        "shot_id": shot.id,
+        "lines": line_entries,
+        "dialogue_paths": [str(path) for path in line_paths],
+        "total_duration_s": total_duration,
+        "provider_id": tts_meta.get("provider_id"),
+        "voice_id": tts_meta.get("voice_id"),
+        "voice_metadata": tts_meta.get("voice_metadata"),
+    }
+    summary_path = audio_dir / "tts_summary.json"
+    summary_path.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return StepResult(
-        path=audio_dir,
+        path=summary_path,
         paths=tuple(line_paths),
         artifact_uri=primary_artifact_uri,
         model_id=(primary_metadata or {}).get("model_id"),
@@ -1907,6 +2272,7 @@ def _synthesize_dialogue(
             "tts": tts_meta,
             "dialogue_paths": [str(path) for path in line_paths],
             "lines": len(line_entries),
+            "summary_path": summary_path.as_posix(),
         },
     )
 

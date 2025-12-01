@@ -858,6 +858,13 @@ artifacts remain in storage. Resume requests simply point at the same
 	`artifacts` list, so helpers should lean on that metadata instead of re-filtering
 	by hand. Example helper:
 
+	- Shot-scoped manifests now include `shot_frames`, `shot_dialogue_audio`, `shot_video`, `shot_lipsync_video`,
+	  `shot_qa_base_images`, `shot_qa_video`, and `assembly_plan`. When rendering the accordion, surface the
+	  QA rows next to their corresponding media rows so operators can immediately see the decision
+	  (`qa_passed`, `qa_decision`, `issue_count`). The JSON summaries referenced by these manifests live under
+	  `artifacts/runs/<run_id>/<plan_id>/qa/<stage>/<shot_id>.json`; the UI should link to or expand that metadata
+	  when users hover a failed QA badge or choose a resume point.
+
 	```python
 	import requests
 	from IPython.display import Audio, display

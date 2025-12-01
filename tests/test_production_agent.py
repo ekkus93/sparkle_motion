@@ -341,6 +341,49 @@ def test_qa_publish_stage_emits_video_final_manifest(
     registry.discard_run(run_id)
 
 
+def test_shot_and_assemble_stage_manifests_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    run_id = "run-shot-manifests"
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id="plan-shot", plan_title=sample_plan.title, mode="run")
+    execute_plan(sample_plan, mode="run", run_id=run_id)
+    frames_entries = registry.get_artifacts(run_id, stage="shot-1:images")
+    assert frames_entries, "expected shot frames manifest"
+    assert frames_entries[-1]["artifact_type"] == "shot_frames"
+    assert frames_entries[-1]["local_path"].endswith("frames.json")
+    video_entries = registry.get_artifacts(run_id, stage="shot-1:video")
+    assert video_entries, "expected shot video manifest"
+    assert video_entries[-1]["artifact_type"] == "shot_video"
+    assert video_entries[-1]["duration_s"] == pytest.approx(sample_plan.shots[0].duration_sec)
+    tts_entries = registry.get_artifacts(run_id, stage="shot-1:tts")
+    assert tts_entries, "expected shot tts manifest"
+    assert tts_entries[-1]["artifact_type"] == "shot_dialogue_audio"
+    assert tts_entries[-1]["local_path"].endswith("tts_summary.json")
+    assert tts_entries[-1]["metadata"].get("dialogue_paths")
+    lipsync_entries = registry.get_artifacts(run_id, stage="shot-1:lipsync")
+    assert lipsync_entries, "expected shot lipsync manifest"
+    assert lipsync_entries[-1]["artifact_type"] == "shot_lipsync_video"
+    qa_frames_entries = registry.get_artifacts(run_id, stage="shot-1:qa_base_images")
+    assert qa_frames_entries, "expected shot base-image QA manifest"
+    assert qa_frames_entries[-1]["artifact_type"] == "shot_qa_base_images"
+    assert qa_frames_entries[-1]["local_path"].endswith("shot-1.json")
+    qa_video_entries = registry.get_artifacts(run_id, stage="shot-1:qa_video")
+    assert qa_video_entries, "expected shot video QA manifest"
+    assert qa_video_entries[-1]["artifact_type"] == "shot_qa_video"
+    assemble_entries = registry.get_artifacts(run_id, stage="assemble")
+    assert assemble_entries, "expected assemble manifest"
+    assert assemble_entries[-1]["artifact_type"] == "assembly_plan"
+    registry.discard_run(run_id)
+
+
 @pytest.mark.parametrize(
     "flags",
     [
