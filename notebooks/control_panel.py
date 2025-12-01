@@ -56,6 +56,7 @@ widgets = _load_widgets_module()
 display = _load_display()
 
 from sparkle_motion import tool_registry
+from notebooks import preview_helpers
 
 DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")
@@ -533,7 +534,23 @@ class ControlPanel:
     def _render_artifacts(self, payload: Dict[str, Any]) -> None:
         with self.artifacts_output:
             self.artifacts_output.clear_output()
-            print(_format_json(payload))
+            stages = payload.get("stages") or []
+            if not stages:
+                print(_format_json(payload))
+                return
+
+            for idx, stage_manifest in enumerate(stages, start=1):
+                stage_name = stage_manifest.get("stage") or stage_manifest.get("name") or f"stage_{idx}"
+                print(f"Stage: {stage_name}")
+                print(preview_helpers.render_stage_summary(stage_manifest))
+                preview_helpers.display_artifact_previews(
+                    stage_manifest,
+                    max_items=None,
+                    image_width=320,
+                    video_width=640,
+                    autoplay_audio=False,
+                )
+                print("\n" + "-" * 40)
 
     def _maybe_cache_plan_from_artifact(self, artifact_uri: Optional[str]) -> None:
         if not artifact_uri:

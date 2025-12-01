@@ -122,7 +122,7 @@
   - [x] Run Production in both `dry` and `run` modes, then exercise `Pause`/`Resume`/`Stop` buttons against real `/control/*` endpoints to confirm acknowledgements surface in the Control Responses pane. *(2025-12-01 — `run_f9dc34c1b3c8` dry run + `run_722444e2cdf8` full run via production_agent locally; `/control/{pause,resume,stop}` all returned `{"status":"acknowledged"}` within the control responses panel equivalent.)*
   - [x] Enable the status polling toggle once `/status` is available, validate that `/ready` + `/status` snapshots stream into the Status pane, and ensure the polling loop can be started/stopped without hanging the notebook. *(2025-12-01 — control panel now probes `/status`, auto-enables the Poll Status toggle, and streams `/ready`+`/status` snapshots into the timeline output without blocking the notebook.)*
   - [x] Test the artifacts viewer: specify a `run_id`, optionally a `stage`, and confirm `/artifacts` responses render (including `video_final` metadata) and auto-refresh when the checkbox is enabled. *(2025-12-01 — `notebooks/sparkle_motion.ipynb` Cell 4c exercised against production_agent run `run_68de8afd3a69`, manual refresh + summary cells logged 22 artifacts across `plan_intake→qa_publish`, and the viewer widgets now sync their Run ID with the control panel + auto-refresh without errors.)*
-  - [ ] After the "final deliverable" helper cell lands, verify inline MP4 embedding, QA badge rendering when `qa_skipped` is true, and Drive download fallbacks inside Colab.
+  - [x] After the "final deliverable" helper cell lands, verify inline MP4 embedding, QA badge rendering when `qa_skipped` is true, and Drive download fallbacks inside Colab. *(2025-12-01 — notebooks/sparkle_motion.ipynb Cells 21 & 22 configured `FINAL_VIDEO_DIR` locally, ran Cell 5 against `run_a12af6a94ab5`, embedded preview + 640px MP4, rendered QA badge, and exercised the Drive-download fallback messaging outside Colab.)*
   - [ ] Re-run the Drive helper + SDXL download workflow directly inside Google Colab (skip local testing for now; SDXL is ~16 GB and requires the Colab bandwidth/runtime).
    - [ ] Run the full Colab preflight sequence (auth, env vars, pip installs, Drive mount, GPU/disk checks, `/ready` probes) and confirm each helper cell succeeds end-to-end.
    - [ ] Generate multiple MoviePlans via the control panel, inspect the rendered plan JSON/tables, and confirm dialogue timeline, base_images count, and `render_profile` constraints all validate before production.
@@ -243,7 +243,7 @@
 - [x] Document the canonical port assignments and environment variables for
  each FunctionTool once the ipywidgets UI is wired (see
  `docs/NOTEBOOK_AGENT_INTEGRATION.md` §FunctionTool port map).
-- [ ] Capture and document the artifact preview patterns (image/audio/video
+- [x] Capture and document the artifact preview patterns (image/audio/video
   widget recipes) after the first UI prototype is validated, so future notebooks
   follow the same embedding conventions.
 

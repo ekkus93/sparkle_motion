@@ -919,6 +919,96 @@ This richer dashboard keeps the user informed about which stage is running,
 lets them preview every artifact as soon as it exists, and gives them agency to
 pause/resume/stop long productions without leaving the notebook.
 
+	#### Artifact preview recipes (images, audio, video)
+
+	Once `/artifacts` begins returning the richer `stages` payload, the notebook should
+	follow a consistent recipe for inline previews so operators never have to inspect
+	raw JSON. Every helper below assumes the response already filtered to a specific
+	stage (by passing `stage=...` in the query) which means `payload["stages"][0]`
+	is the manifest section to render.
+
+	1. **Extract the stage manifest** (count, artifact/media summaries, preview hints)
+	   and keep the flattened `artifacts` list for widget rendering:
+
+	   ```python
+	   from pathlib import Path
+	   from typing import Any, Dict, List
+
+	   def load_stage_manifest(run_id: str, stage: str) -> Dict[str, Any]:
+		   resp = requests.get(
+			   f"{PROD_BASE}/artifacts",
+			   params={"run_id": run_id, "stage": stage},
+			   timeout=15,
+		   )
+		   resp.raise_for_status()
+		   data = resp.json()
+		   if not data["stages"]:
+			   raise RuntimeError(f"Stage {stage} returned no artifacts")
+		   return data["stages"][0]
+	   ```
+
+	2. **Images**: prefer `widgets.Image` so previews stay in-line without blocking
+	   autoplay. Use manifest metadata (width/height, format) when present but fall
+	   back to the filename extension.
+
+	   ```python
+	   import base64
+	   import mimetypes
+	   import ipywidgets as widgets
+
+	   def render_image_row(entry: Dict[str, Any], *, width: int = 320) -> widgets.Widget:
+		   local_path = Path(entry["local_path"])
+		   mime = entry.get("metadata", {}).get("mime_type") or mimetypes.guess_type(local_path.name)[0] or "image/png"
+		   encoded = base64.b64encode(local_path.read_bytes())
+		   return widgets.Image(value=encoded, format=mime.split("/")[-1], width=width)
+	   ```
+
+	   Wrap these in a `widgets.HBox` / `widgets.Accordion` when stages emit many
+	   thumbnails (e.g., `base_images`). If `local_path` is missing, download the
+	   file to `/content/artifacts/<run_id>/` before rendering and always update the
+	   manifest row with the cached path so future renders stay local.
+
+	3. **Audio**: rely on `IPython.display.Audio` to embed waveforms in the same
+	   output panel. Respect the manifest’s `media_summary.audio.total_duration_s`
+	   when labeling clips so users can see runtime at a glance.
+
+	   ```python
+	   from IPython.display import Audio, display
+
+	   def render_audio_stage(manifest: Dict[str, Any]) -> None:
+		   rows = manifest["artifacts"]
+		   print(f"Loaded {len(rows)} audio artifacts ({manifest['media_summary']['audio']['total_duration_s']:.1f}s)")
+		   for row in rows:
+			   label = row.get("label") or row.get("artifact_type", "audio")
+			   display(Audio(filename=row["local_path"], autoplay=False))
+			   print(label, "→", row["local_path"])
+	   ```
+
+	4. **Video**: `IPython.display.Video` keeps the UX consistent with the final
+	   deliverable helper. Use the manifest’s `preview.video.playback_ready` flag to
+	   decide whether to show the inline player or emit a warning that the clip must
+	   be downloaded manually first.
+
+	   ```python
+	   from IPython.display import Video
+
+	   def render_video_entry(entry: Dict[str, Any], *, width: int = 640) -> None:
+		   if not Path(entry.get("local_path", "")).exists():
+			   raise FileNotFoundError("Video local_path missing; download the artifact first")
+		   display(Video(filename=entry["local_path"], embed=True, width=width))
+	   ```
+
+	5. **QA badges & warnings**: every preview widget should read the manifest’s
+	   `qa_summary` when available and add a banner (e.g., `widgets.HTML`) indicating
+	   whether QA passed, failed, or was skipped. This matches the dashboard’s
+	   requirement to badge skip paths even when media renders successfully.
+
+	These helpers live in regular notebook cells (or a lightweight
+	`notebooks/preview_helpers.py` module) so the control panel outputs can call
+	`render_image_row`, `render_audio_stage`, or `render_video_entry` whenever the
+	user toggles the Artifacts pane. Keeping the recipes centralized also makes it
+	easy to evolve the UX (e.g., switch to carousels) without rewriting each cell.
+
 	#### Final deliverable preview & download
 
 	- The `qa_publish` stage must emit an `/artifacts` manifest entry with
