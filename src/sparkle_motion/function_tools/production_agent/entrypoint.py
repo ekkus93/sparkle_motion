@@ -244,11 +244,16 @@ def _load_plan_from_uri(uri: Optional[str]) -> Optional[MoviePlan]:
     if not path.exists():
         raise HTTPException(status_code=400, detail=f"plan_uri path not found: {path}")
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"plan_uri JSON decode failed: {exc}") from exc
+    plan_payload = raw_payload
+    if isinstance(raw_payload, dict):
+        nested = raw_payload.get("validated_plan") or raw_payload.get("plan")
+        if isinstance(nested, dict):
+            plan_payload = nested
     try:
-        return MoviePlan.model_validate(payload) if hasattr(MoviePlan, "model_validate") else MoviePlan.parse_obj(payload)
+        return MoviePlan.model_validate(plan_payload) if hasattr(MoviePlan, "model_validate") else MoviePlan.parse_obj(plan_payload)
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=400, detail=f"plan_uri schema validation failed: {exc}") from exc
 

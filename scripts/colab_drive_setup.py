@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 from typing import Optional
 
 from sparkle_motion.colab_helper import download_model, ensure_workspace, run_smoke_check
 
 
-def _mount_drive(mount_point: str) -> Path:
-    try:
+def _resolve_drive_root(mount_point: str, local_root: Optional[str]) -> Path:
+    if importlib.util.find_spec("google.colab") is not None:
         from google.colab import drive  # type: ignore
-    except ImportError as exc:  # pragma: no cover - only runs inside Colab
-        raise RuntimeError("google.colab is only available inside a Colab runtime") from exc
 
-    drive.mount(mount_point, force_remount=False)
-    return Path(mount_point)
+        drive.mount(mount_point, force_remount=False)
+        return Path(mount_point)
+
+    if local_root:
+        path = Path(local_root).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        print(f"[local] google.colab not detected; using {path} as workspace root")
+        return path
+
+    raise RuntimeError(
+        "google.colab is only available inside Colab. Specify --local-root to use a local filesystem path.",
+    )
 
 
 def main(argv: Optional[list[str]] = None) -> None:
@@ -26,6 +35,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--mount-point",
         default="/content/drive",
         help="Path where Google Drive will be mounted",
+    )
+    parser.add_argument(
+        "--local-root",
+        help="Local filesystem path to use when google.colab is unavailable",
     )
     parser.add_argument(
         "--repo-id",
@@ -80,7 +93,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             seen.add(repo_id)
             models.append(repo_id)
 
-    drive_root = _mount_drive(args.mount_point)
+    drive_root = _resolve_drive_root(args.mount_point, args.local_root)
     workspace_root = drive_root / "MyDrive" / args.workspace
     layout = ensure_workspace(workspace_root)
 

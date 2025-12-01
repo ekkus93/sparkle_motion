@@ -103,32 +103,133 @@ Key guidelines:
 		a background thread) bound to `localhost:<port>`.
 	- Cells display readiness indicators by hitting `/ready` endpoints before
 		exposing UI controls.
-3. **Control panel cell**
-	- Builds a widget layout (HBox/VBox/GridBox) with input fields (prompt/title),
-		buttons (`Generate Plan`, `Run Production`, `Pause`, `Resume`, `Stop`), and
-		dedicated `widgets.Output` panes for logs/artifacts.
+	**Control panel cell**
+	- Builds a widget layout (HBox/VBox/GridBox) with the prompt/title inputs plus
+		new helpers: a `Plan URI` field paired with a `Load Plan JSON` button, run
+		mode dropdowns (`Mode`, `QA Mode`), a `Send plan inline` checkbox, and
+		`Run ID`/`Stage` filters for the artifact viewer. All controls sit above the
+		same `Generate Plan`, `Run Production`, `Pause`, `Resume`, and `Stop`
+		buttons.
+	- The plan viewer area now auto-renders summary counts (plan_id, shots,
+		base-images, dialogue entries) whenever a plan artifact is parsed, so
+		operators can confirm schema health before triggering production.
 	- Button callbacks call helper coroutines that invoke:
 		- `POST http://localhost:8101/invoke` to generate a MoviePlan.
 		- `POST http://localhost:8200/invoke` with the plan or artifact URI to run
 			production_agent.
 	- A lightweight polling task (async or timer-based) refreshes `/ready` and
-		`/status` results and pushes the data into widget displays.
+		`/status` results and pushes the data into widget displays. Users can also
+		toggle a streaming status pane, auto-fetch artifacts, or manually refresh
+		specific stages through the same control surface.
 
 ### 2. Plan generation + review loop
 
-1. User enters a prompt/title and clicks `Generate Plan`.
-2. The `Generate Plan` button callback posts the payload via Python, captures
-	`artifact_uri`, and caches the validated plan in a notebook variable.
-3. Widgets (table, accordion, or text area) reflect the plan JSON so users can
-	inspect/edit before production.
-4. UI exposes a “Review Plan” section showing shots, the script_agent-generated
+1.	User enters a prompt/title and clicks `Generate Plan`.
+2.	The `Generate Plan` button callback posts the payload via Python, captures
+	`artifact_uri`, and caches the validated plan in a notebook variable while also
+	autofilling the `Plan URI` text field.
+3.	Users click `Load Plan JSON` to parse the artifact (supports `file://` URIs)
+	and the `Plan Details` pane prints a summary with plan_id, shot/base-image
+	counts, and dialogue timeline entries. This feedback loop happens before any
+	production call so schema regressions are caught immediately.
+4.	Widgets (table, accordion, or text area) reflect the plan JSON so users can
+	inspect/edit before production. Checking “Send plan inline” embeds the cached
+	payload in the next `production_agent` request; leaving it unchecked causes the
+	panel to reference the artifact URI instead.
+5.	UI exposes a “Review Plan” section showing shots, the script_agent-generated
 	dialogue timeline, and the base-image thumbnails; user can edit inline or
 	download/edit/upload before approving production.
-5. If edits are made, notebook cell updates the plan payload before handing it
+6.	If edits are made, notebook cell updates the plan payload before handing it
 	off to production_agent. Manual edits run through the same MoviePlan schema
 	validator before any downstream call, so malformed changes are surfaced to the
 	user immediately. (Future work: expose “Refine with ScriptAgent” actions so
 	users can request targeted regenerations directly from the notebook UI.)
+
+#### Run + QA toggles
+
+- The `Mode` dropdown mirrors the production_agent `mode` flag (`dry` vs.
+	`run`). Dry-runs stop after validation/QA wiring so operators can iterate
+	quickly, while `run` drives the full clip rendering + lipsync path.
+- The `QA Mode` dropdown exposes the `qa_mode` argument without editing env vars.
+	`Full QA` is the default and should be used for deliverables; `Skip QA` matches
+	the `qa_mode="skip"` behavior described below and badges the run as
+	“non-validated.”
+
+#### Plan artifact loader vs. inline submission
+
+- The `Plan URI` field is set automatically after `script_agent` responds but
+	can also accept pasted URIs from prior runs. The `Load Plan JSON` button reads
+	the artifact from disk (or `file://` URIs) and caches the `validated_plan`
+	payload for reuse.
+- When “Send plan inline” is checked, the cached payload is embedded directly in
+	the `production_agent` request. Otherwise the run references the artifact URI.
+	This makes it easy to hand-edit plans in the notebook and send them without
+	writing a new artifact.
+- The plan summary output documents how many shots, base images, and dialogue
+	entries the payload contains so discrepancies are obvious before a run starts.
+
+#### Status + artifact monitoring
+
+- `Poll Status` spins up an `asyncio` task that alternates between `/ready` and
+	`/status` calls. The `Interval (s)` widget adjusts cadence without editing
+	code.
+- Enabling `Auto-fetch artifacts` causes every poll iteration to call
+	`/artifacts` for the current Run ID, optionally filtered by the `Stage` text
+	box (e.g., `qa_publish`).
+- The `Refresh Artifacts` button triggers an immediate fetch using the same
+	filters so operators can pause polling but still inspect new files on demand.
+- Separate `widgets.Output` panes display one-shot control responses, the live
+	status stream, and artifact JSON. This keeps run telemetry, artifacts, and plan
+	state visible without scrolling between notebook cells.
+
+#### Control panel quickstart cell
+
+- The Colab notebook now includes a dedicated "Quickstart: Launch the control
+	panel" section. Run the accompanying code cell to execute:
+
+	```python
+	from notebooks.control_panel import create_control_panel
+	control_panel = create_control_panel()
+	control_panel
+	```
+
+	This cell imports `create_control_panel`, instantiates the widget stack using
+	the `local-colab` profile, and assigns the resulting object to a global
+	`control_panel` variable so downstream helper cells (final deliverable preview,
+	plan inspectors, etc.) can reuse the same run metadata.
+- When the quickstart cell completes you should see the ipywidgets surface
+	directly in the notebook, matching the screenshots earlier in this document.
+	If the FastAPI endpoints are not running, the cell displays the HTTP error in
+	the Script Agent or Production Agent output panes so you can restart the tool
+	process.
+- Operators who need custom timeouts or alternative endpoint profiles can skip
+	the quickstart cell and instead run the "Notebook control panel prototype"
+	section immediately below it, which demonstrates manual `PanelEndpoints`
+	creation and `ControlPanel` instantiation.
+
+### FunctionTool port map (local-colab profile)
+
+The control panel assumes the `local-colab` ToolRegistry profile defined in
+`configs/tool_registry.yaml`. Launch each tool inside the Colab runtime with the
+command shown below (one cell per tool). Only override ports when another
+process already occupies the default.
+
+| Tool ID | Default port | Launch snippet | Fixture / smoke env vars |
+| --- | --- | --- | --- |
+| `script_agent` | `5001` | `PYTHONPATH=src python scripts/run_function_tool.py --tool script_agent --port 5001` | `SCRIPT_AGENT_MODEL` (LLM to call), `ADK_USE_FIXTURE=1` to keep deterministic outputs |
+| `images_sdxl` | `5002` | `PYTHONPATH=src python scripts/run_function_tool.py --tool images_sdxl --port 5002` | `SMOKE_IMAGES=1` / `SMOKE_ADAPTERS=1` to exercise SDXL, `IMAGES_SDXL_FIXTURE_ONLY=1` to pin fixtures, `IMAGES_SDXL_MODEL` + `IMAGES_SDXL_DEVICE` select checkpoints |
+| `videos_wan` | `5003` | `PYTHONPATH=src python scripts/run_function_tool.py --tool videos_wan --port 5003` | `SMOKE_VIDEOS=1`, `SMOKE_ADAPTERS=1`, or `SMOKE_ADK=1` for Wan2.1, `VIDEOS_WAN_FIXTURE_ONLY=1` for fixtures, `VIDEOS_WAN_MODEL` / `VIDEOS_WAN_DEVICE_PRESET` override model/device maps |
+| `tts_chatterbox` | `5004` | `PYTHONPATH=src python scripts/run_function_tool.py --tool tts_chatterbox --port 5004` | `SMOKE_TTS=1` / `SMOKE_ADAPTERS=1` for real synthesis, `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`, `TTS_CHATTERBOX_CACHE_TTL_S` tune the backend |
+| `lipsync_wav2lip` | `5005` | `PYTHONPATH=src python scripts/run_function_tool.py --tool lipsync_wav2lip --port 5005` | `SMOKE_LIPSYNC=1` (or `SMOKE_ADAPTERS=1`) to invoke Wav2Lip, `LIPSYNC_WAV2LIP_FIXTURE_ONLY=1` to force fixtures, `WAV2LIP_REPO` / `WAV2LIP_CHECKPOINT` point at local assets |
+| `assemble_ffmpeg` | `5006` | `PYTHONPATH=src python scripts/run_function_tool.py --tool assemble_ffmpeg --port 5006` | `SMOKE_ASSEMBLE=1` / `SMOKE_ADAPTERS=1` to run ffmpeg, `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1` to clamp fixtures, `FFMPEG_PATH` selects the binary |
+| `qa_qwen2vl` | `5007` | `PYTHONPATH=src python scripts/run_function_tool.py --tool qa_qwen2vl --port 5007` | `SMOKE_QA=1` to enable Qwen2-VL, `QA_QWEN2VL_FIXTURE_ONLY=1` to stay on fixtures, `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_DTYPE`, `QA_QWEN2VL_ATTN` adjust inference |
+| `production_agent` | `5008` | `PYTHONPATH=src python scripts/run_function_tool.py --tool production_agent --port 5008` | Stage-level flags (`SMOKE_TTS`, `SMOKE_LIPSYNC`, `SMOKE_VIDEOS`, `SMOKE_IMAGES`, `SMOKE_ASSEMBLE`, `SMOKE_QA`, `SMOKE_ADAPTERS`) control which adapters run for real; `SPARKLE_DB_PATH` picks the SQLite store; `ADK_USE_FIXTURE=1` keeps every FunctionTool on fixtures |
+
+All commands assume the `sparkle_motion` conda environment is active and that
+your notebook session exported `SPARKLE_DB_PATH`/`ARTIFACTS_DIR` before launching
+any tools. If you change ports or environment variables, update
+`configs/tool_registry.yaml` and rerun the quickstart cell so the control panel
+points at the correct endpoints.
 
 ##### Dialogue timeline structure (script_agent output)
 

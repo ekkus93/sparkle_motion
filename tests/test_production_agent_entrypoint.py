@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi.testclient import TestClient
@@ -51,6 +52,23 @@ def test_invoke_dry_mode(client: TestClient, sample_plan: dict) -> None:
     assert data["artifact_uris"] == []
     assert data["run_id"]
     assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
+
+
+def test_invoke_plan_uri_with_validated_plan(client: TestClient, sample_plan: dict, tmp_path) -> None:
+    artifact_path = tmp_path / "plan_artifact.json"
+    artifact_payload = {
+        "request": {"title": sample_plan["title"]},
+        "validated_plan": sample_plan,
+    }
+    artifact_path.write_text(json.dumps(artifact_payload), encoding="utf-8")
+    resp = client.post(
+        "/invoke",
+        json={"plan_uri": f"file://{artifact_path}", "mode": "dry"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert data["run_id"]
 
 
 def test_invoke_run_mode_writes_artifact(
