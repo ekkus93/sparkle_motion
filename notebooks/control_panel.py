@@ -24,7 +24,7 @@ import importlib
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
@@ -738,7 +738,79 @@ async def _http_get_json_async(
 
 def _format_status_snapshot(ready: Dict[str, Any], status: Dict[str, Any]) -> str:
     blocks = ["/ready:", _format_json(ready), "\n/status:", _format_json(status)]
+    qa_summary = _summarize_qa_timeline(status)
+    if qa_summary:
+        blocks.extend(["\nQA timeline:", qa_summary])
+    control_summary = _summarize_control_state(status)
+    if control_summary:
+        blocks.extend(["\nControl:", control_summary])
     return "\n".join(blocks)
+
+
+def _summarize_qa_timeline(status_payload: Dict[str, Any]) -> Optional[str]:
+    timeline = status_payload.get("timeline")
+    if not isinstance(timeline, list):
+        return None
+    summaries: List[str] = []
+    attempt_tracker: Dict[tuple[str, str], int] = {}
+    for entry in timeline:
+        if not isinstance(entry, dict):
+            continue
+        stage = entry.get("stage")
+        if stage not in {"qa_base_images", "qa_video"}:
+            continue
+        meta = entry.get("meta") or {}
+        shot_id = meta.get("shot_id") or (entry.get("step_id") or "").split(":")[0]
+        shot_label = shot_id or "unknown"
+        key = (shot_label, stage)
+        attempt_tracker[key] = attempt_tracker.get(key, 0) + 1
+        qa_passed = meta.get("qa_passed")
+        decision = meta.get("qa_decision")
+        if decision:
+            decision_label = decision
+        elif qa_passed is True:
+            decision_label = "pass"
+        elif qa_passed is False:
+            decision_label = "fail"
+        else:
+            decision_label = entry.get("status") or "unknown"
+        issue_count = meta.get("issue_count")
+        human_task_id = meta.get("human_task_id")
+        details = [f"{shot_label}:{stage}", f"qa_attempt={attempt_tracker[key]}", f"decision={decision_label}"]
+        if issue_count:
+            details.append(f"issues={issue_count}")
+        retry_hint = meta.get("retry")
+        if retry_hint:
+            details.append(f"clip_retry={retry_hint}")
+        attempts = entry.get("attempts")
+        if attempts:
+            details.append(f"step_attempts={attempts}")
+        if human_task_id:
+            details.append(f"human_task={human_task_id}")
+        summaries.append(" | ".join(details))
+    if not summaries:
+        return None
+    # Show the last few QA events to keep the status stream readable.
+    return "\n".join(summaries[-3:])
+
+
+def _summarize_control_state(status_payload: Dict[str, Any]) -> Optional[str]:
+    control = status_payload.get("control")
+    if not isinstance(control, dict):
+        return None
+    parts: List[str] = []
+    if control.get("pause_requested"):
+        parts.append("pause_requested=True")
+    if control.get("stop_requested"):
+        parts.append("stop_requested=True")
+    last_command = control.get("last_command")
+    if isinstance(last_command, dict):
+        command = last_command.get("command")
+        timestamp = last_command.get("at")
+        if command:
+            when = f" at {timestamp}" if timestamp else ""
+            parts.append(f"last_command={command}{when}")
+    return "; ".join(parts) if parts else None
 
 
 def _format_json(payload: Dict[str, Any]) -> str:

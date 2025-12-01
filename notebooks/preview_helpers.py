@@ -132,4 +132,3 @@ def display_artifact_previews(
                 print(f"Preview unavailable for media_type='{media_type}'. File: {local_path}")
         except FileNotFoundError as exc:
             print(exc)
-*** End File

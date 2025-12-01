@@ -234,3 +234,27 @@ def test_generate_plan_rejects_extra_base_images(monkeypatch):
         script_agent.generate_plan("too many base images", model_spec="stub-model")
 
     assert "len(shots)+1" in str(excinfo.value)
+
+
+def test_generate_plan_rejects_missing_terminal_base_image(monkeypatch):
+    payload = deepcopy(_sample_plan_payload())
+    payload["shots"].append(
+        {
+            "id": "shot-2",
+            "duration_sec": 4,
+            "visual_description": "Closing scene",
+            "start_base_image_id": "frame_001",
+            "end_base_image_id": "frame_002",
+        }
+    )
+    payload["base_images"].append({"id": "frame_002", "prompt": "resolution"})
+    payload["dialogue_timeline"] = [
+        {"type": "silence", "start_time_sec": 0.0, "duration_sec": 9.0},
+    ]
+    payload["base_images"].pop()  # Tamper with the continuity chain (shots=2 ➜ base_images should be 3)
+    _install_agent(monkeypatch, json.dumps(payload))
+
+    with pytest.raises(script_agent.PlanSchemaError) as excinfo:
+        script_agent.generate_plan("missing terminal base image", model_spec="stub-model")
+
+    assert "base_images count mismatch" in str(excinfo.value)

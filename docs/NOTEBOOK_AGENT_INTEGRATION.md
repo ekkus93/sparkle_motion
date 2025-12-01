@@ -99,6 +99,8 @@ Key guidelines:
 7. **Tool health probes**
 	- Before exposing UI controls, run each FunctionTool’s `/ready` endpoint once to ensure env vars and models loaded successfully.
 
+Run `python -m sparkle_motion.notebook_preflight --requirements-path requirements-ml.txt --mount-point /content/drive --ready-endpoint http://localhost:8101/ready --ready-endpoint http://localhost:8200/ready --skip-gpu-checks` inside the Colab runtime after starting the agents to execute the checklist above in one shot. The helper prints a pass/warn/fail summary so you can confirm ADC, env vars, Drive mount, pip installs, and `/ready` probes before touching the control panel. The same helper backs the new “Colab preflight” notebook cell, so rerunning it later in the session is a single click.
+
 > Design note: Drive mounting remains optional for privacy-sensitive runs, but notebook helpers assume Drive when available so that final MP4 files survive VM restarts.
 
 ## Detailed design: end-to-end notebook workflow
