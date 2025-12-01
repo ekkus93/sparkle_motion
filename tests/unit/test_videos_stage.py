@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from sparkle_motion import adk_helpers, videos_agent
+from sparkle_motion import adk_helpers, videos_stage
 from sparkle_motion.gpu_utils import ModelOOMError
 from sparkle_motion.utils.dedupe import RecentIndex
 
@@ -18,7 +18,7 @@ class _StubRenderer:
     def queue_failure(self, index: int, exc: BaseException) -> None:
         self.failures[index] = exc
 
-    def __call__(self, chunk: videos_agent.ChunkSpec, context: videos_agent.VideoAdapterContext) -> videos_agent.ChunkRenderResult:
+    def __call__(self, chunk: videos_stage.ChunkSpec, context: videos_stage.VideoAdapterContext) -> videos_stage.ChunkRenderResult:
         call_index = len(self.calls)
         failure = self.failures.get(call_index)
         self.calls.append({"chunk": chunk, "context": context})
@@ -27,7 +27,7 @@ class _StubRenderer:
         if context.progress_callback:
             context.progress_callback({"progress": 0.5, "phase": "rendering"})
         frames = list(range(context.opts["render_start"], context.opts["render_end"] + 1))
-        return videos_agent.ChunkRenderResult(chunk=chunk, frames=frames, metadata={"call_index": call_index})
+        return videos_stage.ChunkRenderResult(chunk=chunk, frames=frames, metadata={"call_index": call_index})
 
 
 def _publish_backend():
@@ -54,7 +54,7 @@ def _oom() -> ModelOOMError:
 
 def test_chunk_split_and_reassembly(tmp_path: Path) -> None:
     renderer = _StubRenderer()
-    artifact = videos_agent.render_video(
+    artifact = videos_stage.render_video(
         start_frames=[],
         end_frames=[],
         prompt="Calm city skyline",
@@ -83,7 +83,7 @@ def test_adaptive_oom_retry_shrinks_chunk(tmp_path: Path) -> None:
     renderer = _StubRenderer()
     renderer.queue_failure(0, _oom())
 
-    artifact = videos_agent.render_video(
+    artifact = videos_stage.render_video(
         start_frames=[],
         end_frames=[],
         prompt="Flight over canyon",
@@ -106,7 +106,7 @@ def test_cpu_fallback_on_oom(tmp_path: Path) -> None:
     renderer.queue_failure(0, _oom())
     renderer.queue_failure(1, _oom())
 
-    artifact = videos_agent.render_video(
+    artifact = videos_stage.render_video(
         start_frames=[],
         end_frames=[],
         prompt="Stormy sea",
@@ -127,16 +127,16 @@ def test_cpu_fallback_on_oom(tmp_path: Path) -> None:
 
 def test_progress_events_forwarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     renderer = _StubRenderer()
-    events: List[videos_agent.CallbackEvent] = []
+    events: List[videos_stage.CallbackEvent] = []
     memory_events: List[Dict[str, Any]] = []
 
     def fake_write_memory_event(*, run_id: Optional[str], event_type: str, payload: Dict[str, Any]) -> None:
-        if event_type == "videos_agent.progress":
+        if event_type == "videos_stage.progress":
             memory_events.append(payload)
 
     monkeypatch.setattr(adk_helpers, "write_memory_event", fake_write_memory_event)
 
-    videos_agent.render_video(
+    videos_stage.render_video(
         start_frames=[],
         end_frames=[],
         prompt="Aurora fade",
@@ -173,10 +173,10 @@ def test_dedupe_skips_publish(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     recent = RecentIndex()
 
     renderer = _StubRenderer()
-    first = videos_agent.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
+    first = videos_stage.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
 
     renderer = _StubRenderer()
-    second = videos_agent.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
+    second = videos_stage.render_video([], [], "City", opts={**opts, "recent_index": recent}, adapter=renderer)
 
     assert len(publish_calls) == 1
     assert second["metadata"]["deduped"] is True

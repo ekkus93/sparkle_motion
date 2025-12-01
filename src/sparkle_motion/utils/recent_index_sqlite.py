@@ -15,7 +15,7 @@ class RecentIndexSqlite:
     """A lightweight SQLite-backed RecentIndex for dedupe canonicalization.
 
     This class is intentionally small and suitable for single-user workflows.
-    It provides get/add/touch/prune semantics used by `images_agent`.
+    It provides get/add/touch/prune semantics used by `images_stage`.
     """
 
     def __init__(self, db_path: Optional[str] = None) -> None:

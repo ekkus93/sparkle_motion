@@ -30,7 +30,7 @@ __all__ = [
 
 
 class TTSError(RuntimeError):
-    """Base error raised by tts_agent."""
+    """Base error raised by tts_stage."""
 
 
 class ProviderSelectionError(TTSError):
@@ -271,7 +271,7 @@ def synthesize(
     resolved_plan = plan_id or "plan-unknown"
     resolved_step = step_id or "tts"
     sleep = sleep_fn or time.sleep
-    base_output_dir = output_dir or Path(tempfile.mkdtemp(prefix="tts_agent_"))
+    base_output_dir = output_dir or Path(tempfile.mkdtemp(prefix="tts_stage_"))
     base_output_dir.mkdir(parents=True, exist_ok=True)
     text_chars = len(text)
 
@@ -297,7 +297,7 @@ def synthesize(
         raise ProviderSelectionError("No providers available after applying constraints")
 
     telemetry.emit_event(
-        "tts_agent.synthesize.start",
+        "tts_stage.synthesize.start",
         {
             "plan_id": resolved_plan,
             "step_id": resolved_step,
@@ -333,7 +333,7 @@ def synthesize(
                 options=dict(voice_config or {}),
             )
             telemetry.emit_event(
-                "tts_agent.provider.attempt",
+                "tts_stage.provider.attempt",
                 {
                     "provider_id": provider.provider_id,
                     "attempt": attempt,
@@ -370,7 +370,7 @@ def synthesize(
                     },
                 )
                 telemetry.emit_event(
-                    "tts_agent.synthesize.completed",
+                    "tts_stage.synthesize.completed",
                     {
                         "provider_id": provider.provider_id,
                         "attempt": attempt,
@@ -598,7 +598,7 @@ def _record_memory_event(run_id: str, payload: Mapping[str, Any]) -> None:
     try:
         adk_helpers.write_memory_event(
             run_id=run_id,
-            event_type="tts_agent.synthesize",
+            event_type="tts_stage.synthesize",
             payload=dict(payload),
         )
     except adk_helpers.MemoryWriteError:
@@ -730,7 +730,7 @@ def _register_chatterbox_adapter() -> None:
     except Exception:
         return
     try:
-        register_adapter("tts_chatterbox", _cb_adapter.create_tts_agent_adapter(AdapterResult))
+        register_adapter("tts_chatterbox", _cb_adapter.create_tts_stage_adapter(AdapterResult))
     except Exception:
         pass
 

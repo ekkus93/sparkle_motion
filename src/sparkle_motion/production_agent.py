@@ -18,10 +18,10 @@ try:  # qa_qwen2vl is optional in fixture-only environments
 except Exception:  # pragma: no cover - optional dependency
     qa_entrypoint = None
 
-from . import adk_helpers, observability, telemetry, videos_agent, tts_agent, schema_registry
+from . import adk_helpers, observability, telemetry, videos_stage, tts_stage, schema_registry
 from .dialogue_timeline import DialogueTimelineError, DialogueSynthesizer, build_dialogue_timeline
 from .run_registry import ArtifactEntry, get_run_registry
-from .images_agent import RateLimitExceeded, RateLimitQueued
+from .images_stage import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
 from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec, RunContext, StageEvent, StageManifest
 
@@ -601,7 +601,7 @@ def _run_dialogue_stage(
             run_id: str,
             output_dir: Path,
         ) -> Mapping[str, Any]:
-            return tts_agent.synthesize(
+            return tts_stage.synthesize(
                 text,
                 voice_config=voice_config,
                 plan_id=plan_id,
@@ -1835,7 +1835,7 @@ def _synthesize_dialogue(
         text = line.text.strip()
         voice_config = _voice_config_for_character(line.character_id, voice_profiles, default_voice_config)
         step_label = f"{shot.id}:tts:{idx:02d}"
-        artifact = tts_agent.synthesize(
+        artifact = tts_stage.synthesize(
             text,
             voice_config=voice_config,
             plan_id=plan_id,
@@ -1950,7 +1950,7 @@ def _render_video_clip(
             progress_callback=progress_callback,
         )
 
-    artifact = videos_agent.render_video(start_frames, end_frames, prompt, opts, on_progress=on_progress)
+    artifact = videos_stage.render_video(start_frames, end_frames, prompt, opts, on_progress=on_progress)
     metadata = artifact.get("metadata") or {}
     source_path = metadata.get("source_path")
     local_path = Path(source_path) if source_path else dest
@@ -2310,7 +2310,7 @@ def _to_iso(value: datetime) -> str:
 
 def _default_video_fps() -> int:
     try:
-        value = int(os.environ.get("VIDEOS_AGENT_DEFAULT_FPS", "16"))
+        value = int(os.environ.get("VIDEOS_STAGE_DEFAULT_FPS", "16"))
     except ValueError:
         value = 16
     return max(1, value)
@@ -2332,8 +2332,8 @@ def _video_progress_forwarder(
     plan_id: str,
     step_id: str,
     progress_callback: Callable[[StepExecutionRecord], None],
-) -> Callable[[videos_agent.CallbackEvent], None]:
-    def _forward(event: videos_agent.CallbackEvent) -> None:
+) -> Callable[[videos_stage.CallbackEvent], None]:
+    def _forward(event: videos_stage.CallbackEvent) -> None:
         record = StepExecutionRecord(
             plan_id=plan_id,
             step_id=step_id,
@@ -2344,7 +2344,7 @@ def _video_progress_forwarder(
             duration_s=0.0,
             attempts=0,
             meta={
-                "videos_agent_progress": dict(event),
+                "videos_stage_progress": dict(event),
             },
         )
         progress_callback(record)

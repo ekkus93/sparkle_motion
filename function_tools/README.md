@@ -35,7 +35,7 @@ additional terminals and launch each tool with its own port number.
 ### TTS flow
 
 - `tts_chatterbox` now mirrors the production per-line synthesis flow: the
-  FunctionTool receives a dialogue line at a time, calls `tts_agent.synthesize`,
+  FunctionTool receives a dialogue line at a time, calls `tts_stage.synthesize`,
   and publishes each clip as a `tts_audio` artifact with metadata covering
   `provider_id`, `voice_id`, sample rate, bit depth, duration, and a
   `watermarked` indicator. The orchestrator records these entries under

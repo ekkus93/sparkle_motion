@@ -14,15 +14,15 @@ from .gpu_utils import ModelOOMError
 from .utils import dedupe
 
 
-class VideoAgentError(RuntimeError):
-    """Base error for videos_agent orchestration issues."""
+class VideoStageError(RuntimeError):
+    """Base error for videos_stage orchestration issues."""
 
 
-class PlanPolicyViolation(VideoAgentError):
+class PlanPolicyViolation(VideoStageError):
     """Raised when a prompt violates content or safety policy."""
 
 
-class ChunkExecutionError(VideoAgentError):
+class ChunkExecutionError(VideoStageError):
     """Raised when a chunk exhausts retries/fallbacks."""
 
 
@@ -39,7 +39,7 @@ class CallbackEvent(TypedDict, total=False):
 
 
 @dataclass(frozen=True)
-class VideoAgentConfig:
+class VideoStageConfig:
     num_frames: int
     chunk_length_frames: int = 64
     chunk_overlap_frames: int = 4
@@ -47,12 +47,12 @@ class VideoAgentConfig:
     max_retries_per_chunk: int = 2
     adaptive_shrink_factor: float = 0.5
     allow_cpu_fallback: bool = True
-    artifact_type: str = "videos_agent_clip"
+    artifact_type: str = "videos_stage_clip"
     reassembly_mode: Literal["trim"] = "trim"
     debug_frames: bool = False
 
     @classmethod
-    def from_opts(cls, opts: Mapping[str, Any]) -> "VideoAgentConfig":
+    def from_opts(cls, opts: Mapping[str, Any]) -> "VideoStageConfig":
         num_frames = int(opts.get("num_frames", 0))
         if num_frames <= 0:
             raise ValueError("opts['num_frames'] must be a positive integer")
@@ -147,7 +147,7 @@ class _ProgressDispatcher:
         try:
             adk_helpers.write_memory_event(
                 run_id=self._run_id,
-                event_type="videos_agent.progress",
+                event_type="videos_stage.progress",
                 payload=dict(enriched),
             )
         except adk_helpers.MemoryWriteError:
@@ -174,9 +174,9 @@ def render_video(
     """Render a clip by chunking requests to the configured adapter."""
 
     options: MutableMapping[str, Any] = dict(opts or {})
-    config = VideoAgentConfig.from_opts(options)
+    config = VideoStageConfig.from_opts(options)
     plan_id = str(options.get("plan_id") or "plan-unknown")
-    step_id = str(options.get("step_id") or "videos_agent")
+    step_id = str(options.get("step_id") or "videos_stage")
     run_id = str(options.get("run_id") or observability.get_session_id())
     _validate_prompt(prompt)
 
@@ -202,7 +202,7 @@ def render_video(
     )
 
     telemetry.emit_event(
-        "videos_agent.render.start",
+        "videos_stage.render.start",
         {"plan_id": plan_id, "step_id": step_id, "chunks": len(chunk_specs)},
     )
 
@@ -284,7 +284,7 @@ def render_video(
                 "run_id": run_id,
             }
             telemetry.emit_event(
-                "videos_agent.render.completed",
+                "videos_stage.render.completed",
                 {"plan_id": plan_id, "step_id": step_id, "artifact_uri": canonical, "deduped": True},
             )
             return artifact
@@ -314,7 +314,7 @@ def render_video(
             artifact["uri"] = canonical
             artifact["storage"] = "adk" if canonical.startswith("artifact://") else artifact.get("storage", "local")
     telemetry.emit_event(
-        "videos_agent.render.completed",
+        "videos_stage.render.completed",
         {"plan_id": plan_id, "step_id": step_id, "artifact_uri": artifact["uri"]},
     )
     return artifact
@@ -328,7 +328,7 @@ def _execute_chunk(
     start_payload: Sequence[bytes],
     end_payload: Sequence[bytes],
     adapter_base_opts: Mapping[str, Any],
-    config: VideoAgentConfig,
+    config: VideoStageConfig,
 ) -> tuple[ChunkRenderResult, MutableMapping[str, Any]]:
     max_attempts = max(1, 1 + config.max_retries_per_chunk)
     adaptive_length = spec.logical_length
@@ -513,7 +513,7 @@ __all__ = [
     "render_video",
     "PlanPolicyViolation",
     "ChunkExecutionError",
-    "VideoAgentError",
+    "VideoStageError",
     "VideoChunkRenderer",
     "CallbackEvent",
     "ChunkRenderResult",

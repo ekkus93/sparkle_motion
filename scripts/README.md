@@ -116,6 +116,36 @@ PYTHONPATH=src python scripts/register_workflow.py --file workflows/sample_workf
 Notes:
 - Workflow definitions should reference artifact URIs for prompts and schemas. If you haven't yet published those artifacts, see `scripts/push_prompt_template.py` and `scripts/publish_schemas.py` (planned).
 
+## scripts/register_root_agent.py
+
+Purpose:
+- Validate `configs/root_agent.yaml` and register the canonical Production `LlmAgent` entry point required by ADK.
+- Ensures the workflow metadata is reachable before invoking the ADK CLI so CI/operators catch config drift early.
+
+Key options (run `python scripts/register_root_agent.py --help`):
+- `--config`: path to the root-agent YAML (defaults to `configs/root_agent.yaml`).
+- `--dry-run`: validate and print the summary without calling ADK (default behavior).
+- `--confirm`: run the CLI registration (`adk agents register ...`).
+
+Examples:
+
+Dry-run validation (safe default):
+
+```bash
+PYTHONPATH=src python scripts/register_root_agent.py --dry-run
+```
+
+Register via Makefile (CI-friendly):
+
+```bash
+make register-root-agent CONFIRM=1
+```
+
+Notes:
+- Run this **before** registering/updating workflows so ADK has a valid Production root LlmAgent to delegate to.
+- The Makefile target defaults to `--dry-run`; pass `CONFIRM=1` (or run the script manually with `--confirm`) when you are ready to publish.
+- The registered agent is named `sparkle-motion/production_root_agent`; it calls the workflow whose first stage is still `script_agent`, so script generation remains encapsulated but not exposed as the root entry point.
+
 ---
 
 ## scripts/push_prompt_template.py

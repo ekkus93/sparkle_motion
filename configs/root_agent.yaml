@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+agent_class: LlmAgent
+name: sparkle-motion/production_root_agent
+model: script-agent-default
+profile: local-colab
+description: >-
+  Root LlmAgent for the Sparkle Motion production orchestrator. This agent
+  collects operator intent, invokes the script stage to draft a MoviePlan, and
+  then drives the downstream production + QA workflow defined in
+  configs/workflow_agent.yaml.
+instruction: |
+  You are the Production Agent entry point for Sparkle Motion.
+  Always do the following:
+  1. Collect the operator's objective, style notes, and any existing plan URIs.
+  2. Call the workflow (configs/workflow_agent.yaml) so the script stage can
+     generate or refine the MoviePlan before production begins.
+  3. Execute the remaining production stages (images, video, TTS, assembly) and
+     the QA stage, surfacing artifact URIs plus policy outcomes.
+  4. If the operator requests diagnostics, read the latest run summary
+     via the workflow registry before responding.
+metadata:
+  workflow_config: configs/workflow_agent.yaml
+  notes: |
+    The production workflow treats script generation as the first stage, so the
+    root agent delegates MoviePlan drafting to script_agent before invoking
+    production_agent. The script-agent-default model remains the fixture-friendly
+    profile wired through `SCRIPT_AGENT_MODEL` when set.

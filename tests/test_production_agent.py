@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, 
 import pytest
 
 import sparkle_motion.production_agent as production_agent
-from sparkle_motion import tts_agent
+from sparkle_motion import tts_stage
 
-from sparkle_motion.images_agent import RateLimitExceeded, RateLimitQueued
+from sparkle_motion.images_stage import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
     ProductionResult,
     ProductionAgentConfig,
@@ -48,7 +48,7 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_videos_agent(
+def _stub_videos_stage(
     monkeypatch: pytest.MonkeyPatch, deterministic_media_assets: MediaAssets
 ) -> None:
     def _fake_render(
@@ -83,7 +83,7 @@ def _stub_videos_agent(
             "metadata": {"source_path": str(target), "prompt": prompt, "frames": len(list(start_frames))},
         }
 
-    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _fake_render)
+    monkeypatch.setattr("sparkle_motion.videos_stage.render_video", _fake_render)
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +109,7 @@ def _stub_qa_inspect(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _stub_tts_agent(
+def _stub_tts_stage(
     monkeypatch: pytest.MonkeyPatch, deterministic_media_assets: MediaAssets
 ) -> List[Dict[str, Any]]:
     calls: List[Dict[str, Any]] = []
@@ -164,7 +164,7 @@ def _stub_tts_agent(
             "metadata": metadata,
         }
 
-    monkeypatch.setattr("sparkle_motion.tts_agent.synthesize", _fake_synthesize)
+    monkeypatch.setattr("sparkle_motion.tts_stage.synthesize", _fake_synthesize)
     return calls
 
 
@@ -475,7 +475,7 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
     shot = sample_plan.shots[0]
     plan_id = "plan-meta"
     run_id = "run-456"
-    monkeypatch.setenv("VIDEOS_AGENT_DEFAULT_FPS", "12")
+    monkeypatch.setenv("VIDEOS_STAGE_DEFAULT_FPS", "12")
     expected_path = tmp_path / "video" / f"{shot.id}.mp4"
     base_images = {img.id: img for img in sample_plan.base_images}
     base_image_assets = {
@@ -500,7 +500,7 @@ def test_render_video_clip_passes_metadata(monkeypatch: pytest.MonkeyPatch, samp
         captured["opts"] = dict(opts or {})
         return {"uri": f"file://{expected_path}", "metadata": {"source_path": str(expected_path)}}
 
-    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
+    monkeypatch.setattr("sparkle_motion.videos_stage.render_video", _capture)
 
     result_path = production_agent._render_video_clip(shot, tmp_path, plan_id, run_id, base_images, base_image_assets)
 
@@ -574,7 +574,7 @@ def test_video_stage_reuses_base_image_payloads(monkeypatch: pytest.MonkeyPatch,
         )
         return {"uri": f"file://{target}", "metadata": {"source_path": str(target), "prompt": prompt}}
 
-    monkeypatch.setattr("sparkle_motion.videos_agent.render_video", _capture)
+    monkeypatch.setattr("sparkle_motion.videos_stage.render_video", _capture)
 
     execute_plan(sample_plan, mode="run")
 
@@ -611,10 +611,10 @@ def test_video_progress_forwarded(monkeypatch: pytest.MonkeyPatch, sample_plan: 
     progress_records = [
         record
         for record in seen
-        if record.step_type == "video" and record.status == "running" and "videos_agent_progress" in record.meta
+        if record.step_type == "video" and record.status == "running" and "videos_stage_progress" in record.meta
     ]
-    assert progress_records, "Expected chunk progress records from videos_agent"
-    event_meta = progress_records[0].meta["videos_agent_progress"]
+    assert progress_records, "Expected chunk progress records from videos_stage"
+    event_meta = progress_records[0].meta["videos_stage_progress"]
     assert event_meta["chunk_index"] == 0
     assert event_meta["progress"] == 0.5
 
@@ -782,7 +782,7 @@ def test_dialogue_stage_trims_and_pads(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_voice_profile_forwarded_to_tts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    _stub_tts_agent: List[Dict[str, Any]],
+    _stub_tts_stage: List[Dict[str, Any]],
 ) -> None:
     _enable_full_execution(monkeypatch, tmp_path)
     shots = [
@@ -816,7 +816,7 @@ def test_voice_profile_forwarded_to_tts(
     )
 
     execute_plan(plan, mode="run")
-    synthesized_voices = [call.get("voice_config", {}) for call in _stub_tts_agent]
+    synthesized_voices = [call.get("voice_config", {}) for call in _stub_tts_stage]
     voice_ids = {config.get("voice_id") for config in synthesized_voices if config}
     assert "hero_voice" in voice_ids
     assert "narrator_voice" in voice_ids
@@ -867,8 +867,8 @@ def test_multiple_dialogue_lines_recorded(
 def test_tts_policy_violation_raises(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
     _enable_full_execution(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "sparkle_motion.tts_agent.synthesize",
-        lambda *_, **__: (_ for _ in ()).throw(tts_agent.TTSPolicyViolation("blocked")),
+        "sparkle_motion.tts_stage.synthesize",
+        lambda *_, **__: (_ for _ in ()).throw(tts_stage.TTSPolicyViolation("blocked")),
     )
     records: List[StepExecutionRecord] = []
 
@@ -885,9 +885,9 @@ def test_tts_quota_error_surfaces(monkeypatch: pytest.MonkeyPatch, sample_plan: 
     _enable_full_execution(monkeypatch, tmp_path)
 
     def _raise_quota(*_: object, **__: object) -> None:
-        raise tts_agent.TTSQuotaExceeded("quota hit")
+        raise tts_stage.TTSQuotaExceeded("quota hit")
 
-    monkeypatch.setattr("sparkle_motion.tts_agent.synthesize", _raise_quota)
+    monkeypatch.setattr("sparkle_motion.tts_stage.synthesize", _raise_quota)
     records: List[StepExecutionRecord] = []
 
     with pytest.raises(StepExecutionError):

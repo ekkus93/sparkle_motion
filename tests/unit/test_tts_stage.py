@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List
 import pytest
 import yaml
 
-from sparkle_motion import adk_helpers, tts_agent
+from sparkle_motion import adk_helpers, tts_stage
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -15,16 +15,16 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_agent, "_CONFIG_CACHE", None)
-    monkeypatch.setattr(tts_agent, "_ADAPTERS", {})
-    monkeypatch.setattr(tts_agent, "_fixture_only_mode", lambda: False)
-    monkeypatch.setattr(tts_agent.observability, "get_session_id", lambda: "session-test")
-    monkeypatch.setattr(tts_agent, "_random_uniform", lambda a, b: 0.0)
+    monkeypatch.setattr(tts_stage, "_CONFIG_CACHE", None)
+    monkeypatch.setattr(tts_stage, "_ADAPTERS", {})
+    monkeypatch.setattr(tts_stage, "_fixture_only_mode", lambda: False)
+    monkeypatch.setattr(tts_stage.observability, "get_session_id", lambda: "session-test")
+    monkeypatch.setattr(tts_stage, "_random_uniform", lambda a, b: 0.0)
 
 
 @pytest.fixture(autouse=True)
 def _silence_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tts_agent.telemetry, "emit_event", lambda *_, **__: None)
+    monkeypatch.setattr(tts_stage.telemetry, "emit_event", lambda *_, **__: None)
 
     def _noop_memory_event(*, run_id: str | None, event_type: str, payload: Dict[str, Any]) -> None:  # pragma: no cover - helper
         return None
@@ -135,15 +135,15 @@ def test_provider_fallback_on_quota(
 
     call_sequence: List[str] = []
 
-    def _quota_adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
+    def _quota_adapter(request: tts_stage.AdapterRequest) -> tts_stage.AdapterResult:
         call_sequence.append(request.provider.provider_id)
-        raise tts_agent.TTSQuotaExceeded("quota exceeded")
+        raise tts_stage.TTSQuotaExceeded("quota exceeded")
 
-    def _fixture_adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
+    def _fixture_adapter(request: tts_stage.AdapterRequest) -> tts_stage.AdapterResult:
         call_sequence.append(request.provider.provider_id)
         dest = request.output_dir / "fixture.wav"
         shutil.copyfile(deterministic_media_assets.audio, dest)
-        return tts_agent.AdapterResult(
+        return tts_stage.AdapterResult(
             path=dest,
             duration_s=0.5,
             sample_rate=request.voice.sample_rate,
@@ -152,10 +152,10 @@ def test_provider_fallback_on_quota(
             metadata={"adapter": request.provider.adapter},
         )
 
-    tts_agent.register_adapter("pro_adapter", _quota_adapter)
-    tts_agent.register_adapter("fixture_adapter", _fixture_adapter)
+    tts_stage.register_adapter("pro_adapter", _quota_adapter)
+    tts_stage.register_adapter("fixture_adapter", _fixture_adapter)
 
-    artifact = tts_agent.synthesize(
+    artifact = tts_stage.synthesize(
         "Hello world",
         voice_config={"voice_id": "narrator"},
         config_path=config_path,
@@ -195,13 +195,13 @@ def test_retryable_error_retries_before_success(
 
     attempts = {"count": 0}
 
-    def _sometimes_fails(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
+    def _sometimes_fails(request: tts_stage.AdapterRequest) -> tts_stage.AdapterResult:
         attempts["count"] += 1
         if attempts["count"] == 1:
-            raise tts_agent.TTSRetryableError("transient")
+            raise tts_stage.TTSRetryableError("transient")
         dest = request.output_dir / "retry.wav"
         shutil.copyfile(deterministic_media_assets.audio, dest)
-        return tts_agent.AdapterResult(
+        return tts_stage.AdapterResult(
             path=dest,
             duration_s=0.25,
             sample_rate=request.voice.sample_rate,
@@ -210,10 +210,10 @@ def test_retryable_error_retries_before_success(
             metadata={"attempt": attempts["count"]},
         )
 
-    tts_agent.register_adapter("retry_adapter", _sometimes_fails)
+    tts_stage.register_adapter("retry_adapter", _sometimes_fails)
 
     sleeps: List[float] = []
-    artifact = tts_agent.synthesize(
+    artifact = tts_stage.synthesize(
         "Hello retry",
         voice_config={"voice_id": "narrator"},
         config_path=config_path,
@@ -252,13 +252,13 @@ def test_retryable_error_honors_retry_after(
 
     attempts = {"count": 0}
 
-    def _adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
+    def _adapter(request: tts_stage.AdapterRequest) -> tts_stage.AdapterResult:
         attempts["count"] += 1
         if attempts["count"] == 1:
-            raise tts_agent.TTSRetryableError("backoff", retry_after_s=1.75)
+            raise tts_stage.TTSRetryableError("backoff", retry_after_s=1.75)
         dest = request.output_dir / "retry-after.wav"
         shutil.copyfile(deterministic_media_assets.audio, dest)
-        return tts_agent.AdapterResult(
+        return tts_stage.AdapterResult(
             path=dest,
             duration_s=0.3,
             sample_rate=request.voice.sample_rate,
@@ -267,10 +267,10 @@ def test_retryable_error_honors_retry_after(
             metadata={"attempt": attempts["count"]},
         )
 
-    tts_agent.register_adapter("retry_after_adapter", _adapter)
+    tts_stage.register_adapter("retry_after_adapter", _adapter)
 
     sleeps: List[float] = []
-    artifact = tts_agent.synthesize(
+    artifact = tts_stage.synthesize(
         "Hello retry",
         voice_config={"voice_id": "narrator"},
         config_path=config_path,
@@ -313,11 +313,11 @@ def test_max_cost_filters_providers(
 
     call_sequence: List[str] = []
 
-    def _recording_adapter(request: tts_agent.AdapterRequest) -> tts_agent.AdapterResult:
+    def _recording_adapter(request: tts_stage.AdapterRequest) -> tts_stage.AdapterResult:
         call_sequence.append(request.provider.provider_id)
         dest = request.output_dir / f"{request.provider.provider_id}.wav"
         shutil.copyfile(deterministic_media_assets.audio, dest)
-        return tts_agent.AdapterResult(
+        return tts_stage.AdapterResult(
             path=dest,
             duration_s=0.25,
             sample_rate=request.voice.sample_rate,
@@ -326,10 +326,10 @@ def test_max_cost_filters_providers(
             metadata={"provider": request.provider.provider_id},
         )
 
-    tts_agent.register_adapter("expensive_adapter", _recording_adapter)
-    tts_agent.register_adapter("economy_adapter", _recording_adapter)
+    tts_stage.register_adapter("expensive_adapter", _recording_adapter)
+    tts_stage.register_adapter("economy_adapter", _recording_adapter)
 
-    artifact = tts_agent.synthesize(
+    artifact = tts_stage.synthesize(
         "Cost constrained line",
         voice_config={"voice_id": "narrator"},
         config_path=config_path,

@@ -50,7 +50,7 @@ Key environment variables
 
 ## Inspecting the dedupe recent-index store
 
-The dedupe helpers now ship a small CLI so you can inspect or prune entries stored in `recent_index` (the SQLite table shared by `images_agent`/`videos_agent`). The CLI lives under `sparkle_motion.utils.recent_index_cli` and exposes `stats`, `list`, `show`, and `prune` subcommands.
+The dedupe helpers now ship a small CLI so you can inspect or prune entries stored in `recent_index` (the SQLite table shared by `images_stage`/`videos_stage`). The CLI lives under `sparkle_motion.utils.recent_index_cli` and exposes `stats`, `list`, `show`, and `prune` subcommands.
 
 ```bash
 PYTHONPATH=src python -m sparkle_motion.utils.recent_index_cli --help
@@ -62,7 +62,7 @@ PYTHONPATH=src python -m sparkle_motion.utils.recent_index_cli show deadbeefcafe
 PYTHONPATH=src python -m sparkle_motion.utils.recent_index_cli prune --max-age 604800 --max-entries 2000
 ```
 
-When dedupe is enabled (`opts['dedupe']=True`), `images_agent` and `videos_agent` automatically route through `dedupe.resolve_recent_index()`. Provide `recent_index_db_path`/`recent_index_use_sqlite` in `opts` to override the env flag per-call, or pass a `RecentIndexSqlite` instance directly via `recent_index` for test harnesses.
+When dedupe is enabled (`opts['dedupe']=True`), `images_stage` and `videos_stage` automatically route through `dedupe.resolve_recent_index()`. Provide `recent_index_db_path`/`recent_index_use_sqlite` in `opts` to override the env flag per-call, or pass a `RecentIndexSqlite` instance directly via `recent_index` for test harnesses.
 
 Using the repository runner
 - `scripts/run_function_tool.py` provides a lightweight runner. By default it creates a simple echo app for many tools. To start the real `script_agent` app you can either run the `uvicorn` command above, or run the runner and pass `--host`/`--port` to avoid relying on the registry:

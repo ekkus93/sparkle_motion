@@ -14,10 +14,12 @@ Guidelines:
 
 - **Agents (decision/orchestration layers)** — currently declared agents:
   - `script_agent` : LLM-based plan generator (`generate_plan(prompt) -> MoviePlan`).
-  - `production_agent` : Production/director orchestration agent (executes MoviePlans, calls media agents and assemblers).
-  - `tts_agent` : TTS decision layer (provider selection, policy, retries) — invokes `tts_chatterbox` FunctionTool.
-  - `images_agent` : Image orchestration layer (policy, provider selection, batching) — calls `images_sdxl` FunctionTool.
-  - `videos_agent` : Video orchestration layer (chunking, provider selection, orchestration) — calls `videos_wan` FunctionTool.
+  - `production_agent` : Production/director orchestration agent (executes MoviePlans, calls media stages and assemblers).
+
+- **Media stages / FunctionTools** — pipeline components that previously carried the `_agent` suffix but are now classified as FunctionTools per `docs/ARCHITECTURE.md#_agent-naming-matrix`:
+  - `images_stage` : Image orchestration layer (policy, provider selection, batching) — calls `images_sdxl` FunctionTool.
+  - `tts_stage` : Dialogue/TTS orchestration stage (provider selection, retries, policy) that calls `tts_chatterbox` FunctionTool.
+  - `videos_stage` : Video orchestration stage (chunking, provider selection, orchestration) — calls `videos_wan` FunctionTool.
 
 - **FunctionTools / Adapters (compute-bound)** — current adapters/function tools:
   - `images_sdxl` (DiffusersAdapter) — SDXL image renderer (`render_images(prompt, opts)`).
@@ -31,13 +33,13 @@ Note: the document intentionally separates Agents (policy & orchestration) from 
 
   **Agent → FunctionTool relationships (1-to-many)**
 
-  Below are the canonical 1-to-many relationships showing which FunctionTools each Agent may invoke. This is a guide for implementers — agents enforce policy, orchestration and retries, while FunctionTools perform heavy compute. An Agent may call other Agents as part of orchestration (e.g., `script_agent` invoking `images_agent`) and may therefore be indirectly connected to additional FunctionTools.
+  Below are the canonical 1-to-many relationships showing which FunctionTools each Agent may invoke. This is a guide for implementers — agents enforce policy, orchestration and retries, while FunctionTools perform heavy compute. An Agent may call FunctionTools/stages (for example, `production_agent` invoking `images_stage`) and may therefore be indirectly connected to additional adapters.
 
   - **`script_agent`**: produces a `MoviePlan` only — public API `generate_plan(prompt) -> MoviePlan`. It is intentionally pure (planning, prompts, and schema validation) and should not perform heavy orchestration or FunctionTool calls.
-  - **`production_agent`**: `images_agent`, `tts_agent`, `videos_agent`, `assemble_ffmpeg`, `qa_qwen2vl` — responsible for executing a `MoviePlan`, orchestrating per-media agents and FunctionTools, enforcing policy and gating (e.g., `SMOKE_ADK`), and publishing final artifacts. This keeps planning separate from heavy compute and resource management.
-  - **`tts_agent`**: `tts_chatterbox` (primary), local/fixture TTS stubs (dev) — chooses provider, enforces policy, and calls TTS FunctionTools for synthesis and WAV artifact publishing.
-  - **`images_agent`**: `images_sdxl`, `qa_qwen2vl`, `assemble_ffmpeg` (helper) — performs content checks, batching and calls the `DiffusersAdapter`/`images_sdxl` renderer; may call QA or assembly helpers as needed.
-  - **`videos_agent`**: `videos_wan`, `lipsync_wav2lip`, `images_sdxl` (keyframes), `qa_qwen2vl`, `assemble_ffmpeg` — orchestrates chunked video rendering, optional lipsync, frame-level image generation, QA, and final assembly.
+  - **`production_agent`**: `images_stage`, `tts_stage`, `videos_stage`, `assemble_ffmpeg`, `qa_qwen2vl` — responsible for executing a `MoviePlan`, orchestrating per-media FunctionTools, enforcing policy and gating (e.g., `SMOKE_ADK`), and publishing final artifacts. This keeps planning separate from heavy compute and resource management.
+  - **`tts_stage`**: `tts_chatterbox` (primary), local/fixture TTS stubs (dev) — chooses provider, enforces policy, and calls TTS FunctionTools for synthesis and WAV artifact publishing.
+  - **`images_stage`**: `images_sdxl`, `qa_qwen2vl`, `assemble_ffmpeg` (helper) — performs content checks, batching and calls the `DiffusersAdapter`/`images_sdxl` renderer; may call QA or assembly helpers as needed.
+  - **`videos_stage`**: `videos_wan`, `lipsync_wav2lip`, `images_sdxl` (keyframes), `qa_qwen2vl`, `assemble_ffmpeg` — orchestrates chunked video rendering, optional lipsync, frame-level image generation, QA, and final assembly.
 
   Notes:
   - Relationship type: 1 Agent → many FunctionTools (and sometimes other Agents).
@@ -74,7 +76,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
     - `type == "image"`:
       - `prompt: str` — text prompt to render
       - `count: int` — number of images to produce (default 1)
-      - `opts: ImagesOpts` — passed to `images_agent`/`images_sdxl`
+      - `opts: ImagesOpts` — passed to `images_stage`/`images_sdxl`
     - `type == "tts"`:
       - `text: str` — text to synthesize
       - `voice: dict` — voice config (id, style)
@@ -194,13 +196,13 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
   - Persist the raw LLM output alongside the validated plan for auditing and debugging.
 
 
-### tts_agent
-- Task: Implement `tts_agent` decision layer and `tts_chatterbox` FunctionTool adapter
-  - `tts_agent` (decision layer): responsible for provider selection, policy checks, retries/backoff, rate limiting, and orchestrating FunctionTool invocations. Public API: `synthesize(text: str, voice_config: dict) -> ArtifactRef` (returns a WAV artifact reference and metadata).
+### tts_stage
+- Task: Implement `tts_stage` decision layer and `tts_chatterbox` FunctionTool adapter
+  - `tts_stage` (decision layer): responsible for provider selection, policy checks, retries/backoff, rate limiting, and orchestrating FunctionTool invocations. Public API: `synthesize(text: str, voice_config: dict) -> ArtifactRef` (returns a WAV artifact reference and metadata).
   - `tts_chatterbox` (FunctionTool adapter): compute-bound adapter that performs heavy TTS work (model load, synthesis, wav export). Implement as an ADK FunctionTool so the agent can call it; keep model lifecycle inside a guarded context manager to ensure safe load/unload.
   - Fallbacks: prefer ADK-managed TTS providers when available; fall back to local Coqui TTS for developer workflows. Entrypoints that instantiate agents must call `adk_helpers.require_adk()` or use `adk_helpers.probe_sdk(non_fatal=True)` where appropriate.
   - Metadata: publish duration, sample_rate, voice_id, format, seed (if applicable), and runtime info (model id, inference device, synth time). Publish WAV artifacts via `adk_helpers.publish_artifact()`.
-  - Per-line synthesis: `production_agent` calls `tts_agent.synthesize()` once per dialogue line and records each WAV in `line_artifacts` alongside metadata (voice_id, provider voice id, duration_s, watermarked flag) so lipsync, QA, and assemble stages can trace every clip. Fixture mode (when `SMOKE_TTS`/`SMOKE_ADAPTERS` are unset) must still emit deterministic per-line artifacts.
+  - Per-line synthesis: `production_agent` calls `tts_stage.synthesize()` once per dialogue line and records each WAV in `line_artifacts` alongside metadata (voice_id, provider voice id, duration_s, watermarked flag) so lipsync, QA, and assemble stages can trace every clip. Fixture mode (when `SMOKE_TTS`/`SMOKE_ADAPTERS` are unset) must still emit deterministic per-line artifacts.
   - Tests: unit tests for decision logic and metadata/format validation; integration smoke tests gated by `SMOKE_TTS=1` that exercise a small real or fixture TTS provider.
   - Estimate: 2–4 days
   - Notes: runtime dependency or manifest changes must follow the `proposals/pyproject_adk.diff` process and require explicit approval before editing `pyproject.toml` or pushing runtime changes.
@@ -229,7 +231,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
 
   - Structure:
     - `version`: config schema version (current `v1`).
-    - `priority_profiles`: named scoring weights for `quality|latency|cost`; `tts_agent` loads these to compute a weighted score.
+    - `priority_profiles`: named scoring weights for `quality|latency|cost`; `tts_stage` loads these to compute a weighted score.
     - `providers`: keyed by provider id; each entry specifies `display_name`, `tier` (`tier1|tier2|fixture`), adapter id, `fixture_alias`, defaults (voice, latency, cost, `quality_score`), capabilities (`features`, `languages`), per-provider `rate_limits` and `retry_policy`, plus a `watermarking` flag consumed by metadata tests.
     - `voices`: logical voices exposed to MoviePlans; each voice includes description, default audio settings, and a `provider_preferences` list mapping to provider-specific voice ids so the agent can fall back cleanly.
     - `rate_caps`: tier-wide caps (`daily_requests`, `concurrent_jobs`) referenced by the agent when honoring plan-level resource hints.
@@ -265,7 +267,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
 
   Error semantics (retryable vs non-retryable)
 
-  - Objective: classify failure modes so `tts_agent` can decide whether to retry, switch provider, or fail fast.
+  - Objective: classify failure modes so `tts_stage` can decide whether to retry, switch provider, or fail fast.
   - Suggested error taxonomy:
     - `TTSRetryableError` — transient errors that should be retried (network timeouts, rate-limit 429, transient backend errors 5xx). Include `retry_after_s` if provider supplies it.
     - `TTSProviderUnavailable` — provider-side unavailability; treat as `retryable` for short backoff but also trigger provider-failover logic.
@@ -284,9 +286,9 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
   - Providers may watermark TTS outputs. Agent must detect or be informed of watermarking behavior and record `watermarked: bool` in published metadata.
   - Test cases to add (unit):
     1. `test_tts_metadata_fields`: ensure `synthesize()` returns metadata containing `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`, `provider`, `model_id`, `device`, `synth_time_s`, and `watermarked` (bool).
-    2. `test_watermark_flag_propagated`: mock `tts_chatterbox` to return a `watermarked` flag and assert `tts_agent` includes it in published artifact metadata and telemetry.
+    2. `test_watermark_flag_propagated`: mock `tts_chatterbox` to return a `watermarked` flag and assert `tts_stage` includes it in published artifact metadata and telemetry.
     3. `test_retryable_vs_nonretryable`: simulate provider returning a `429` then `200` and assert retries occur; simulate `InvalidInput` and assert no retries and immediate `TTSInvalidInputError`.
-    4. `test_provider_failover_on_quota`: simulate primary provider returning `TTSQuotaExceeded` and second provider succeeding; assert `tts_agent` switches providers and returns successful artifact.
+    4. `test_provider_failover_on_quota`: simulate primary provider returning `TTSQuotaExceeded` and second provider succeeding; assert `tts_stage` switches providers and returns successful artifact.
 
   Test harness notes:
   - Use a fixture provider registry that exposes fake providers with programmable behavior (latency, cost, failure modes) to test selection and failover without real dependencies.
@@ -380,7 +382,7 @@ Implementation notes for `tts_chatterbox` FunctionTool adapter (from gathered up
   - Upstream includes watermarking; include `watermarked` flag and provide optional extraction script references in docs.
 
 - Security & policy:
-  - The upstream repo includes a disclaimer—do not use for harmful content. Ensure the agent decision layer (`tts_agent`) enforces policy checks (content moderation) and logs policy events.
+  - The upstream repo includes a disclaimer—do not use for harmful content. Ensure the agent decision layer (`tts_stage`) enforces policy checks (content moderation) and logs policy events.
 
 Where to look upstream for implementation details and examples:
 
@@ -390,8 +392,8 @@ Where to look upstream for implementation details and examples:
 
 Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/chatterbox`) as the authoritative source for adapter wiring, and mirror these quickstart snippets into the `docs/IMPLEMENTATION_TASKS.md` as reference usage for implementers.
 
-### images_agent
-- Task: Implement `images_agent` decision layer (caller for `images_sdxl` DiffusersAdapter)
+### images_stage
+- Task: Implement `images_stage` orchestration layer (caller for `images_sdxl` DiffusersAdapter)
   - Public API: `render(prompt: str, opts: dict) -> list[ArtifactRef]` (validate opts, enforce rate limits and retries).
   - Responsibilities: content policy checks (NSFW, disallowed content), provider selection (local stub vs ADK-managed `images_sdxl`), request batching, and retry/backoff for transient failures.
   - Integration: call `DiffusersAdapter.render_images(...)` (FunctionTool) inside gated flows and record policy decisions via `adk_helpers.write_memory_event()`.
@@ -444,7 +446,7 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
   - On `escalate`: persist outputs to a quarantine area and call `request_human_input()` with a link to the artifact and the `QAReport`.
   - On duplicate detection: if `dedupe=True`, replace duplicate artifact URIs with the canonical artifact and mark the step as `succeeded (deduped)`.
 
-**Example `opts` schema for `images_agent` → `images_sdxl`**
+**Example `opts` schema for `images_stage` → `images_sdxl`**
 
 - `ImagesOpts` (example fields):
   - `seed: Optional[int]`
@@ -470,7 +472,7 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
 
 #### Concrete file & function signatures (copy into code)
 
-- Implement `src/sparkle_motion/images_agent.py` with public function:
+- Implement `src/sparkle_motion/images_stage.py` with public function:
 
 ```py
 from typing import List
@@ -525,7 +527,7 @@ def ensure_schema(conn: sqlite3.Connection, ddl: str) -> None:
 
 #### Tests to add (exact file names)
 
-- `tests/unit/test_images_agent.py` — batching, ordering, within-plan dedupe, global dedupe (SQLite), QA rejection.
+- `tests/unit/test_images_stage.py` — batching, ordering, within-plan dedupe, global dedupe (SQLite), QA rejection.
 - `tests/unit/test_recent_index_sqlite.py` — get/add/prune behavior.
 - `tests/unit/test_rate_limiter.py` — token bucket semantics.
 - `tests/unit/test_adk_helpers.py` — `publish_local()` deterministic URIs in fixture mode.
@@ -551,13 +553,13 @@ def deterministic_bytes(prompt: str, seed: int, index: int) -> bytes:
   5. `test_deduplicate_within_plan`: produce two identical deterministic stub images and assert a single published artifact when `dedupe=True` and returned artifact list references canonical URI twice.
 
 **Implementation notes**
-  - Keep `images_agent` logic separate from adapter invocation: build a small orchestration layer that prepares batches, enforces rate-limits, runs policy checks, and calls `DiffusersAdapter.render_images()`.
+  - Keep `images_stage` logic separate from adapter invocation: build a small orchestration layer that prepares batches, enforces rate-limits, runs policy checks, and calls `DiffusersAdapter.render_images()`.
   - Persist `pHash` and recent-artifact index in a lightweight key-value store (e.g., Redis) or an in-process LRU for dev; expose TTL and size limit in config.
   - Surface policy decisions via `adk_helpers.write_memory_event()` with the `QAReport` attached for auditing.
 
 
-### videos_agent
-- Task: Implement `videos_agent` decision layer (caller for `videos_wan`/video adapters)
+### videos_stage
+- Task: Implement `videos_stage` decision layer (caller for `videos_wan`/video adapters)
   - Public API: `render_video(start_frames: Iterable[Frame], end_frames: Iterable[Frame], prompt: str, opts: dict) -> ArtifactRef`.
   - Responsibilities: select video provider (WanAdapter vs queued offline renderer), manage chunking/segmentation for VRAM safety, orchestrate retries/backoff, and enforce video-specific policy checks (copyright, prohibited content).
   - Integration: coordinate with `WanAdapter`/`videos_wan` FunctionTool for heavy inference inside `gpu_utils.model_context` and publish assembled artifacts via `adk_helpers.publish_artifact()`.
@@ -609,11 +611,11 @@ def deterministic_bytes(prompt: str, seed: int, index: int) -> bytes:
 
   Progress / Callback Contract
 
-  - Purpose: give callers a stable, minimal contract for receiving progress updates from `videos_wan` and `videos_agent` during long-running renders.
+  - Purpose: give callers a stable, minimal contract for receiving progress updates from `videos_wan` and `videos_stage` during long-running renders.
   - Contracts:
     - Adapter callback shape (from `videos_wan` pipeline): adapter should accept optional `callback` and `callback_steps` kwargs. When supported emit events at `callback_steps` intervals with a `CallbackEvent` shape.
       - `CallbackEvent` fields: `plan_id`, `step_id`, `chunk_index`, `frame_index`, `num_frames`, `progress` (0.0-1.0), `eta_s` (optional), `device`, `phase` (one of `load`, `rendering`, `postprocess`).
-    - `videos_agent` should expose two ways to surface progress to callers:
+    - `videos_stage` should expose two ways to surface progress to callers:
       1. Synchronous callback parameter: `execute_plan(..., on_progress: Optional[Callable[[CallbackEvent], None]])` — call this synchronously (or via executor) on every adapter event.
       2. Event stream/async channel: publish progress events to an event bus (e.g., websocket/topic or in-process queue) and write an audit memory event via `adk_helpers.write_memory_event()` for durable timeline entries.
     - StepExecutionRecord must include aggregated progress fields: `started_at`, `last_progress_at`, `progress_percent`, `current_chunk`, `completed_chunks`, and `logs_uri`.
@@ -623,11 +625,11 @@ def deterministic_bytes(prompt: str, seed: int, index: int) -> bytes:
 
   Tests (unit + gated integration)
 
-  - Unit tests to implement (file: `tests/unit/test_videos_agent.py`):
+  - Unit tests to implement (file: `tests/unit/test_videos_stage.py`):
     1. `test_chunk_split_and_reassembly`: given `num_frames=150`, `chunk_length_frames=64`, `chunk_overlap_frames=4`, assert computed chunk ranges, overlaps and reassembly trimming produce correct global frame ordering and that per-chunk metadata is populated.
     2. `test_adaptive_oom_retry_shrinks_chunk`: simulate OOM on first attempt and assert agent reduces chunk length by `adaptive_shrink_factor` and retries (mock `videos_wan` to raise OOM on first call, succeed on second).
     3. `test_cpu_fallback_on_oom`: simulate persistent GPU OOM and assert agent attempts CPU fallback and records `cpu_fallback=true` in metadata (mock pipeline behavior accordingly).
-    4. `test_progress_events_forwarded`: mock adapter to emit `CallbackEvent` and assert `videos_agent` forwards events to `on_progress` callback and writes memory events.
+    4. `test_progress_events_forwarded`: mock adapter to emit `CallbackEvent` and assert `videos_stage` forwards events to `on_progress` callback and writes memory events.
   - Gated integration smoke (to run behind env flags):
     - `tests/integration/test_videos_wan_smoke.py` gated by `SMOKE_ADK=1` that submits a short FLF2V job (`num_frames=8`, low `H/W`, reduced steps) and asserts artifact publish and basic progress events.
   - Test harness notes:
@@ -750,7 +752,7 @@ except ModelOOMError as e:
   - [ ] Expose `report_memory()` that tries CUDA queries first, then falls back to host-process `/proc` (best-effort; avoid crashing if metrics unavailable).
   - [ ] Integrate optional NVML support (but fail gracefully if NVML not installed); gate NVML metrics behind a capability check.
   - [ ] Emit structured telemetry events via `adk_helpers.write_memory_event()` at `load_start`, `load_complete`, `inference_start`, `inference_end`, and `cleanup`.
-  - [ ] Provide a simple helper `suggest_shrink_for_oom(attempt_state) -> new_chunk_size` to centralize adaptive-shrink heuristics used by higher-level agents (videos_agent, images_agent).
+  - [ ] Provide a simple helper `suggest_shrink_for_oom(attempt_state) -> new_chunk_size` to centralize adaptive-shrink heuristics used by higher-level stages (videos_stage, images_stage).
   - [ ] Document platform expectations and common device_map presets for A100/4090 hosts.
 
 - Notes & guidance
@@ -782,7 +784,7 @@ except ModelOOMError as e:
 
 Implementation checklist & notes (practical details)
 
-- **Public API**: implement `render_images(prompt: str, opts: dict) -> list[ArtifactRef]` on `DiffusersAdapter` and expose a thin wrapper used by `images_agent` decision layer.
+- **Public API**: implement `render_images(prompt: str, opts: dict) -> list[ArtifactRef]` on `DiffusersAdapter` and expose a thin wrapper used by `images_stage` orchestration layer.
 - **GPU context**: `gpu_utils.model_context('sdxl', *, weights: str|Path, offload: bool=True, xformers: bool=True, compile: bool=False)` must:
   - load model with suggested args (`torch_dtype=torch.float16`, `use_safetensors=True`) and call `.to("cuda")` for inference.
   - enable `accelerate`/offload helpers (e.g., `enable_model_cpu_offload()`), enable `xformers` memory friendly attention when available, and optionally call `torch.compile()` when requested and supported.
@@ -859,7 +861,7 @@ artifact_uri = publish_artifact(path=png_path, media_type="image/png", metadata=
   - Include these fields in published artifact metadata to aid reproducibility and debugging.
 
 - **Security & policy**
-  - `images_agent` must perform content policy checks (NSFW, disallowed content) before invoking `DiffusersAdapter`. Log policy decisions and memory events via `adk_helpers.write_memory_event()`.
+  - `images_stage` must perform content policy checks (NSFW, disallowed content) before invoking `DiffusersAdapter`. Log policy decisions and memory events via `adk_helpers.write_memory_event()`.
 
 ### videos_wan (pilot)
 - Task: Implement `run_wan_inference(start_frames, end_frames, prompt, opts) -> ArtifactRef` for Wan2.1-style pipelines (FLF2V / I2V / T2V flows).
@@ -943,7 +945,7 @@ frames = getattr(result, "frames", getattr(result, "images", None))[0]
     - Optional: `xfuser` / `TeaCache` / `TeaCache`-like accelerators or vendor libs for multi‑GPU; document exact CUDA/torch combos (cu118/cu120) in the proposal.
 
   - Safety & policy:
-    - `videos_agent` or `production_agent` must run content policy checks before invoking `videos_wan`. Log policy decisions and escalate via `adk_helpers.write_memory_event()` when needed.
+    - `videos_stage` or `production_agent` must run content policy checks before invoking `videos_wan`. Log policy decisions and escalate via `adk_helpers.write_memory_event()` when needed.
 
   - Estimate: 1–2 weeks for a robust, multi‑host aware pilot (including multi‑GPU validation); shorter (3–5 days) for a dev-only FunctionTool stub and gated smoke tests.
 
@@ -1171,7 +1173,7 @@ If you want, I can implement the skeleton and safe subprocess helper as a local 
 
 ### production_agent (expanded)
 
-- **Purpose**: execute `MoviePlan` objects end-to-end; orchestrate `images_agent`, `tts_agent`, `videos_agent`, and `assemble_ffmpeg`; enforce policy and gating; publish final artifacts.
+- **Purpose**: execute `MoviePlan` objects end-to-end; orchestrate `images_stage`, `tts_stage`, `videos_stage`, and `assemble_ffmpeg`; enforce policy and gating; publish final artifacts.
 
 - **Public API**: `execute_plan(plan: MoviePlan, *, mode: Literal["dry", "run"] = "dry") -> list[ArtifactRef]`
   - `dry`: validate and simulate orchestration without invoking heavy FunctionTools.
@@ -1205,11 +1207,11 @@ def execute_plan(plan, mode="dry"):
     artifacts = []
     for step in plan.steps:
         if step.type == "image":
-            art = images_agent.render(step.prompt, opts=step.opts)
+            art = images_stage.render(step.prompt, opts=step.opts)
         elif step.type == "tts":
-            art = tts_agent.synthesize(step.text, voice_config=step.voice)
+            art = tts_stage.synthesize(step.text, voice_config=step.voice)
         elif step.type == "video":
-            art = videos_agent.render_video(step.start_frames, step.end_frames, step.prompt, opts=step.opts)
+            art = videos_stage.render_video(step.start_frames, step.end_frames, step.prompt, opts=step.opts)
         elif step.type == "lipsync":
             art = lipsync_wav2lip.run_wav2lip(step.face_video, step.audio, step.out_path, opts=step.opts)
         else:

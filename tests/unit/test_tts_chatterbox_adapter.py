@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 
 from sparkle_motion.function_tools.tts_chatterbox import adapter
-from sparkle_motion import tts_agent
+from sparkle_motion import tts_stage
 
 
-def _make_request(tmp_path: Path, *, text: str = "Hello fixture") -> tts_agent.AdapterRequest:
-    provider = tts_agent.ProviderConfig(
+def _make_request(tmp_path: Path, *, text: str = "Hello fixture") -> tts_stage.AdapterRequest:
+    provider = tts_stage.ProviderConfig(
         provider_id="fixture-local",
         display_name="Fixture Local",
         tier="fixture",
@@ -21,11 +21,11 @@ def _make_request(tmp_path: Path, *, text: str = "Hello fixture") -> tts_agent.A
         quality_score=0.5,
         features=("fixture",),
         languages=("en",),
-        rate_limits=tts_agent.RateLimitPolicy(per_minute=60, burst=10),
-        retry_policy=tts_agent.RetryPolicy(max_retries=0, backoff_s=0.05),
+        rate_limits=tts_stage.RateLimitPolicy(per_minute=60, burst=10),
+        retry_policy=tts_stage.RetryPolicy(max_retries=0, backoff_s=0.05),
         watermarking=False,
     )
-    voice = tts_agent.VoiceMetadata(
+    voice = tts_stage.VoiceMetadata(
         voice_id="narrator",
         provider_id=provider.provider_id,
         provider_voice_id="fixture-voice",
@@ -40,7 +40,7 @@ def _make_request(tmp_path: Path, *, text: str = "Hello fixture") -> tts_agent.A
         estimated_latency_s=0.1,
         quality_score=0.5,
     )
-    return tts_agent.AdapterRequest(
+    return tts_stage.AdapterRequest(
         text=text,
         voice=voice,
         provider=provider,
@@ -75,12 +75,12 @@ def test_fixture_synthesis_is_deterministic(tmp_path: Path, monkeypatch: pytest.
     assert result_a.metadata["mode"] == "fixture"
 
 
-def test_agent_adapter_returns_adapter_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage_adapter_returns_adapter_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SMOKE_TTS", raising=False)
-    agent_adapter = adapter.create_tts_agent_adapter(tts_agent.AdapterResult)
+    stage_adapter = adapter.create_tts_stage_adapter(tts_stage.AdapterResult)
     request = _make_request(tmp_path)
 
-    result = agent_adapter(request)
+    result = stage_adapter(request)
 
     assert result.path.exists()
     assert result.sample_rate == request.voice.sample_rate

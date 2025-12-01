@@ -60,12 +60,12 @@ def test_require_adk_failure_emits_event(monkeypatch):
     monkeypatch.setattr(adk_factory, "safe_probe_sdk", lambda: None)
 
     with pytest.raises(adk_factory.MissingAdkSdkError):
-        adk_factory.require_adk(tool_name="images_agent", model_spec="sdxl")
+        adk_factory.require_adk(tool_name="images_stage", model_spec="sdxl")
 
     assert events[-1] == {
         "run_id": "test-run",
         "event_type": "adk_factory.require_adk.failure",
-        "payload": {"tool": "images_agent", "model_spec": "sdxl"},
+        "payload": {"tool": "images_stage", "model_spec": "sdxl"},
     }
 
 
@@ -90,12 +90,12 @@ def test_create_agent_fixture_emits_memory_event(monkeypatch):
     events = _install_memory_writer(monkeypatch)
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
 
-    adk_factory.create_agent(tool_name="images_agent", model_spec="stub")
+    adk_factory.create_agent(tool_name="images_stage", model_spec="stub")
 
     assert events[-1] == {
         "run_id": "test-run",
         "event_type": "adk_factory.fixture_agent",
-        "payload": {"tool": "images_agent", "model_spec": "stub", "mode": "per-tool"},
+        "payload": {"tool": "images_stage", "model_spec": "stub", "mode": "per-tool"},
     }
 
 

@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from sparkle_motion import images_agent
+from sparkle_motion import images_stage
 from sparkle_motion.ratelimit import RateLimitDecision, RateLimiter
 from sparkle_motion.utils.dedupe import RecentIndex, compute_hash
 from sparkle_motion.utils.recent_index_sqlite import RecentIndexSqlite
@@ -36,7 +36,7 @@ def _install_fake_renderer(monkeypatch: pytest.MonkeyPatch, responses: List[List
         calls.append({"count": opts["count"], "batch_start": opts.get("batch_start", 0)})
         return responses[call_index]
 
-    monkeypatch.setattr(images_agent, "render_images", fake_render)
+    monkeypatch.setattr(images_stage, "render_images", fake_render)
     return calls
 
 
@@ -54,7 +54,7 @@ def test_render_batches_preserve_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
     calls = _install_fake_renderer(monkeypatch, responses)
 
-    result = images_agent.render("prompt", {"count": 10, "max_images_per_call": 3})
+    result = images_stage.render("prompt", {"count": 10, "max_images_per_call": 3})
 
     assert [call["count"] for call in calls] == counts
     assert len(result) == 10
@@ -82,7 +82,7 @@ def test_render_dedupe_within_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_renderer(monkeypatch, responses)
     recent = RecentIndex()
 
-    result = images_agent.render(
+    result = images_stage.render(
         "prompt",
         {"count": 4, "max_images_per_call": 8, "dedupe": True, "recent_index": recent},
     )
@@ -112,7 +112,7 @@ def test_render_dedupe_threshold_strict(monkeypatch: pytest.MonkeyPatch) -> None
     ]
     _install_fake_renderer(monkeypatch, responses)
 
-    strict = images_agent.render(
+    strict = images_stage.render(
         "prompt",
         {
             "count": 2,
@@ -123,7 +123,7 @@ def test_render_dedupe_threshold_strict(monkeypatch: pytest.MonkeyPatch) -> None
     assert strict[1]["metadata"].get("deduped") is None
     assert "duplicate_of" not in strict[1]
 
-    tolerant = images_agent.render(
+    tolerant = images_stage.render(
         "prompt",
         {
             "count": 2,
@@ -139,10 +139,10 @@ def test_render_invalid_dedupe_threshold(monkeypatch: pytest.MonkeyPatch) -> Non
     def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - should not run
         raise AssertionError("adapter should not be called")
 
-    monkeypatch.setattr(images_agent, "render_images", fake_render)
+    monkeypatch.setattr(images_stage, "render_images", fake_render)
 
     with pytest.raises(ValueError):
-        images_agent.render(
+        images_stage.render(
             "prompt",
             {
                 "count": 1,
@@ -159,7 +159,7 @@ def test_render_without_dedupe(monkeypatch: pytest.MonkeyPatch) -> None:
     ]]
     _install_fake_renderer(monkeypatch, responses)
 
-    result = images_agent.render("prompt", {"count": 2, "max_images_per_call": 2, "dedupe": False})
+    result = images_stage.render("prompt", {"count": 2, "max_images_per_call": 2, "dedupe": False})
 
     assert len(result) == 2
     for artifact in result:
@@ -178,7 +178,7 @@ def test_render_with_sqlite_recent_index(monkeypatch: pytest.MonkeyPatch, tmp_pa
     recent = RecentIndexSqlite(str(db_path))
 
     try:
-        first = images_agent.render(
+        first = images_stage.render(
             "prompt",
             {"count": 2, "max_images_per_call": 2, "dedupe": True, "recent_index": recent},
         )
@@ -201,9 +201,9 @@ def test_qa_called(monkeypatch: pytest.MonkeyPatch) -> None:
         assert frames and frames[0] == b"qadata"
         return {"ok": True, "frames": [{"decision": "ok"}]}
 
-    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
 
-    result = images_agent.render("prompt", {"count": 1, "qa": True})
+    result = images_stage.render("prompt", {"count": 1, "qa": True})
 
     assert called["count"] == 1
     assert len(result) == 1
@@ -221,11 +221,11 @@ def test_reference_images_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         assert len(frames) == 1
         return {"reject": True, "reason": "nsfw"}
 
-    monkeypatch.setattr(images_agent, "render_images", fake_render)
-    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+    monkeypatch.setattr(images_stage, "render_images", fake_render)
+    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
 
-    with pytest.raises(images_agent.PlanPolicyViolation):
-        images_agent.render(
+    with pytest.raises(images_stage.PlanPolicyViolation):
+        images_stage.render(
             "prompt",
             {
                 "count": 1,
@@ -251,10 +251,10 @@ def test_post_render_qa_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
         assert len(frames) == 2
         return {"frames": [{"decision": "reject"}], "reason": "nsfw"}
 
-    monkeypatch.setattr(images_agent, "_inspect_frames", fake_inspect)
+    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
 
-    with pytest.raises(images_agent.PlanPolicyViolation):
-        images_agent.render("prompt", {"count": 2, "qa": True})
+    with pytest.raises(images_stage.PlanPolicyViolation):
+        images_stage.render("prompt", {"count": 2, "qa": True})
 
     assert call_count["value"] == 1
 
@@ -265,8 +265,8 @@ def test_rate_limit_queue(monkeypatch: pytest.MonkeyPatch) -> None:
     decision = RateLimitDecision(status="queued", tokens=1, retry_after_s=1.0, eta_epoch_s=42.0)
     limiter = _ScriptedLimiter([decision])
 
-    with pytest.raises(images_agent.RateLimitQueued) as exc:
-        images_agent.render("prompt", {"count": 1, "rate_limiter": limiter})
+    with pytest.raises(images_stage.RateLimitQueued) as exc:
+        images_stage.render("prompt", {"count": 1, "rate_limiter": limiter})
 
     assert exc.value.decision == decision
     assert limiter.calls[0]["queue_allowed"] is True
@@ -278,8 +278,8 @@ def test_rate_limit_reject_without_queue(monkeypatch: pytest.MonkeyPatch) -> Non
     decision = RateLimitDecision(status="rejected", tokens=1, retry_after_s=0.5)
     limiter = _ScriptedLimiter([decision])
 
-    with pytest.raises(images_agent.RateLimitExceeded):
-        images_agent.render(
+    with pytest.raises(images_stage.RateLimitExceeded):
+        images_stage.render(
             "prompt",
             {
                 "count": 1,

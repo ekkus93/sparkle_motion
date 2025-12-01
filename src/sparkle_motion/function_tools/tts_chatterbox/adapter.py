@@ -223,7 +223,7 @@ def _synthesize_real(
     )
 
 
-def create_tts_agent_adapter(adapter_result_cls: Any) -> Any:
+def create_tts_stage_adapter(adapter_result_cls: Any) -> Any:
     def _adapter(request: Any) -> Any:
         opts = getattr(request, "options", {}) or {}
         result = synthesize_text(

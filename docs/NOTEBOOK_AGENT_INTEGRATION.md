@@ -7,13 +7,27 @@ the UI and orchestration harden.
 ## Colab-first workflow snapshot
 
 1. User opens the shared Colab notebook (single-user profile).
-2. Notebook cells start any required FunctionTools (script, production,
-	 images_sdxl, videos_wan, etc.) inside the Colab VM.
+2. Notebook cells start the two ADK agents (`script_agent`, `production_agent`)
+	 plus the required FunctionTools (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
+	 etc.) inside the Colab VM.
 6. The user provides a story prompt/title via notebook UI, which calls the
-	 `script_agent` FunctionTool to produce a `MoviePlan` artifact.
+	 `script_agent` agent entrypoint to produce a `MoviePlan` artifact.
 4. Once the plan exists, the notebook can trigger `production_agent` to execute
 	 the pipeline (images → videos → TTS → lipsync → assemble → QA) and surface
 	 artifact URIs back to the user.
+
+### Agent vs FunctionTool naming
+
+- Only `script_agent` (plan generation) and `production_agent` (WorkflowAgent
+	 orchestrator) retain the `_agent` suffix because they are true ADK agents.
+- Every other runtime component is a FunctionTool hosted under
+	 `function_tools/<tool_id>` (e.g., `images_sdxl`, `videos_wan`,
+	 `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`).
+- Stage modules inside `src/sparkle_motion/*_stage.py` coordinate retries, QA,
+	 and policy enforcement before invoking the FunctionTool endpoints. When this
+	 document references “stages,” it is describing those orchestration modules;
+	 when it references FunctionTools it is describing the FastAPI entrypoints
+	 listed in the port map below.
 
 ## Interactive Python widget controls
 
@@ -28,9 +42,9 @@ Example flow:
 1. A notebook cell instantiates widgets (e.g., `widgets.Text`, `widgets.Button`,
 	`widgets.Tab`) plus dedicated `widgets.Output` panes for logs/media.
 2. Button callbacks call helper functions that use `httpx`/`requests` to talk to
-	`script_agent` (`http://localhost:8101/invoke`) and `production_agent`
-	(`http://localhost:8200/...`). Responses are stored in Python variables for
-	follow-on cells.
+	the `script_agent` and `production_agent` agent entrypoints (for example,
+	`http://localhost:8101/invoke` or `http://localhost:8200/...`). Responses are
+	stored in Python variables for follow-on cells.
 3. The callbacks stream progress into the `Output` areas (or update
 	`widgets.HTML`/`widgets.Textarea`) so users see plan metadata, per-stage status,
 	and artifact URIs without leaving the notebook.
@@ -97,10 +111,11 @@ Key guidelines:
 	- Install dependencies via `pip install -r requirements-ml.txt` plus any
 		extras (Wan/SDXL torch wheels) the user opts into.
 2. **Tool startup cells**
-	- Each FunctionTool (script_agent, production_agent, images_sdxl, videos_wan,
-		tts_chatterbox, assemble_ffmpeg, lipsync_wav2lip, qa_qwen2vl) gets a helper
-		cell that launches its FastAPI server in-process (e.g., via `uvicorn.run` in
-		a background thread) bound to `localhost:<port>`.
+	- Each runtime gets a helper cell: start the two agents (`script_agent`,
+		 `production_agent`) first, then launch the FunctionTools (`images_sdxl`,
+		 `videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`,
+		 `qa_qwen2vl`) so they bind to `localhost:<port>` via `uvicorn.run` (or the
+		 `scripts/run_function_tool.py` helper) inside the notebook session.
 	- Cells display readiness indicators by hitting `/ready` endpoints before
 		exposing UI controls.
 	**Control panel cell**
@@ -207,23 +222,23 @@ Key guidelines:
 	section immediately below it, which demonstrates manual `PanelEndpoints`
 	creation and `ControlPanel` instantiation.
 
-### FunctionTool port map (local-colab profile)
+### Agent + FunctionTool port map (local-colab profile)
 
 The control panel assumes the `local-colab` ToolRegistry profile defined in
-`configs/tool_registry.yaml`. Launch each tool inside the Colab runtime with the
-command shown below (one cell per tool). Only override ports when another
-process already occupies the default.
+`configs/tool_registry.yaml`. Launch each runtime (agents first, then
+FunctionTools) inside the Colab VM with the command shown below. Only override
+ports when another process already occupies the default.
 
-| Tool ID | Default port | Launch snippet | Fixture / smoke env vars |
-| --- | --- | --- | --- |
-| `script_agent` | `5001` | `PYTHONPATH=src python scripts/run_function_tool.py --tool script_agent --port 5001` | `SCRIPT_AGENT_MODEL` (LLM to call), `ADK_USE_FIXTURE=1` to keep deterministic outputs |
-| `images_sdxl` | `5002` | `PYTHONPATH=src python scripts/run_function_tool.py --tool images_sdxl --port 5002` | `SMOKE_IMAGES=1` / `SMOKE_ADAPTERS=1` to exercise SDXL, `IMAGES_SDXL_FIXTURE_ONLY=1` to pin fixtures, `IMAGES_SDXL_MODEL` + `IMAGES_SDXL_DEVICE` select checkpoints |
-| `videos_wan` | `5003` | `PYTHONPATH=src python scripts/run_function_tool.py --tool videos_wan --port 5003` | `SMOKE_VIDEOS=1`, `SMOKE_ADAPTERS=1`, or `SMOKE_ADK=1` for Wan2.1, `VIDEOS_WAN_FIXTURE_ONLY=1` for fixtures, `VIDEOS_WAN_MODEL` / `VIDEOS_WAN_DEVICE_PRESET` override model/device maps |
-| `tts_chatterbox` | `5004` | `PYTHONPATH=src python scripts/run_function_tool.py --tool tts_chatterbox --port 5004` | `SMOKE_TTS=1` / `SMOKE_ADAPTERS=1` for real synthesis, `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`, `TTS_CHATTERBOX_CACHE_TTL_S` tune the backend |
-| `lipsync_wav2lip` | `5005` | `PYTHONPATH=src python scripts/run_function_tool.py --tool lipsync_wav2lip --port 5005` | `SMOKE_LIPSYNC=1` (or `SMOKE_ADAPTERS=1`) to invoke Wav2Lip, `LIPSYNC_WAV2LIP_FIXTURE_ONLY=1` to force fixtures, `WAV2LIP_REPO` / `WAV2LIP_CHECKPOINT` point at local assets |
-| `assemble_ffmpeg` | `5006` | `PYTHONPATH=src python scripts/run_function_tool.py --tool assemble_ffmpeg --port 5006` | `SMOKE_ASSEMBLE=1` / `SMOKE_ADAPTERS=1` to run ffmpeg, `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1` to clamp fixtures, `FFMPEG_PATH` selects the binary |
-| `qa_qwen2vl` | `5007` | `PYTHONPATH=src python scripts/run_function_tool.py --tool qa_qwen2vl --port 5007` | `SMOKE_QA=1` to enable Qwen2-VL, `QA_QWEN2VL_FIXTURE_ONLY=1` to stay on fixtures, `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_DTYPE`, `QA_QWEN2VL_ATTN` adjust inference |
-| `production_agent` | `5008` | `PYTHONPATH=src python scripts/run_function_tool.py --tool production_agent --port 5008` | Stage-level flags (`SMOKE_TTS`, `SMOKE_LIPSYNC`, `SMOKE_VIDEOS`, `SMOKE_IMAGES`, `SMOKE_ASSEMBLE`, `SMOKE_QA`, `SMOKE_ADAPTERS`) control which adapters run for real; `SPARKLE_DB_PATH` picks the SQLite store; `ADK_USE_FIXTURE=1` keeps every FunctionTool on fixtures |
+| Runtime type | ID | Default port | Launch snippet | Fixture / smoke env vars |
+| --- | --- | --- | --- | --- |
+| Agent | `script_agent` | `5001` | `PYTHONPATH=src python scripts/run_function_tool.py --tool script_agent --port 5001` | `SCRIPT_AGENT_MODEL` (LLM to call), `ADK_USE_FIXTURE=1` to keep deterministic outputs |
+| FunctionTool | `images_sdxl` | `5002` | `PYTHONPATH=src python scripts/run_function_tool.py --tool images_sdxl --port 5002` | `SMOKE_IMAGES=1` / `SMOKE_ADAPTERS=1` to exercise SDXL, `IMAGES_SDXL_FIXTURE_ONLY=1` to pin fixtures, `IMAGES_SDXL_MODEL` + `IMAGES_SDXL_DEVICE` select checkpoints |
+| FunctionTool | `videos_wan` | `5003` | `PYTHONPATH=src python scripts/run_function_tool.py --tool videos_wan --port 5003` | `SMOKE_VIDEOS=1`, `SMOKE_ADAPTERS=1`, or `SMOKE_ADK=1` for Wan2.1, `VIDEOS_WAN_FIXTURE_ONLY=1` for fixtures, `VIDEOS_WAN_MODEL` / `VIDEOS_WAN_DEVICE_PRESET` override model/device maps |
+| FunctionTool | `tts_chatterbox` | `5004` | `PYTHONPATH=src python scripts/run_function_tool.py --tool tts_chatterbox --port 5004` | `SMOKE_TTS=1` / `SMOKE_ADAPTERS=1` for real synthesis, `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`, `TTS_CHATTERBOX_CACHE_TTL_S` tune the backend |
+| FunctionTool | `lipsync_wav2lip` | `5005` | `PYTHONPATH=src python scripts/run_function_tool.py --tool lipsync_wav2lip --port 5005` | `SMOKE_LIPSYNC=1` (or `SMOKE_ADAPTERS=1`) to invoke Wav2Lip, `LIPSYNC_WAV2LIP_FIXTURE_ONLY=1` to force fixtures, `WAV2LIP_REPO` / `WAV2LIP_CHECKPOINT` point at local assets |
+| FunctionTool | `assemble_ffmpeg` | `5006` | `PYTHONPATH=src python scripts/run_function_tool.py --tool assemble_ffmpeg --port 5006` | `SMOKE_ASSEMBLE=1` / `SMOKE_ADAPTERS=1` to run ffmpeg, `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1` to clamp fixtures, `FFMPEG_PATH` selects the binary |
+| FunctionTool | `qa_qwen2vl` | `5007` | `PYTHONPATH=src python scripts/run_function_tool.py --tool qa_qwen2vl --port 5007` | `SMOKE_QA=1` to enable Qwen2-VL, `QA_QWEN2VL_FIXTURE_ONLY=1` to stay on fixtures, `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_DTYPE`, `QA_QWEN2VL_ATTN` adjust inference |
+| Agent | `production_agent` | `5008` | `PYTHONPATH=src python scripts/run_function_tool.py --tool production_agent --port 5008` | Stage-level flags (`SMOKE_TTS`, `SMOKE_LIPSYNC`, `SMOKE_VIDEOS`, `SMOKE_IMAGES`, `SMOKE_ASSEMBLE`, `SMOKE_QA`, `SMOKE_ADAPTERS`) control which adapters run for real; `SPARKLE_DB_PATH` picks the SQLite store; `ADK_USE_FIXTURE=1` keeps every FunctionTool on fixtures |
 
 All commands assume the `sparkle_motion` conda environment is active and that
 your notebook session exported `SPARKLE_DB_PATH`/`ARTIFACTS_DIR` before launching
@@ -264,7 +279,7 @@ points at the correct endpoints.
 	them but never mutate or overwrite the originals.
 - After each base image renders, the notebook can trigger a fast QA probe
 	(e.g., checking for correct finger counts). Any failure immediately requests a
-	re-generation from `images_agent` before we advance to expensive stages like
+	re-generation from `images_stage` before we advance to expensive stages like
 	video or TTS; this keeps later steps fed with clean inputs.
 - When editors adjust shot durations they must also ensure the base image count
 	still equals `len(shots) + 1`; otherwise notebook validation will block the
@@ -429,7 +444,7 @@ points at the correct endpoints.
 		total still equals the cumulative shot runtime.
 2. **TTS adapter call**
 	- `production_agent` (or a dedicated timeline stage) sends the timeline to
-		tts_agent with a request to synthesize each line.
+		tts_stage with a request to synthesize each line.
 	- Adapter returns per-line artifacts (`line_artifacts`) plus raw WAVs and
 		updated durations based on the rendered speech.
 3. **Stitch + silence insertion**

@@ -29,11 +29,12 @@ authoritative per-tool TODO reference for implementers. Important clarifications
 introduced there (now reflected in this architecture) include:
 
 - Agents (policy/orchestration) vs FunctionTools (compute adapters): Agents
-	include `script_agent` (plan generation), `production_agent` (plan
-	execution/orchestration), `images_agent`, `tts_agent`, and `videos_agent`.
-	FunctionTools remain the heavy compute adapters such as `images_sdxl`,
-	`videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, `qa_qwen2vl`, and
-	`assemble_ffmpeg`.
+	include `script_agent` (plan generation) and `production_agent` (plan
+	execution/orchestration). Stage adapters (`images_stage`, `tts_stage`,
+	`videos_stage`) now encapsulate the FunctionTool shims that used to carry
+	the `_agent` suffix, while FunctionTools such as `images_sdxl`, `videos_wan`,
+	`tts_chatterbox`, `lipsync_wav2lip`, `qa_qwen2vl`, and `assemble_ffmpeg`
+	remain the heavy compute adapters.
 - Per-tool gating: heavy adapters and integration tests are gated by
 	`SMOKE_*` flags (for example `SMOKE_ADK`, `SMOKE_TTS`, `SMOKE_LIPSYNC`,
 	`SMOKE_QA`, `SMOKE_ADAPTERS`) to avoid accidental heavy installs or model
@@ -56,7 +57,7 @@ Implementation Tasks document.
 	types (`PlanParseError`, `PlanSchemaError`, `PlanPolicyViolation`,
 	`PlanResourceError`). Unit tests cover schema conformance and error cases;
 	integration smoke tests run behind `SMOKE_ADK=1` with a real or fixture LLM.
-- **`tts_agent`** – orchestrates synthesis via `synthesize(text, voice_config)
+- **`tts_stage`** – orchestrates synthesis via `synthesize(text, voice_config)
 	-> ArtifactRef`. Responsibilities include provider selection (priority
 	profiles for cost/latency/quality/balanced, `max_latency_s`,
 	`max_cost_usd`, `required_features`), rate limiting, retries/backoff, and
@@ -75,7 +76,7 @@ Implementation Tasks document.
 	`batch_index`/`item_index`, and stores policy decisions via memory events.
 	Unit tests cover batching, dedupe, rate-limit queueing, policy rejections,
 	and QA-driven rejects.
-- **`videos_agent`** – API `render_video(start_frames, end_frames, prompt,
+- **`videos_stage`** – API `render_video(start_frames, end_frames, prompt,
 	opts) -> ArtifactRef`. It implements chunking with parameters from the tasks
 	doc (`chunk_length_frames=64`, `chunk_overlap_frames=4`,
 	`min_chunk_frames=8`, adaptive retries, CPU fallback), handles multi-GPU
@@ -139,13 +140,34 @@ resource caps (frames, clips, elapsed runtime). Errors map to the four
 - QA policy flows call `qa_qwen2vl.inspect_frames()` both pre-render (when
 	reference images exist) and post-render with structured `QAReport` parsing.
 - Dedupe relies on the SQLite-backed `RecentIndex` APIs listed earlier; the
-	same index powers cross-plan dedupe for `images_agent` and `videos_agent`
+	same index powers cross-plan dedupe for `images_stage` and `videos_stage`
 	(keyframes).
 
 Note: the `resources/` directory contains many ADK sample projects and
 examples. Those are vendor/sample code and are intentionally excluded from
 these counts per your instruction — they are references, not application
 runtime deployments.
+
+### `_agent` naming matrix (authoritative as of 2025-12-03)
+
+The table below documents the renaming outcome for every runtime component
+that previously ended with `_agent`. Only the WorkflowAgent entrypoint
+(`production_agent`) and the LlmAgent that generates MoviePlans
+(`script_agent`) still carry the `_agent` suffix; every other former `_agent`
+module has been renamed to a stage-specific adapter so users no longer confuse
+FunctionTools with ADK agents.
+
+| Legacy `_agent` | Current module(s) | Runtime reality | Canonical name | Notes |
+| --- | --- | --- | --- | --- |
+| `script_agent` | `src/sparkle_motion/script_agent.py`<br>`src/sparkle_motion/function_tools/script_agent/entrypoint.py` | ADK `LlmAgent` that produces MoviePlans and persists artifacts. | `script_agent` | Only `_agent` allowed to keep the suffix besides the WorkflowAgent; FunctionTool entrypoint merely hosts the agent for `/invoke`. |
+| `production_agent` | `src/sparkle_motion/production_agent.py`<br>`src/sparkle_motion/function_tools/production_agent/entrypoint.py` | WorkflowAgent runtime orchestrator that executes validated MoviePlans. | `production_agent` | Coordinates every stage, emits `StepExecutionRecord` history, and needs to retain its public API surface. |
+| `images_agent` | `src/sparkle_motion/images_stage.py` | FunctionTool shim around `function_tools/images_sdxl` plus QA/rate-limit helpers (no ADK agent). | `images_stage` | Renamed from `images_agent`; telemetry keys and RunRegistry rows use the `images_stage.*` prefix. |
+| `videos_agent` | `src/sparkle_motion/videos_stage.py` | FunctionTool shim around `function_tools/videos_wan` with chunk/orchestration logic. | `videos_stage` | Renamed from `videos_agent`; emits Wan chunk progress + retries under `videos_stage.*` telemetry. |
+| `tts_agent` | `src/sparkle_motion/tts_stage.py` | FunctionTool shim that routes to `function_tools/tts_chatterbox` adapters. | `tts_stage` | Renamed from `tts_agent`; handles provider selection, retries, and artifact stitching under the stage moniker. |
+
+This matrix now drives the remaining P0 tasks in `docs/TODO.md`: verify that
+tool registries, telemetry, and docs consistently reference the stage names so
+only real ADK agents retain the `_agent` suffix.
 - **WorkflowAgent as the coordinator** – stage orchestration, retries,
 	resume, and hand-offs are modeled directly in ADK’s WorkflowAgent graph so
 	runs never depend on a bespoke Python runner.
@@ -704,7 +726,7 @@ drive the immediate workstream and the TODO list.
 	- Dependencies (proposal): `chatterbox-tts`, `torch`, `torchaudio`, and any
 		vendor-specific extras. Manifest edits require an approved
 		`proposals/pyproject_adk.diff` describing wheel sizes and CUDA variants.
-	- Risks: provider licensing / cost. Mitigate via the `tts_agent` selection
+	- Risks: provider licensing / cost. Mitigate via the `tts_stage` selection
 		logic, fallback providers, and the error taxonomy defined earlier.
 
 - **lipsync_wav2lip**

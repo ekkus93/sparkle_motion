@@ -160,7 +160,11 @@ def _build_stage_payload(stage: Dict[str, Any], stage_outputs: Dict[str, Dict[st
             plan_payload = _fallback_movie_plan()
             print(f"Warning: No MoviePlan detected from previous stages; using fallback plan for stage {sid_slug}")
         mode = stage.get("mode") or "run"
-        return {"plan": plan_payload, "mode": mode}
+        qa_mode = _resolve_production_qa_mode(stage)
+        payload = {"plan": plan_payload, "mode": mode}
+        if qa_mode:
+            payload["qa_mode"] = qa_mode
+        return payload
     if stage_name == "qa" or tool_name == "qa_qwen2vl":
         return _build_qa_stage_payload(sid_slug, stage_outputs)
     return {"prompt": f"operator-run:{sid_slug}"}
@@ -367,6 +371,16 @@ def _fallback_movie_plan() -> Dict[str, Any]:
             "metadata": {"max_fps": 16},
         },
     }
+
+
+def _resolve_production_qa_mode(stage: Dict[str, Any]) -> Optional[str]:
+    candidates = [stage.get("qa_mode"), os.environ.get("CLI_PRODUCTION_QA_MODE"), os.environ.get("PRODUCTION_AGENT_QA_MODE"), "skip"]
+    for value in candidates:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"full", "skip"}:
+                return normalized
+    return None
 
 
 if __name__ == "__main__":

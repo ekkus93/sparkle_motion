@@ -1,4 +1,7 @@
-# ToolRegistry metadata for Sparkle Motion FunctionTools
+# ToolRegistry metadata for Sparkle Motion agents + FunctionTools.
+# Only `script_agent` (plan generator) and `production_agent` (WorkflowAgent
+# runtime) are true ADK agents; the remaining entries below are FunctionTools
+# that stages call through `production_agent`.
 # This file lists deployment endpoints and metadata per tool.
 # The `local-colab` section provides explicit endpoints for the local-colab profile
 # where tools are run in-process inside a Colab or notebook session (no Docker).

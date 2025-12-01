@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from sparkle_motion import tts_agent
+from sparkle_motion import tts_stage
 
 
-def _make_request(tmp_path: Path, text: str = "Sample line") -> tts_agent.AdapterRequest:
-    provider = tts_agent.ProviderConfig(
+def _make_request(tmp_path: Path, text: str = "Sample line") -> tts_stage.AdapterRequest:
+    provider = tts_stage.ProviderConfig(
         provider_id="fixture-local",
         display_name="Fixture Local",
         tier="fixture",
@@ -20,11 +20,11 @@ def _make_request(tmp_path: Path, text: str = "Sample line") -> tts_agent.Adapte
         quality_score=0.5,
         features=("fixture",),
         languages=("en",),
-        rate_limits=tts_agent.RateLimitPolicy(per_minute=120, burst=20),
-        retry_policy=tts_agent.RetryPolicy(max_retries=0, backoff_s=0.05),
+        rate_limits=tts_stage.RateLimitPolicy(per_minute=120, burst=20),
+        retry_policy=tts_stage.RetryPolicy(max_retries=0, backoff_s=0.05),
         watermarking=False,
     )
-    voice = tts_agent.VoiceMetadata(
+    voice = tts_stage.VoiceMetadata(
         voice_id="narrator",
         provider_id="fixture-local",
         provider_voice_id="fixture-voice",
@@ -39,7 +39,7 @@ def _make_request(tmp_path: Path, text: str = "Sample line") -> tts_agent.Adapte
         estimated_latency_s=0.1,
         quality_score=0.5,
     )
-    return tts_agent.AdapterRequest(
+    return tts_stage.AdapterRequest(
         text=text,
         voice=voice,
         provider=provider,
@@ -53,8 +53,8 @@ def _make_request(tmp_path: Path, text: str = "Sample line") -> tts_agent.Adapte
 
 def test_fixture_adapter_deterministic_duration(tmp_path: Path) -> None:
     request = _make_request(tmp_path, text="Consistent audio output")
-    res1 = tts_agent._fixture_adapter(request)
-    res2 = tts_agent._fixture_adapter(request)
+    res1 = tts_stage._fixture_adapter(request)
+    res2 = tts_stage._fixture_adapter(request)
 
     assert res1.path.exists()
     assert res2.path.exists()
@@ -73,14 +73,14 @@ def test_fixture_adapter_deterministic_duration(tmp_path: Path) -> None:
 
 def test_artifact_metadata_builder_populates_context(tmp_path: Path) -> None:
     request = _make_request(tmp_path)
-    selection = tts_agent.SelectionDecision(
+    selection = tts_stage.SelectionDecision(
         provider_id=request.provider.provider_id,
         score=0.87,
         breakdown={"quality": 0.8, "latency": 0.15, "cost": 0.05},
         reason="weighted",
         estimated_cost_usd=0.001,
     )
-    result = tts_agent.AdapterResult(
+    result = tts_stage.AdapterResult(
         path=tmp_path / "result.wav",
         duration_s=1.25,
         sample_rate=request.voice.sample_rate,
@@ -89,7 +89,7 @@ def test_artifact_metadata_builder_populates_context(tmp_path: Path) -> None:
         metadata={"engine": "fixture"},
     )
 
-    metadata = tts_agent._build_artifact_metadata(
+    metadata = tts_stage._build_artifact_metadata(
         result,
         request,
         selection,

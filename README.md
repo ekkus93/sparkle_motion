@@ -1,5 +1,22 @@
 # sparkle_motion
 
+Agents vs FunctionTools
+-----------------------
+- **Agents (keep the `_agent` suffix):** `production_agent` is now the ADK
+	root `LlmAgent` entry point. It calls the script stage (powered by
+	`script_agent`) to draft a `MoviePlan`, then executes the downstream
+	images/video/TTS/assemble stages plus QA. `script_agent` still runs as an ADK
+	agent, but it is only invoked by the workflow's script stage—operators do not
+	call it directly anymore.
+- **Stages implemented as FunctionTools:** `images_sdxl`, `videos_wan`,
+	`tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`, and `qa_qwen2vl`
+	provide the heavy GPU/IO work. They no longer use the `_agent` suffix,
+	and notebook/control-panel docs reference them strictly as FunctionTools.
+- **Stages vs adapters:** higher-level orchestration modules inside `src/`
+	(e.g., `images_stage`, `tts_stage`) coordinate retries/QA/policy checks and
+	call the FunctionTools above. Only the two orchestration agents listed here
+	surface ADK agent identifiers to users.
+
 Running ADK integration tests
 -----------------------------
 This project includes an env-gated ADK integration test that is skipped
@@ -109,6 +126,47 @@ only ones who can mint keys for the control plane.
 
 Set those in your environment when running ADK integration tests or using
 `google.adk`-powered features.
+
+### Forcing production runs to use real ADK agents
+
+The repository defaults to fixture mode so local development does not make real
+ADK control-plane calls. To guarantee that production (or any run) uses the
+backed `google.adk` agents instead of fakes, complete **all** of the following:
+
+1. **Install the ADK extras** so the real SDK is present:
+
+	```bash
+	pip install .[adk]
+	```
+
+2. **Disable fixture mode** by unsetting the variable or forcing it to zero:
+
+	```bash
+	export ADK_USE_FIXTURE=0
+	```
+
+	Any non-zero/truthy value keeps the local shim active, so production deploys
+	must explicitly leave this unset or set to `0`.
+
+3. **Provide the required credentials and project metadata:**
+
+	```bash
+	export ADK_PROJECT=sparkle-motion            # or another valid project
+	export ADK_API_KEY=sk-live-...
+	export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+	```
+
+	When running the ADK publish integration test, also set
+	`ADK_PUBLISH_INTEGRATION=1` so pytest collects it.
+
+4. **Load the environment before invoking CLI/entrypoints.** A common pattern is
+	sourcing `data/content/.sparkle.env` (where the variables above live) and
+	exporting `PYTHONPATH=.:src` so scripts and `src/` imports coexist.
+
+With those steps in place, the FunctionTool entrypoints instantiate real ADK
+agents via `adk_factory` and no fixture adapters are consulted. Any missing
+variable will cause the SDK constructors to raise, so treat failures as
+misconfiguration rather than falling back to local mocks.
 
 Running tests (canonical commands)
 ----------------------------------
@@ -248,4 +306,12 @@ High-level adoption plan
 	 validate today.
 3. Extend the artifact/telemetry hooks to include A2A trace IDs so cross-agent
 	 debugging remains intact, and document the contract for external partners.
-# sparkle_motion
+
+Release notes
+-------------
+- **2025-12-01 — Agent naming cleanup.** Only `script_agent` and
+	`production_agent` remain ADK agents. All other runtime components have been
+	renamed to FunctionTools or stage modules (for example, `images_stage`
+	orchestrates the `images_sdxl` FunctionTool). Update any local configs or
+	notebooks that previously referenced `*_agent` identifiers to use the new
+	names listed in `docs/ARCHITECTURE.md#_agent-naming-matrix`.

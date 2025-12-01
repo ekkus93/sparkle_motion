@@ -8,8 +8,8 @@
 - Script + Production agents are live end-to-end: `script_agent.generate_plan()` persists validated MoviePlans, `production_agent.execute_plan()` is wired through the WorkflowAgent/tool registry, and the new production-agent FunctionTool entrypoint plus CLI/tests are green.
 - `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (241 passed / 1 skipped) remains green after the latest adapter additions.
 - Schema + QA artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs, QA policy bundle lives under `artifacts/qa_policy/v1/`), so downstream modules consume typed resolvers via `schema_registry`.
-- Runtime profile remains single-user/Colab-local; remaining P0 work is concentrated on the TTS agent plus dedupe/rate-limit scaffolding. Videos agent orchestration/tests are complete and publishing artifacts via `videos_agent.render_video()`.
-- Production agent + `tts_agent` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
+- Runtime profile remains single-user/Colab-local; remaining P0 work is concentrated on the TTS stage plus dedupe/rate-limit scaffolding. Video stage orchestration/tests are complete and publishing artifacts via `videos_stage.render_video()`.
+- Production agent + `tts_stage` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
 - `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for QA automation.
 - `videos_wan` FunctionTool now routes through the Wan adapter with deterministic fixtures by default, publishes `videos_wan_clip` artifacts, and surfaces chunk metadata/telemetry with smoke-flag gating for real GPU runs.
 - `qa_qwen2vl` adapter + entrypoint hardened with structured metadata propagation, frame-id plumbing, download limits, and smoke-level assertions so upstream agents can depend on the augmented fields.
@@ -54,23 +54,23 @@
 - [x] `production_agent` (`src/sparkle_motion/production_agent.py`)
   - [x] Implement `execute_plan(plan, mode='dry'|'run')` plus `StepExecutionRecord` dataclass and progress hooks.
   - [x] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
-- [x] `images_agent` orchestration
+- [x] `images_stage` orchestration
   - [x] Enforce batching (`max_images_per_call`), per-step dedupe flag, and per-plan ordering guarantees.
   - [x] Integrate QA pre-check via `qa_qwen2vl.inspect_frames()` when reference images provided.
   - [x] Hook rate limiter/queue interface (stub-friendly) to unblock future multi-user rollout.
-- [x] `videos_agent`
+- [x] `videos_stage`
   - [x] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
   - [x] Expose `render_video(start_frames, end_frames, prompt, opts)` orchestrator that selects adapter endpoints (fixture vs real).
-- [x] `tts_agent`
+- [x] `tts_stage`
   - [x] Implement provider selection + retry policy driven by `configs/tts_providers.yaml`.
   - [x] Surface VoiceMetadata (voice_id/name, sample_rate, duration, watermark flag) and telemetry.
 
-### Sequence of Work — `tts_agent`
+### Sequence of Work — `tts_stage` (formerly `tts_agent`)
 
 1. [x] Finalize `configs/tts_providers.yaml` (provider ids, tiering flags, rate caps, fixture aliases) and document the selection contract inside `docs/IMPLEMENTATION_TASKS.md`.
-2. [x] Implement `sparkle_motion/tts_agent.py` with provider scoring, bounded retries, VoiceMetadata emission, and `adk_helpers.publish_artifact()` integrations plus structured telemetry.
+2. [x] Implement `sparkle_motion/tts_stage.py` with provider scoring, bounded retries, VoiceMetadata emission, and `adk_helpers.publish_artifact()` integrations plus structured telemetry.
 3. [x] Flesh out `function_tools/tts_chatterbox/entrypoint.py`: add deterministic WAV fixture pipeline, gate the real adapter behind `SMOKE_TTS`, and ensure both paths share a metadata builder.
-4. [x] Author `tests/unit/test_tts_agent.py` and `tests/unit/test_tts_adapter.py` covering provider selection, retry downgrades, fixture determinism, and artifact metadata.
+4. [x] Author `tests/unit/test_tts_stage.py` and `tests/unit/test_tts_adapter.py` covering provider selection, retry downgrades, fixture determinism, and artifact metadata.
 5. [x] Wire the new agent into `production_agent.execute_plan()` (progress callbacks, StepExecutionRecord updates) and broaden `tests/test_production_agent.py` coverage for the TTS stage.
 6. [x] Update docs (`docs/TODO.md`, `docs/ORCHESTRATOR.md`, function tool READMEs) to reflect the new TTS flow, env vars, and artifact publishing expectations. (See `docs/ORCHESTRATOR.md#tts`, `function_tools/README.md#tts-flow`, and this snapshot for the authoritative contract.)
 
@@ -129,7 +129,7 @@
    - [ ] Manually edit a plan in-notebook (e.g., tweak shot durations or base-image references) and ensure the MoviePlan validator surfaces mismatches (shot runtime vs. dialogue timeline, base_images count) before allowing production.
    - [ ] Kick off production runs with `qa_mode="full"` and `qa_mode="skip"`, verifying that StepExecutionRecord history, QA badges, and `/status` responses reflect the requested mode.
    - [ ] Observe the dialogue/TTS stage outputs: confirm per-line artifacts, stitched `tts_timeline.wav`, and timeline-with-actuals manifests appear in `/artifacts` and render inside the notebook viewers.
-   - [ ] Validate base-image QA flows by forcing a known failure (bad prompt/fixture), confirming the notebook surfaces the QA report, regenerates via `images_agent`, and only proceeds after a pass.
+  - [ ] Validate base-image QA flows by forcing a known failure (bad prompt/fixture), confirming the notebook surfaces the QA report, regenerates via `images_stage`, and only proceeds after a pass.
    - [ ] Validate clip-level QA + retry behavior by injecting a `qa_qwen2vl` failure, checking that the control panel pauses, surfaces retry counts, and resumes automatically once QA passes.
    - [ ] Use the control buttons to trigger `pause`, `resume`, and `stop` during a long run, then exercise `resume_from=<stage>` to ensure partial progress can restart without rerunning prior stages.
    - [ ] Confirm the artifacts viewer renders every stage manifest (base images, TTS audio, video clips, QA reports, assembly outputs) with inline previews (`Image`, `Audio`, `Video`) and that auto-refresh never duplicates or drops entries.
@@ -171,7 +171,7 @@
   `docs/ARCHITECTURE.md` §Production run observability + THE_PLAN.md §Stage
   contracts.
 - [x] Implement the dialogue + audio stage exactly as specced: call
-  `tts_agent` once per dialogue timeline entry, record `line_artifacts`, and
+  `tts_stage` once per dialogue timeline entry, record `line_artifacts`, and
   stitch a single `tts_timeline.wav` artifact with measured timings so later
   stages and `/artifacts` consumers can rely on exact offsets
   (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Dialogue timeline + TTS synthesis,
@@ -185,6 +185,13 @@
   pair, writes QA reports, and publishes the `video_final` manifest entry that
   downstream `/artifacts` consumers expect (THE_PLAN.md §Final deliverable
   contract, `docs/NOTEBOOK_AGENT_INTEGRATION.md` Final deliverable helper).
+
+### P0 — Agent naming cleanup
+- [x] Inventory every runtime component currently suffixed `_agent` and classify whether it is an actual ADK WorkflowAgent/LlmAgent or a FunctionTool. Produce a canonical naming matrix (e.g., `script_agent` and `production_agent` stay agents; others become `*_tool` or stage-specific names) and circulate it in `docs/ARCHITECTURE.md`.
+- [x] Rename the non-agent modules/directories (Python packages under `src/` and `function_tools/`, plus their entrypoints/tests) to the agreed FunctionTool names and update all imports/usages accordingly. *(2025-12-01 — stage modules + env/tests now reference `images_stage`/`videos_stage`/`tts_stage` and function tools only.)*
+- [x] Update configuration surfaces (`configs/tool_registry.yaml`, `configs/workflow_agent.yaml`, CLI scripts, notebooks) so tool IDs, port maps, and telemetry strings reflect the new names with no lingering `_agent` suffix for FunctionTools.
+- [x] Rewrite user-facing docs (README, notebook instructions, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, control panel text) to explain that only WorkflowAgent + ScriptAgent are ADK agents; all other stages are FunctionTools with the new names.
+- [x] Add a release/migration note (docs + CHANGELOG) describing the renaming, run the full pytest suite, and verify that no references to the old `_agent` identifiers remain outside of the historical note. *(2025-12-01 — `docs/RELEASE_NOTES.md` updated with the agent→stage table, `docs/ARCHITECTURE.md` holds the sole historical matrix, and `PYTHONPATH=.:src pytest -q` reported 326 passed / 1 skipped.)*
 
 #### Production agent observability & controls
 - [x] Persist StepExecutionRecord history (and run metadata such as
@@ -218,9 +225,9 @@
 - [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
 - [x] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
 - [x] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
-- [x] `tests/unit/test_images_agent.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
-- [x] `tests/unit/test_videos_agent.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer.
-- [x] `tests/unit/test_tts_agent.py` — exercise provider selection and retry policy using stubs.
+- [x] `tests/unit/test_images_stage.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
+- [x] `tests/unit/test_videos_stage.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer (covers `videos_stage`).
+- [x] `tests/unit/test_tts_stage.py` — exercise provider selection and retry policy using stubs (covers `tts_stage`).
 - [x] `tests/unit/test_images_adapter.py`
 - [x] `tests/unit/test_videos_adapter.py` (fixture + env gating now covered by `tests/unit/test_videos_wan_adapter.py`)
 - [x] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
@@ -233,7 +240,7 @@
 
 ### P2 — Robustness, tooling, and docs
 - [x] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
-  - [x] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_agent` + `videos_agent` dedupe paths.
+  - [x] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_stage` + `videos_stage` dedupe paths.
 - [x] `src/sparkle_motion/ratelimit.py`
   - [x] Implement lightweight token-bucket/queue scaffolding with single-user bypass + TODO for multi-tenant enablement.
 - [x] Deterministic fixtures under `tests/fixtures/` (PNGs, WAVs, short MP4s, JSON plans) <50 KB each.

@@ -118,7 +118,7 @@ Below is the canonical contract for each stage. When multiple adapters exist (e.
 - **Notes**: Should propagate reference to the keyframes used for traceability.
 
 ##### `tts`
-- **Reads**: `ShotSpec.dialogue` text plus per-character `voice_profile`. The production agent resolves line-level `voice_config` using the plan’s `characters.voice_profile` map and passes it through to `tts_agent.synthesize()`.
+- **Reads**: `ShotSpec.dialogue` text plus per-character `voice_profile`. The production agent resolves line-level `voice_config` using the plan’s `characters.voice_profile` map and passes it through to `tts_stage.synthesize()`.
 - **Writes**: WAV files per line under `run_dir/audio/<shot_id>/<line>.wav`, publishes each clip via `adk_helpers.publish_artifact(artifact_type="tts_audio")`, and stores the resulting list (ordered to match dialogue indexes) in `asset_refs.shots[shot_id].dialogue_audio`.
 - **Metadata**: `StepExecutionRecord.meta["tts"]` now records `line_artifacts` (line index, provider_id, voice_id, artifact_uri, duration, sample_rate, bit_depth, watermark flag) plus aggregate duration and `dialogue_paths`. Stages that depend on dialogue (lipsync, QA) should rely on those metadata entries instead of re-reading the filesystem.
 - **Env gating**: Real adapters only execute when `SMOKE_TTS=1` (or `SMOKE_ADAPTERS=1`) is set; otherwise the fixture adapter produces deterministic WAV placeholders. This keeps Colab/CI runs inexpensive while still emitting artifact metadata that matches production structure.

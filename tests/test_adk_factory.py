@@ -66,13 +66,13 @@ def test_fixture_bypass_logs_memory_event(monkeypatch):
     monkeypatch.setattr(mod.observability, "emit_agent_event", lambda *_, **__: None)
     monkeypatch.setattr(mod.observability, "get_session_id", lambda: "sess-123")
 
-    mod.get_agent("images_agent", model_spec=None)
+    mod.get_agent("images_stage", model_spec=None)
     svc = mod.adk_helpers.get_memory_service()
     events = svc.list_memory_events("sess-123") if hasattr(svc, "list_memory_events") else []
     assert events, "expected memory events to be recorded"
     last = events[-1]
     assert last["event_type"] == "adk_factory.fixture_agent"
-    assert last["payload"] == {"tool": "images_agent", "model_spec": None, "mode": "per-tool"}
+    assert last["payload"] == {"tool": "images_stage", "model_spec": None, "mode": "per-tool"}
 
 
 def test_close_agent_raises_lifecycle_error_when_unsuppressed(monkeypatch):

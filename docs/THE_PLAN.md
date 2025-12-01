@@ -209,7 +209,7 @@ Notes:
      schema artifact and persist raw LLM output for audit.
 
 2. Images (SDXL FunctionTool)
-   - Agent: `images_agent` (decision layer). Adapter: `images_sdxl` (Diffusers)
+   - Stage: `images_stage` (orchestration layer). Adapter: `images_sdxl` (Diffusers)
    - Requirements: batching rules, token-bucket rate-limiter, pre-render QA
      (text moderation or `qa_qwen2vl` sample check), deterministic stub for
      unit tests, and `gpu_utils.model_context` for pipeline loads.
@@ -238,7 +238,7 @@ Notes:
       metadata: Mapping[str, str]
    ```
 
-   - `ArtifactRef` (returned by `images_agent.render`) — minimal shape:
+   - `ArtifactRef` (returned by `images_stage.render`) — minimal shape:
    ```py
    {
     'uri': str,               # canonical URI (artifact:// or file://)
@@ -247,7 +247,7 @@ Notes:
    }
    ```
 
-   - `images_agent` signature (`src/sparkle_motion/images_agent.py`):
+   - `images_stage` signature (`src/sparkle_motion/images_stage.py`):
    ```py
    def render(prompt: str, opts: ImagesOpts) -> list[dict]:
       """Render images and return ordered list of ArtifactRef dicts."""
@@ -323,7 +323,7 @@ Notes:
    - `prune(max_age_s: int, max_entries: int) -> None`
 
 3. Videos (Wan FunctionTool)
-    - Agent/Adapter: `videos_agent` orchestrates Wan2.1 (`videos_wan`) adapters. Public API:
+    - Agent/Adapter: `videos_stage` orchestrates Wan2.1 (`videos_wan`) adapters. Public API:
 
        ```python
        def render_video(start_frames: Iterable[Frame], end_frames: Iterable[Frame], prompt: str, opts: dict) -> ArtifactRef:
@@ -333,8 +333,8 @@ Notes:
     - Chunking + reassembly: default `chunk_length_frames=64`, `chunk_overlap_frames=4`, `min_chunk_frames=8`. Compute overlapping chunks, track `chunk_index`, and deterministically trim/crossfade overlaps on reassembly. Derive per-chunk seeds via `hash(seed, chunk_index)` for reproducibility.
     - Multi-GPU presets: document balanced `device_map` + `max_memory` (e.g., `{0:"74GiB",1:"74GiB","cpu":"120GiB"}`) for A100 hosts, auto/single-device modes for A6000, sequential/offload for 4090/3090, and CPU fallback for fixture runs. Surface these knobs in `opts` and record chosen map in artifact metadata.
     - OOM strategy: retry transient errors up to `max_retries_per_chunk=2`, shrink chunk length by `adaptive_shrink_factor=0.5` on OOM, then fall back to alternate GPU or CPU. Every attempt records `attempt_index`, `device`, `chunk_length_frames`, and outcome in telemetry.
-    - Progress contract: adapters emit `CallbackEvent` (`plan_id`, `step_id`, `chunk_index`, `frame_index`, `progress`, `eta_s`, `phase`). `videos_agent` forwards events through `on_progress` callbacks and via `adk_helpers.write_memory_event()`.
-    - Tests: `tests/unit/test_videos_agent.py` covers chunk split/reassembly, adaptive OOM retry, CPU fallback metadata, and progress forwarding. Gated smoke test (`SMOKE_ADK=1` + `SMOKE_ADAPTERS=1`) renders a short Wan2.1 job and asserts artifact publish + progress events.
+    - Progress contract: adapters emit `CallbackEvent` (`plan_id`, `step_id`, `chunk_index`, `frame_index`, `progress`, `eta_s`, `phase`). `videos_stage` forwards events through `on_progress` callbacks and via `adk_helpers.write_memory_event()`.
+    - Tests: `tests/unit/test_videos_stage.py` covers chunk split/reassembly, adaptive OOM retry, CPU fallback metadata, and progress forwarding. Gated smoke test (`SMOKE_ADK=1` + `SMOKE_ADAPTERS=1`) renders a short Wan2.1 job and asserts artifact publish + progress events.
       - Wan2.1 pilot deliverables (from `docs/IMPLEMENTATION_TASKS.md`):
          - Adapter loads `Wan-AI/Wan2.1-FLF2V-14B-720P` (and siblings) via `WanImageToVideoPipeline` inside `gpu_utils.model_context("wan2.1", weights=MODEL_ID, offload=True, xformers=True)`; enforce cleanup (`del pipeline; torch.cuda.empty_cache(); gc.collect()`).
          - Ship multi-host presets: balanced sharding for dual A100s (`max_memory = {0: "74GiB", 1: "74GiB", "cpu": "120GiB"}`), sequential/offload modes for single 4090/A6000, and CPU/fixture fallback for CI; surface chosen `device_map`/`max_memory` in artifact metadata.
@@ -343,7 +343,7 @@ Notes:
          - Test plan: unit tests stub `WanImageToVideoPipeline`, smoke test renders a tiny FLF2V plan (<=8 frames) using approved hardware, and telemetry assertions ensure attempt metadata + adaptive OOM shrink path behave as documented.
 
 4. TTS (Chatterbox FunctionTool)
-    - Agent/Adapter: `tts_agent` decision layer plus `tts_chatterbox` adapter (Resemble AI Chatterbox + Chatterbox-Multilingual). Public API:
+    - Agent/Adapter: `tts_stage` decision layer plus `tts_chatterbox` adapter (Resemble AI Chatterbox + Chatterbox-Multilingual). Public API:
 
        ```python
        def synthesize(text: str, voice_config: dict) -> ArtifactRef:
@@ -352,7 +352,7 @@ Notes:
 
     - Dependencies: upstream repo `https://github.com/resemble-ai/chatterbox`, Hugging Face weights `ResembleAI/chatterbox`, PyPI package `chatterbox-tts`. Python 3.11 is required; all manifest changes go through `proposals/pyproject_adk.diff`.
     - Adapter behavior: instantiate `ChatterboxTTS.from_pretrained(device)` (cuda/cpu), expose `audio_prompt_path`, `language_id`, `cfg_weight`, `exaggeration`, and enforce watermark metadata. When `SMOKE_TTS!=1`, prefer fixture mode to avoid heavy installs.
-    - Metadata + policy: publish `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`, `model_id`, `device`, `synth_time_s`, `watermarked`. Enforce policy/content moderation in `tts_agent` (reject harmful text, log via `adk_helpers.write_memory_event()`).
+    - Metadata + policy: publish `artifact_uri`, `duration_s`, `sample_rate`, `voice_id`, `model_id`, `device`, `synth_time_s`, `watermarked`. Enforce policy/content moderation in `tts_stage` (reject harmful text, log via `adk_helpers.write_memory_event()`).
     - Tests: unit tests stub `.generate()` to verify retries/backoff, metadata, and watermark flag handling. Integration smoke gated by `SMOKE_TTS=1` validates real synthesis + watermark awareness.
 
 5. Lipsync (Wav2Lip FunctionTool)
@@ -526,7 +526,7 @@ Clients should treat any missing `video_final` row as a terminal error and displ
  - Deterministic test harnesses: provide stubbed pipelines that produce
    deterministic artifacts (seed-based PNGs, predictable pHash values).
  - Duplicate detection: use perceptual hashing (pHash) and a simple LRU cache
-   or an SQLite-backed `RecentIndex` to dedupe recent artifacts; `images_agent`
+   or an SQLite-backed `RecentIndex` to dedupe recent artifacts; `images_stage`
    should support `dedupe=True` semantics and persist recent-index state to
    SQLite for the single-user workflow. Do not rely on Redis — this project is
    explicitly single-user and uses SQLite as the canonical lightweight store.
@@ -592,14 +592,14 @@ code-phase, or `revise-docs` to request edits to this plan.
 2. Implement a minimal `gpu_utils.model_context` in `src/sparkle_motion/gpu_utils.py`
    (a light, dependency-free implementation suitable for unit tests) and the
    `ModelOOMError` domain exception.
-3. Create deterministic stub harnesses for `images_agent` and `videos_agent`
+3. Create deterministic stub harnesses for `images_stage` and `videos_stage`
    unit tests to validate batching, dedupe, chunking, and OOM fallback logic.
 4. Prepare `proposals/pyproject_adk.diff` that lists proposed runtime
    dependencies for review (do not apply until approved).
 
 If you want, I can now scaffold one of these items locally (no manifest edits):
-- Option A: `videos_agent` chunk-splitting utility + unit tests (deterministic)
-- Option B: `tts_agent` voice registry helper + VoiceMetadata model and tests
+- Option A: `videos_stage` chunk-splitting utility + unit tests (deterministic)
+- Option B: `tts_stage` voice registry helper + VoiceMetadata model and tests
 - Option C: minimal `gpu_utils.model_context` implementation + tests
 
 ---
