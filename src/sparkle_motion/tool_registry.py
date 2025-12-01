@@ -54,7 +54,12 @@ def resolve_schema_references(schemas: Mapping[str, Any]) -> Dict[str, str]:
     return resolved
 
 
-DEFAULT_PATH = Path(__file__).resolve().parents[1] / "configs" / "tool_registry.yaml"
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _PACKAGE_ROOT.parent
+_DEFAULT_PATHS = [
+    _PACKAGE_ROOT / "configs" / "tool_registry.yaml",
+    _REPO_ROOT / "configs" / "tool_registry.yaml",
+]
 
 
 def load_tool_registry(path: Optional[Path | str] = None) -> Dict[str, Any]:
@@ -71,10 +76,19 @@ def load_tool_registry(path: Optional[Path | str] = None) -> Dict[str, Any]:
         FileNotFoundError: if the resolved YAML path does not exist.
         yaml.YAMLError: if the YAML fails to parse.
     """
-    p = Path(path) if path else DEFAULT_PATH
-    if not p.exists():
-        raise FileNotFoundError(f"Tool registry not found at {p}")
-    return yaml.safe_load(p.read_text(encoding="utf-8"))
+    if path:
+        candidate_paths = [Path(path)]
+    else:
+        candidate_paths = _DEFAULT_PATHS
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return yaml.safe_load(candidate.read_text(encoding="utf-8"))
+
+    raise FileNotFoundError(
+        "Tool registry not found at any of: "
+        + ", ".join(str(p) for p in candidate_paths)
+    )
 
 
 def get_local_endpoint(tool_id: str, profile: str = "local-colab") -> Optional[str]:

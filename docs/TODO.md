@@ -118,7 +118,7 @@
   `video_final` rows by surfacing a retry action (`resume_from="qa_publish"`),
   and provide Drive/download fallbacks.
 - **Colab manual verification checklist**
-  - [ ] Launch the control panel cell with live `script_agent`/`production_agent` servers and confirm Generate Plan flows return `artifact_uri` plus autofill the Plan URI field.
+  - [x] Launch the control panel cell with live `script_agent`/`production_agent` servers and confirm Generate Plan flows return `artifact_uri` plus autofill the Plan URI field. *(2025-11-30 — verified via notebooks/control_panel.py with ipywidgets 8.1.8; Plan URI field auto-populates from script_agent response)*
   - [ ] Run Production in both `dry` and `run` modes, then exercise `Pause`/`Resume`/`Stop` buttons against real `/control/*` endpoints to confirm acknowledgements surface in the Control Responses pane.
   - [ ] Enable the status polling toggle once `/status` is available, validate that `/ready` + `/status` snapshots stream into the Status pane, and ensure the polling loop can be started/stopped without hanging the notebook.
   - [ ] Test the artifacts viewer: specify a `run_id`, optionally a `stage`, and confirm `/artifacts` responses render (including `video_final` metadata) and auto-refresh when the checkbox is enabled.
