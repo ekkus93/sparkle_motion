@@ -142,6 +142,7 @@ class PanelState:
     plan_uri: Optional[str] = None
     plan_payload: Optional[Dict[str, Any]] = None
     last_run_request_id: Optional[str] = None
+    last_run_id: Optional[str] = None
 
 
 class ControlPanel:
@@ -359,12 +360,16 @@ class ControlPanel:
             return
 
         self.state.last_run_request_id = response.get("request_id")
-        if self.state.last_run_request_id and not self.run_id_input.value:
+        self.state.last_run_id = response.get("run_id")
+        if self.state.last_run_id:
+            self.run_id_input.value = self.state.last_run_id
+        elif self.state.last_run_request_id and not self.run_id_input.value:
             self.run_id_input.value = self.state.last_run_request_id
         steps = response.get("steps", [])
         with self.production_output:
             print("status:", response.get("status"))
-            print("request_id:", self.state.last_run_request_id)
+            print("run_id:", self.state.last_run_id or "<missing>")
+            print("request_id:", self.state.last_run_request_id or "<missing>")
             print("artifact_uris:", response.get("artifact_uris", []))
             print(f"steps returned: {len(steps)}")
         self.logger.log(
@@ -372,6 +377,7 @@ class ControlPanel:
             {
                 "status": response.get("status"),
                 "request_id": self.state.last_run_request_id,
+                "run_id": self.state.last_run_id,
                 "artifact_count": len(response.get("artifact_uris", [])),
                 "steps": len(steps),
             },
@@ -400,7 +406,7 @@ class ControlPanel:
         self.logger.log("plan.load.success", {"plan_uri": plan_uri, "shots": len(payload.get("shots", []))})
 
     def _handle_control_action(self, _: Any, *, action: str) -> None:
-        run_id = self.run_id_input.value.strip() or self.state.last_run_request_id
+        run_id = self._resolve_run_id()
         if not run_id:
             with self.status_output:
                 self.status_output.clear_output()
@@ -441,7 +447,7 @@ class ControlPanel:
             self._append_status_message("Status endpoint is offline; polling will start once it becomes available.")
             self.poll_toggle.value = False
             return
-        run_id = self.run_id_input.value.strip() or self.state.last_run_request_id
+        run_id = self._resolve_run_id()
         if not run_id:
             self._append_status_message("Provide a Run ID before starting polling.")
             self.poll_toggle.value = False
@@ -503,7 +509,7 @@ class ControlPanel:
         self._render_artifacts(artifacts)
 
     def _handle_refresh_artifacts(self, _: Any) -> None:
-        run_id = self.run_id_input.value.strip() or self.state.last_run_request_id
+        run_id = self._resolve_run_id()
         if not run_id:
             with self.artifacts_output:
                 self.artifacts_output.clear_output()
@@ -581,6 +587,14 @@ class ControlPanel:
                 print(entry)
                 if idx < len(self._status_history) - 1:
                     print("-" * 40)
+
+    def _resolve_run_id(self) -> Optional[str]:
+        value = self.run_id_input.value.strip()
+        if value:
+            return value
+        if self.state.last_run_id:
+            return self.state.last_run_id
+        return self.state.last_run_request_id
 
 
 def create_control_panel(
