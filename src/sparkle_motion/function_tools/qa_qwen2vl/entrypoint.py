@@ -1,5 +1,33 @@
 from __future__ import annotations
 
+"""FunctionTool entrypoint for Qwen2-VL powered visual QA checks.
+
+Purpose & usage:
+- Validates base images, lipsync frames, or assembled videos against the
+    studio’s QA policy. Invoke whenever a workflow stage needs automated approval
+    or escalation before publishing artifacts.
+
+Request payload (`QaQwen2VlRequest`):
+- `frames` (list[QaFramePayload], required): each item supplies `id`, `uri` or
+    inline `data_b64`, plus an optional per-frame `prompt`.
+- `prompt` (str, optional): fallback textual description applied to frames that
+    omit their own prompt.
+- `plan_id`, `run_id`, `step_id`, `movie_title`, `metadata`: provenance fields
+    embedded in QA artifacts and telemetry.
+- `options` (`QaQwen2VlOptions`): controls inference backend (fixture vs real),
+    Qwen model id, dtype/attention strategy, policy path, pixel limits, cache TTL,
+    download limits, and nested metadata overrides.
+
+Response dictionary (`QaQwen2VlResponse`):
+- `status`: always "success" when the tool returns normally.
+- `request_id`: unique call identifier.
+- `decision`: "approve", "regenerate", "escalate", or "pending" per QA policy.
+- `artifact_uri`: URI pointing to the persisted QAReport artifact.
+- `metadata`: structured engine/options/analysis metadata for auditing.
+- `report`: serialized QAReport (summary + per-shot findings).
+- `human_task_id`: present when escalation created a human-review task.
+"""
+
 import asyncio
 import base64
 import binascii

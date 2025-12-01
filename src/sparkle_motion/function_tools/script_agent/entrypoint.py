@@ -1,5 +1,27 @@
 from __future__ import annotations
 
+"""FunctionTool entrypoint for generating MoviePlans via the script_agent.
+
+Purpose & usage:
+- This is the first stage of the Sparkle Motion workflow; it expands a creative
+    brief into a structured `MoviePlan` with shots, dialogue timeline, and render
+    metadata. Call the tool whenever an operator or automated workflow needs a
+    fresh or refined plan artifact.
+
+Request payload (`ScriptAgentRequest`):
+- `title` (str, optional): working title recorded in the resulting plan.
+- `shots` (list[dict], optional): seed shots the LLM may refine instead of
+    generating from scratch.
+- `prompt` (str, optional): natural-language narrative or requirements. At
+    least one of `title`, `shots`, or `prompt` must be provided.
+
+Response dictionary (`ScriptAgentResponse`):
+- `status`: "success" or "error".
+- `artifact_uri`: URI to the persisted MoviePlan JSON (when successful).
+- `request_id`: server-generated identifier linking logs and telemetry.
+- `schema_uri`: points to the MoviePlan schema version used for validation.
+"""
+
 import re
 import os
 import json

@@ -1,5 +1,26 @@
 from __future__ import annotations
 
+"""FunctionTool entrypoint for the chatterbox text-to-speech renderer.
+
+Purpose & usage:
+- Synthesizes dialogue WAV files for each line in the MoviePlan timeline.
+    Production uses this tool whenever it needs fixture-friendly voiceovers or to
+    refresh dialogue after script edits.
+
+Request payload (`TTSChatterboxRequest`):
+- `prompt` or `text` (str): natural language to synthesize (one is required).
+- `voice_id` (str): voice preset, defaults to "emma".
+- `language` (str, optional): BCP47 code to guide pronunciation.
+- `sample_rate`, `bit_depth`, `seed`: deterministic audio rendering controls.
+- `metadata`, `plan_id`, `step_id`, `run_id`: tracing context.
+
+Response dictionary (`TTSChatterboxResponse`):
+- `status`: "success" or "error".
+- `artifact_uri`: published audio artifact (file:// or gs://) when successful.
+- `request_id`: identifier used in logs/telemetry.
+- `metadata`: adapter-populated fields, e.g., line duration and voice profile.
+"""
+
 import asyncio
 import logging
 import os

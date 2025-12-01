@@ -1,5 +1,27 @@
 from __future__ import annotations
 
+"""FunctionTool entrypoint for Stable Diffusion XL still-image generation.
+
+Purpose & usage:
+- Generates cinematic base images for each shot or storyboard beat in the
+    Sparkle Motion pipeline. Call whenever the script or production stage needs a
+    batch of SDXL renders tied to a MoviePlan.
+
+Request payload (`ImagesSDXLRequest`):
+- `prompt` (str, required) plus optional `negative_prompt`, `prompt_2`,
+    `negative_prompt_2` to steer SDXL refiner inputs.
+- `metadata` (dict) propagated to downstream artifacts, along with `plan_id`,
+    `run_id`, `base_image_id`, `batch_start`, `count`, and `seed` for tracking.
+- Render parameters: `width`, `height`, `steps`, `cfg_scale`, `sampler`,
+    `denoising_start`, `denoising_end` (all validated for SDXL constraints).
+
+Response dictionary (`ImagesSDXLResponse`):
+- `status`: "success" or "error" for the render batch.
+- `request_id`: unique call identifier.
+- `artifact_uri`: optional URI of a packaged artifact bundle.
+- `artifacts`: list of `{"artifact_uri", "metadata"}` entries, one per image.
+"""
+
 import asyncio
 import logging
 import os

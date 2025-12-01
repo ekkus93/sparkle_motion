@@ -1,4 +1,27 @@
 from __future__ import annotations
+
+"""FunctionTool entrypoint for WAN video generation.
+
+Purpose & usage:
+- Converts storyboard prompts into short motion clips using Wan 2.x. Production
+    invokes this tool per shot or chunk when synthesizing motion assets.
+
+Request payload (`VideosWanRequest`):
+- `prompt` (str, required) describing the motion scene.
+- Provenance: `plan_id`, `run_id`, `step_id`, `metadata`.
+- Render controls: `seed`, `chunk_index`, `chunk_count`, `num_frames`, `fps`,
+    `width`, `height`, `start_frame_uri`, `end_frame_uri`.
+- `options` (`VideosWanOptions`): tuner parameters such as
+    `num_inference_steps`, `guidance_scale`, `negative_prompt`, `motion_bucket_id`,
+    `megapixels`, and `fixture_only`.
+
+Response dictionary (`VideosWanResponse`):
+- `status`: "success" or "error".
+- `artifact_uri`: location of the rendered video asset.
+- `request_id`: unique identifier printed in logs/telemetry.
+- `metadata`: adapter details (model id, fps, timings, chunk lineage, etc.).
+"""
+
 from typing import Any, Dict, Mapping
 from pathlib import Path
 import os

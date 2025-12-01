@@ -1,4 +1,34 @@
 from __future__ import annotations
+
+"""FunctionTool entrypoint that stitches rendered clips with FFmpeg.
+
+Purpose & usage:
+- Called by the production workflow when individual shot clips (and an optional
+    master audio bed) must be concatenated, transitioned, and re-encoded into a
+    single deliverable.
+- Use this tool whenever the script/production agents hand back a manifest of
+    clip URIs that should become the final movie or preview reel.
+
+Request payload (`AssembleRequest` → POST /invoke JSON):
+- `plan_id`, `run_id`, `step_id` (str, optional): tracing identifiers copied
+    into telemetry and published artifacts.
+- `seed` (int, optional): fixture determinism knob for retries/tests.
+- `clips` (list[AssembleClip], required): each entry sets `uri`, optional
+    `start_s`, `end_s`, `metadata`, and `transition` instructions for ffmpeg.
+- `audio` (AssembleAudio, optional): timed audio bed (`uri`, timing bounds,
+    metadata, gain) mixed across the rendered video.
+- `options` (AssembleOptions, optional): codec overrides (`video_codec`,
+    `audio_codec`, `pix_fmt`, `crf`, `preset`, `audio_bitrate`, `timeout_s`,
+    `retries`, `fixture_only`).
+- `metadata` (dict, optional): arbitrary context persisted in the response.
+
+Response dictionary (`AssembleResponse`):
+- `status`: "success" or "error" to signal ffmpeg outcome.
+- `artifact_uri`: file/GS URI for the muxed video when successful.
+- `request_id`: server-generated correlation identifier.
+- `metadata`: adapter-supplied diagnostics (frame count, timings, retries, etc.).
+"""
+
 from typing import Any, Dict, Mapping
 from pathlib import Path
 import os

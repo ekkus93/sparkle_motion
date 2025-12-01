@@ -1,5 +1,29 @@
 from __future__ import annotations
 
+"""FunctionTool entrypoint for WAV2Lip-driven lipsync renders.
+
+Purpose & usage:
+- Applies a spoken audio track to a hero frame or clip to produce a synced
+    talking-head shot. Use whenever the production agent needs mouth movement for
+    a shot flagged as `is_talking_closeup` or when QA demands replacement audio.
+
+Request payload (`LipsyncWav2LipRequest`):
+- `face` / `audio` (`LipsyncMediaPayload`): each accepts `uri`, filesystem
+    `path`, or inline `data_b64` bytes describing the visual reference and voice.
+- `plan_id`, `run_id`, `step_id`, `movie_title`, `metadata`, `out_basename`
+    capture provenance for artifact publishing.
+- `options` (`LipsyncWav2LipOptions`): fine-grained wav2lip knobs such as
+    checkpoints, detector pads, resize factor, FPS, timeout, retry budget,
+    repository/script paths, fixture flags, and fixture seeds.
+
+Response dictionary (`LipsyncWav2LipResponse`):
+- `status`: "success" or "error".
+- `artifact_uri`: URI for the rendered mp4/wav pair.
+- `request_id`: unique call identifier.
+- `metadata`: structured adapter data (timings, fps, inference source, etc.).
+- `logs`: stdout/stderr summary from the wav2lip subprocess for debugging.
+"""
+
 import asyncio
 import base64
 import binascii
