@@ -57,10 +57,19 @@ display = _load_display()
 
 from sparkle_motion import tool_registry
 from notebooks import preview_helpers
+from sparkle_motion.utils.env import ARTIFACTS_BACKEND_FILESYSTEM, resolve_artifacts_backend
 
 DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")
 DEFAULT_LOG_DIR = Path(_LOG_DIR_ENV).expanduser() if _LOG_DIR_ENV else Path(__file__).resolve().parents[1] / "artifacts" / "logs"
+DEFAULT_FS_BASE_URL = os.environ.get("ARTIFACTS_FS_BASE_URL", "http://127.0.0.1:7077")
+
+
+def _resolve_artifact_backend() -> str:
+    try:
+        return resolve_artifacts_backend(os.environ)
+    except ValueError:
+        return "unknown"
 
 
 def _env_logging_enabled() -> bool:
@@ -166,6 +175,8 @@ class ControlPanel:
         self.logger = PanelLogger(enabled=log_enabled, directory=log_directory or DEFAULT_LOG_DIR)
         if self.logger.enabled and self.logger.path:
             print(f"[control_panel] Logging events to {self.logger.path}")
+        self.artifact_backend = _resolve_artifact_backend()
+        self.fs_base_url = os.environ.get("ARTIFACTS_FS_BASE_URL", DEFAULT_FS_BASE_URL)
 
         # Inputs
         self.title_input = widgets.Text(description="Title", placeholder="Short film title")
@@ -190,6 +201,13 @@ class ControlPanel:
         self.status_probe_label = widgets.HTML(value=_format_status_probe_label(False))
         self.status_probe_button = widgets.Button(description="Check Status", icon="search", tooltip="Probe /status availability")
         self.refresh_artifacts_button = widgets.Button(description="Refresh Artifacts", tooltip="GET /artifacts")
+        self.backend_label = widgets.HTML(value=self._format_backend_badge())
+        self.fs_backend_output = widgets.Output(layout=widgets.Layout(border="1px solid #ddd", min_height="60px"))
+        self.fs_health_button = widgets.Button(description="Check filesystem health", icon="heartbeat")
+        self.fs_health_button.on_click(self._handle_fs_health_check)
+        self.fs_health_button.disabled = self.artifact_backend != ARTIFACTS_BACKEND_FILESYSTEM
+        with self.fs_backend_output:
+            print(self._initial_backend_message())
 
         # Outputs
         self.plan_output = widgets.Output(layout=widgets.Layout(border="1px solid #ddd", min_height="80px"))
@@ -236,6 +254,11 @@ class ControlPanel:
             self.stage_input,
             self.refresh_artifacts_button,
         ])
+        backend_controls = widgets.VBox([
+            widgets.HTML("<b>Artifact backend</b>"),
+            widgets.HBox([self.backend_label, self.fs_health_button]),
+            self.fs_backend_output,
+        ])
         inputs = widgets.VBox([
             self.title_input,
             self.prompt_input,
@@ -244,6 +267,7 @@ class ControlPanel:
             self.run_id_input,
         ])
         outputs = widgets.VBox([
+            backend_controls,
             widgets.HTML("<b>Script Agent</b>"),
             self.plan_output,
             widgets.HTML("<b>Plan Details</b>"),
@@ -405,6 +429,41 @@ class ControlPanel:
         self.state.plan_payload = payload
         self._render_plan_summary(payload, source="Manual load")
         self.logger.log("plan.load.success", {"plan_uri": plan_uri, "shots": len(payload.get("shots", []))})
+
+    def _handle_fs_health_check(self, _: Any) -> None:
+        with self.fs_backend_output:
+            self.fs_backend_output.clear_output()
+            if self.artifact_backend != ARTIFACTS_BACKEND_FILESYSTEM:
+                print("Filesystem backend is not active. Set ARTIFACTS_BACKEND=filesystem to enable the shim.")
+                return
+            url = f"{self.fs_base_url.rstrip('/')}/healthz"
+            headers: Dict[str, str] = {}
+            token = os.environ.get("ARTIFACTS_FS_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            try:
+                response = httpx.get(url, headers=headers, timeout=self.http_timeout_s)
+            except httpx.HTTPError as exc:
+                print(f"Filesystem backend health probe failed: {exc}")
+                return
+            print(f"{url} → {response.status_code}")
+            if response.text:
+                print(response.text)
+
+    def _format_backend_badge(self) -> str:
+        backend = self.artifact_backend
+        if backend == ARTIFACTS_BACKEND_FILESYSTEM:
+            return "<span style=\"color:#1b7c1b;font-weight:bold\">Filesystem backend</span>"
+        if backend == "adk":
+            return "<span style=\"color:#1b4c99;font-weight:bold\">ADK backend</span>"
+        return "<span style=\"color:#a94442;font-weight:bold\">Backend unset</span>"
+
+    def _initial_backend_message(self) -> str:
+        if self.artifact_backend == ARTIFACTS_BACKEND_FILESYSTEM:
+            return f"Filesystem shim base URL: {self.fs_base_url}"
+        if self.artifact_backend == "adk":
+            return "ADK ArtifactService is active. Use the filesystem shim helpers when you need an offline backend."
+        return "Artifacts backend is not configured. Export ARTIFACTS_BACKEND before launching the control panel."
 
     def _handle_control_action(self, _: Any, *, action: str) -> None:
         run_id = self._resolve_run_id()

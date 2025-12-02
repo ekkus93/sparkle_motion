@@ -138,3 +138,85 @@ def test_cli_prune_dry_run_outputs_summary(
     assert code == 0
     assert "Dry run complete" in captured.out
     assert "Would prune" in captured.out
+
+
+def test_cli_env_prints_exports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "fs_root"
+    index = tmp_path / "index.db"
+    args = [
+        "env",
+        "--root",
+        str(root),
+        "--index",
+        str(index),
+        "--token",
+        "shim-token",
+        "--emit-token",
+    ]
+    monkeypatch.delenv("ARTIFACTS_FS_TOKEN", raising=False)
+    code = filesystem_cli_main(args)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "export ARTIFACTS_BACKEND=filesystem" in captured.out
+    assert str(root.resolve()) in captured.out
+    assert "shim-token" in captured.out
+
+
+def test_cli_health_reports_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    class DummyResponse:
+        status_code = 200
+        text = '{"status": "ok"}'
+
+        def json(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+    def fake_get(url: str, headers: dict[str, str], timeout: float) -> DummyResponse:
+        assert url == "http://127.0.0.1:7077/healthz"
+        assert headers.get("Authorization") == "Bearer shim-token"
+        assert timeout == 5.0
+        return DummyResponse()
+
+    monkeypatch.setattr("sparkle_motion.filesystem_artifacts.cli.httpx.get", fake_get)
+    args = [
+        "health",
+        "--root",
+        str(tmp_path / "root"),
+        "--index",
+        str(tmp_path / "index.db"),
+        "--token",
+        "shim-token",
+        "--timeout",
+        "5.0",
+    ]
+    code = filesystem_cli_main(args)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "Filesystem backend healthy" in captured.out
+
+
+def test_cli_serve_invokes_uvicorn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    called = {}
+
+    def fake_run(app, host: str, port: int, log_level: str, reload: bool) -> None:
+        called.update({"host": host, "port": port, "log_level": log_level, "reload": reload, "app": app})
+
+    monkeypatch.setattr("sparkle_motion.filesystem_artifacts.cli.uvicorn.run", fake_run)
+    args = [
+        "serve",
+        "--root",
+        str(tmp_path / "root"),
+        "--index",
+        str(tmp_path / "index.db"),
+        "--allow-insecure",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "7788",
+        "--log-level",
+        "debug",
+    ]
+    code = filesystem_cli_main(args)
+    assert code == 0
+    assert called["host"] == "0.0.0.0"
+    assert called["port"] == 7788
+    assert called["log_level"] == "debug"

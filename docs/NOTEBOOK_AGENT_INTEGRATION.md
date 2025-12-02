@@ -127,6 +127,21 @@ Run `python -m sparkle_motion.notebook_preflight --requirements-path requirement
 		local disk + SQLite manifests. Remember to export the same env vars before
 		running notebooks, CLI retention tasks, or local smoke tests so every
 		process points to the same shim root.
+- `scripts/filesystem_artifacts.py` now ships `env`, `serve`, and `health`
+	commands to keep CLI usage in sync with the notebook helpers:
+	- `python scripts/filesystem_artifacts.py env --root /content/artifacts_fs --index /content/artifacts_fs/index.db --token $ARTIFACTS_FS_TOKEN --emit-token` prints shell exports for Colab/Drive sessions.
+	- `python scripts/filesystem_artifacts.py serve --host 127.0.0.1 --port 7077`
+		launches the FastAPI shim via uvicorn and picks up the same env vars.
+	- `python scripts/filesystem_artifacts.py health --url http://127.0.0.1:7077/healthz`
+		probes readiness so operators can gate the control panel on a healthy shim.
+- The notebook now includes a "Filesystem ArtifactService shim controls" cell
+	(just below the Workflow Agent server controls) that wraps those CLI commands
+	with ipywidgets buttons: export env vars, start/stop the shim, and run `/healthz`
+	before pointing the control panel at the filesystem backend.
+- The control panel displays the current artifact backend (ADK vs. filesystem)
+	and enables a "Check filesystem health" button whenever
+	`ARTIFACTS_BACKEND=filesystem`. This keeps operators aware of which storage
+	backend is active when switching between ADK and the local shim.
 
 ## Detailed design: end-to-end notebook workflow
 

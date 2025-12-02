@@ -258,8 +258,8 @@
   - [x] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
   - [x] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code. *(2025-12-04 — RunRegistry now rehydrates manifests via `_collect_artifact_entries`/`list_artifacts`, with regression coverage in `tests/unit/test_run_registry_filesystem_status.py::test_list_artifacts_filesystem_fallback`.)*
 - [ ] Notebook + CLI wiring
-  - [ ] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.
-  - [ ] Document the “local filesystem” flow alongside the existing Google Cloud instructions so operators can flip between them confidently.
+  - [x] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.
+  - [x] Document the “local filesystem” flow alongside the existing Google Cloud instructions so operators can flip between them confidently.
 - [ ] Test coverage + smoke runs
   - [ ] Extend pytest/smoke coverage to run `production_agent.execute_plan()` end-to-end with `ARTIFACTS_BACKEND=filesystem`, asserting artifact URIs, manifest entries, and `/artifacts` outputs.
   - [ ] Add regression tests that exercise URI parsing + manifest retrieval across both backends to prevent ADK-only assumptions from creeping back in.
