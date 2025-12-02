@@ -104,7 +104,7 @@
 - [ ] Draft the shim design + storage layout spec
   - [x] Capture endpoint contract (`POST /artifacts`, `GET /artifacts/<id>`, listing APIs), auth model, and error semantics in `docs/filesystem_artifact_shim_design.md` (linked from THE_PLAN.md).
   - [x] Define the deterministic directory schema (`${ARTIFACTS_FS_ROOT}/${run_id}/${stage}/${artifact_id}`) plus the SQLite index DDL (artifact id, run id, stage, mime, checksum, created_at) in `docs/filesystem_artifact_shim_design.md#storage-layout--indexing`.
-- [ ] Implement the shim service + storage engine
+- [x] Implement the shim service + storage engine
   - [x] Stand up a FastAPI (or in-process) server that persists uploads, serves metadata, and exposes a health endpoint guarded by a shared token/env var.
   - [x] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
 - [ ] Finalize URI and manifest compatibility

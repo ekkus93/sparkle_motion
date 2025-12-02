@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import sqlite3
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.datastructures import UploadFile
 from pydantic import ValidationError
 
 from .config import FilesystemArtifactsConfig
@@ -18,7 +20,7 @@ from .models import (
     ArtifactManifest,
     ArtifactRecord,
 )
-from .storage import FilesystemArtifactStore
+from .storage import ArtifactStorageError, FilesystemArtifactStore, PayloadTooLargeError
 
 _MAX_LIST_LIMIT = 200
 _DEFAULT_LIST_LIMIT = 50
@@ -34,6 +36,17 @@ def create_app(
     cfg = config or FilesystemArtifactsConfig.from_env()
     artifact_store = store or FilesystemArtifactStore(cfg)
     app = FastAPI(title="Filesystem ArtifactService Shim")
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+        content = exc.detail if isinstance(exc.detail, dict) else {
+            "error": {
+                "code": "fs_backend_failure",
+                "message": str(exc.detail),
+                "details": {},
+            }
+        }
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     async def _require_auth(request: Request) -> None:
         if cfg.allow_insecure:
@@ -54,8 +67,22 @@ def create_app(
                 payload=payload,
                 filename_hint=filename_hint,
             )
-        except ValueError as exc:
+        except PayloadTooLargeError as exc:
+            raise _http_error(status.HTTP_413_CONTENT_TOO_LARGE, "payload_too_large", str(exc)) from exc
+        except ArtifactStorageError as exc:
             raise _http_error(status.HTTP_400_BAD_REQUEST, "invalid_request", str(exc)) from exc
+        except sqlite3.Error as exc:
+            raise _http_error(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "fs_backend_failure",
+                "Failed to persist artifact metadata",
+            ) from exc
+        except OSError as exc:
+            raise _http_error(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "fs_backend_failure",
+                "Filesystem backend reported an I/O error",
+            ) from exc
 
     @app.get("/artifacts/{artifact_id:path}", response_model=ArtifactRecord)
     async def get_artifact(
@@ -117,6 +144,10 @@ async def _parse_upload_request(request: Request) -> tuple[ArtifactManifest, byt
         if isinstance(file_field, UploadFile):
             payload = await file_field.read()
             filename_hint = file_field.filename
+        elif isinstance(file_field, bytes):
+            payload = file_field
+        elif isinstance(file_field, str):
+            payload = file_field.encode("utf-8")
         elif file_field not in (None, ""):
             raise _http_error(status.HTTP_400_BAD_REQUEST, "invalid_request", "file field must be an uploaded file")
         return manifest, payload, filename_hint

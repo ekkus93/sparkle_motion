@@ -18,6 +18,14 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for typing
 from .config import FilesystemArtifactsConfig
 from .models import ArtifactManifest, ArtifactRecord, StoragePaths
 
+
+class ArtifactStorageError(RuntimeError):
+    """Base class for filesystem artifact persistence failures."""
+
+
+class PayloadTooLargeError(ArtifactStorageError):
+    """Raised when an upload payload exceeds the configured byte limit."""
+
 _SQLITE_DDL = """
 CREATE TABLE IF NOT EXISTS artifacts (
   artifact_id TEXT PRIMARY KEY,
@@ -62,7 +70,7 @@ class FilesystemArtifactStore:
     ) -> ArtifactRecord:
         payload_bytes = payload or b""
         if len(payload_bytes) > self.config.max_payload_bytes:
-            raise ValueError("Payload size exceeds ARTIFACTS_FS_MAX_BYTES limit")
+            raise PayloadTooLargeError("Payload size exceeds ARTIFACTS_FS_MAX_BYTES limit")
 
         artifact_slug = uuid.uuid4().hex
         artifact_id = f"{manifest.run_id}/{manifest.stage}/{manifest.artifact_type}/{artifact_slug}"

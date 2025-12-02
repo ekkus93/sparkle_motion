@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -109,3 +111,82 @@ def test_include_payload_streams_file(shim_client: TestClient) -> None:
     assert payload_response.status_code == 200
     assert payload_response.content == payload_bytes
     assert payload_response.headers["content-type"] == "application/json"
+
+
+def test_multipart_upload_and_paginated_listing(shim_client: TestClient) -> None:
+    manifest = _sample_manifest()
+    run_id = manifest["run_id"]
+    for idx in range(3):
+        manifest_payload = dict(manifest)
+        manifest_payload["metadata"] = {"schema_uri": f"schema://{idx}", "sequence": idx}
+        data = {"manifest": json.dumps(manifest_payload)}
+        files = {
+            "file": (f"artifact_{idx}.bin", f"payload-{idx}".encode(), "application/octet-stream"),
+        }
+        response = shim_client.post(
+            "/artifacts",
+            data=data,
+            files=files,
+            headers=_auth_headers(),
+        )
+        assert response.status_code == 201
+
+    first_page = shim_client.get(
+        "/artifacts",
+        params={"run_id": run_id, "limit": 2, "order": "asc"},
+        headers=_auth_headers(),
+    )
+    assert first_page.status_code == 200
+    first_items = first_page.json()
+    assert len(first_items["items"]) == 2
+    assert first_items["next_page_token"]
+
+    second_page = shim_client.get(
+        "/artifacts",
+        params={
+            "run_id": run_id,
+            "limit": 2,
+            "order": "asc",
+            "page_token": first_items["next_page_token"],
+        },
+        headers=_auth_headers(),
+    )
+    assert second_page.status_code == 200
+    second_items = second_page.json()
+    assert len(second_items["items"]) == 1
+    assert second_items["next_page_token"] is None
+
+    filtered = shim_client.get(
+        "/artifacts",
+        params={"run_id": run_id, "stage": "nonexistent"},
+        headers=_auth_headers(),
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["items"] == []
+
+
+def test_invalid_page_token_returns_400(shim_client: TestClient) -> None:
+    response = shim_client.get(
+        "/artifacts",
+        params={"run_id": _sample_manifest()["run_id"], "page_token": "bad"},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
+def test_payload_too_large_returns_413(shim_config: FilesystemArtifactsConfig) -> None:
+    oversized_config = replace(shim_config, max_payload_bytes=4)
+    client = TestClient(create_app(config=oversized_config))
+    payload = base64.b64encode(b"1234567890").decode("ascii")
+    response = client.post(
+        "/artifacts",
+        json={
+            "manifest": _sample_manifest(),
+            "payload_b64": payload,
+        },
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 413
+    body = response.json()
+    assert body["error"]["code"] == "payload_too_large"
