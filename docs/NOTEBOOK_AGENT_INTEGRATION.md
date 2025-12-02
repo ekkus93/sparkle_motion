@@ -143,6 +143,93 @@ Run `python -m sparkle_motion.notebook_preflight --requirements-path requirement
 	`ARTIFACTS_BACKEND=filesystem`. This keeps operators aware of which storage
 	backend is active when switching between ADK and the local shim.
 
+#### Filesystem artifact evacuation workflow (Colab)
+
+Filesystem artifacts vanish as soon as the Colab VM shuts down unless the shim
+root lives on Drive. Operators must decide *where* `ARTIFACTS_FS_ROOT` points at
+session start and then follow the matching evacuation flow before teardown.
+
+1. **Prefer Drive-backed roots.** When Drive is mounted, set
+	`ARTIFACTS_FS_ROOT=/content/drive/MyDrive/sparkle_motion/artifacts_fs` and keep
+	`ARTIFACTS_FS_INDEX` inside the same tree. Running `python
+	scripts/filesystem_artifacts.py env --root /content/drive/...` prints the exact
+	exports so every tool (CLI, notebook, FastAPI shim) references the persistent
+	path. When the root lives on Drive no extra copy step is required—the shim writes
+	directly to persistent storage.
+2. **Detect ephemeral roots early.** If `ARTIFACTS_FS_ROOT` resolves under
+	`/content` (or any non-Drive path), log a warning immediately so the team does
+	not forget to copy artifacts off the VM. The retention helper cell now checks
+	this and prints a bright banner; production_agent should also emit a
+	`write_memory_event` entry each time it publishes to the filesystem backend with
+	`{"storage_backend": "filesystem", "root": ARTIFACTS_FS_ROOT}` so the run log
+	reminds operators that assets are ephemeral.
+3. **Copy artifacts before shutdown.** Run `rsync` (preferred for incremental
+	syncs) or `tar` (single archive) to move the entire shim tree onto Drive or your
+	local machine *before* ending the session. Example commands from Colab once
+	Drive is mounted:
+
+	```bash
+	!rsync -avh --progress /content/sparkle_motion/artifacts_fs/ \
+	    /content/drive/MyDrive/sparkle_motion/artifacts_fs/
+	```
+
+	```bash
+	!tar -czf /content/drive/MyDrive/sparkle_motion/artifacts_fs_$(date +%Y%m%d%H%M).tgz \
+	    -C /content/sparkle_motion artifacts_fs
+	```
+
+	Keep the destination folder in Drive so the next session can point
+	`ARTIFACTS_FS_ROOT` back at the synced directory and replay manifests without
+	rendering again.
+4. **Emit evacuation telemetry.** The evacuation step must be discoverable in
+	run history. When a copy starts (either from the notebook helper or a CLI), call
+	`adk_helpers.write_memory_event()` with an explicit event type so observers know
+	which runs still need manual action. Example snippet for notebook cells:
+
+	```python
+	from pathlib import Path
+	from sparkle_motion import adk_helpers
+
+	def log_fs_evacuate(run_id: str, src: Path, dest: Path, *, status: str) -> None:
+	    adk_helpers.write_memory_event(
+	        run_id=run_id,
+	        event_type="filesystem_artifacts.evacuate",
+	        payload={
+	            "artifacts_fs_root": str(src),
+	            "destination": str(dest),
+	            "status": status,
+	            "backend": "filesystem",
+	        },
+	    )
+
+	log_fs_evacuate(current_run_id, Path(src_root), Path(dest_root), status="pending_copy")
+	# ... copy logic ...
+	log_fs_evacuate(current_run_id, Path(src_root), Path(dest_root), status="completed")
+	```
+
+	Use `status="pending_copy"` before invoking `rsync`/`tar` and `status` values
+	like `completed` or `failed` afterward so dashboards can flag unfinished
+	evacuations.
+5. **Warn before notebook teardown.** Add a final cell that re-runs the retention
+	helper plus a lightweight existence check:
+
+	```python
+	import os
+	from pathlib import Path
+
+	root = Path(os.environ["ARTIFACTS_FS_ROOT"])
+	if root.exists() and not str(root).startswith("/content/drive/"):
+	    print("WARNING: Filesystem artifacts still live under /content. Copy them to Drive before disconnecting!")
+	```
+
+	Pair the warning with `log_fs_evacuate(..., status="warning_emitted")` so
+	`/status` and MemoryService timelines reflect that the run still depends on
+	manual backup.
+
+Following this checklist ensures filesystem artifacts survive Colab restarts and
+that every evacuation shows up in the same telemetry stream as the rest of the
+run.
+
 ## Detailed design: end-to-end notebook workflow
 
 ### 1. Notebook scaffolding

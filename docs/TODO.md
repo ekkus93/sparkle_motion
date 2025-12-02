@@ -114,7 +114,7 @@
   - [ ] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable.
     - [x] CLI landed as `scripts/filesystem_artifacts.py prune` with dry-run default, retention planner, and coverage in `tests/unit/test_filesystem_retention.py`.
     - [x] Notebook helper cell added to `notebooks/sparkle_motion.ipynb` (see "Filesystem artifact retention helper") with backend validation, ipywidgets inputs, and log streaming around `scripts/filesystem_artifacts.py prune`.
-  - [ ] Document the operator workflow for copying artifacts off ephemeral storage (Colab VM vs. mounted Drive) before session teardown, including warnings surfaced via `adk_helpers.write_memory_event()`.
+  - [x] Document the operator workflow for copying artifacts off ephemeral storage (Colab VM vs. mounted Drive) before session teardown, including warnings surfaced via `adk_helpers.write_memory_event()` (see `docs/NOTEBOOK_AGENT_INTEGRATION.md` §Filesystem artifact evacuation workflow).
 
 #### Notebook control surface (Colab UI)
 - [x] Build the end-to-end `ipywidgets` control panel cell described in
