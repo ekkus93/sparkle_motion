@@ -78,7 +78,7 @@ def test_entrypoint_smoke(tool_name: str, tmp_path, monkeypatch):
             uri = data.get("artifact_uri")
             assert uri
             # allow local file URIs, ADK artifact URIs, or HTTP(S)
-            allowed_prefixes = ("file://", "artifact://", "http://", "https://")
+            allowed_prefixes = ("file://", "artifact://", "artifact+fs://", "http://", "https://")
             assert any(uri.startswith(p) for p in allowed_prefixes), f"unexpected artifact uri: {uri}"
             if uri.startswith("file://"):
                 path = Path(uri[len("file://"):])
