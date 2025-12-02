@@ -234,6 +234,18 @@
   helper module) and cover it with unit tests so plan edits and TTS synthesis
   stay in sync with `docs/NOTEBOOK_AGENT_INTEGRATION.md` expectations.
 
+#### P1 tasks still open (GPU-dependent deferrals)
+
+Tracking the remaining checklist items from `docs/IMPLEMENTATION_TASKS.md` that we have explicitly deferred until we can spend cycles on an actual GPU host. Each of these needs live hardware to validate telemetry + NVML plumbing, so the TODO stays unchecked until we can schedule GPU time:
+
+- [ ] Extend `gpu_utils.model_context` with the promised sync+async context manager API so adapters can share the same lifecycle helpers across blocking and async stacks (requires CUDA hardware to exercise cleanup semantics under load).
+- [ ] Normalize the `ModelLoadTimeout` / `ModelOOMError` / `ModelLoadError` hierarchy so callers can distinguish retryable errors; we need GPU repros to ensure the wrappers behave correctly under real torch failure modes.
+- [ ] Finish the `report_memory()` surface (CUDA → `/proc` fallback) to capture accurate VRAM snapshots; blocked until we can collect metrics on a GPU box and ensure the code paths don’t explode when CUDA is installed.
+- [ ] Integrate optional NVML sampling so telemetry captures fan/temp/utilization, but only after we test on a host with NVML available (fixture coverage alone isn’t enough).
+- [ ] Emit the structured telemetry hooks (`load_*`, `inference_*`, `cleanup`) directly from the context manager; needs GPU-backed dry runs to confirm we’re not introducing perf regressions or log spam.
+- [ ] Implement the `suggest_shrink_for_oom()` helper and validate it against real `RuntimeError: CUDA out of memory` traces to ensure it proposes sane chunk sizes for Wan/SDXL.
+- [ ] Document the device-map presets for A100 80/40 GB and 4090 hosts, which depends on profiling memory ceilings with real allocations.
+
 ### P2 — Robustness, tooling, and docs
 - [x] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`
   - [x] Implement pHash helper, SQLite-backed RecentIndex, and CLI inspect tool; wire into `images_stage` + `videos_stage` dedupe paths.
