@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from sparkle_motion import gpu_utils
 from sparkle_motion.function_tools.tts_chatterbox import entrypoint
+from tests.unit.utils import assert_managed_artifact_uri
 
 
 def test_health_endpoint():
@@ -25,7 +26,7 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     data = r.json()
     assert data["status"] == "success"
     uri = data["artifact_uri"]
-    assert uri.startswith("file://") or uri.startswith("artifact://")
+    assert_managed_artifact_uri(uri)
     metadata = data.get("metadata")
     artifact_path = Path(metadata["local_path"])
     assert artifact_path.exists()

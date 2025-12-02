@@ -105,13 +105,15 @@
   - [x] Capture endpoint contract (`POST /artifacts`, `GET /artifacts/<id>`, listing APIs), auth model, and error semantics in `docs/filesystem_artifact_shim_design.md` (linked from THE_PLAN.md).
   - [x] Define the deterministic directory schema (`${ARTIFACTS_FS_ROOT}/${run_id}/${stage}/${artifact_id}`) plus the SQLite index DDL (artifact id, run id, stage, mime, checksum, created_at) in `docs/filesystem_artifact_shim_design.md#storage-layout--indexing`.
 - [ ] Implement the shim service + storage engine
-  - [ ] Stand up a FastAPI (or in-process) server that persists uploads, serves metadata, and exposes a health endpoint guarded by a shared token/env var.
-  - [ ] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
+  - [x] Stand up a FastAPI (or in-process) server that persists uploads, serves metadata, and exposes a health endpoint guarded by a shared token/env var.
+  - [x] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
 - [ ] Finalize URI and manifest compatibility
-  - [ ] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers so callers remain agnostic to the backend.
+  - [x] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers/tests so callers remain agnostic to the backend. *(2025-12-01 — helpers emit filesystem URIs, contract tests + scaffolds accept `artifact+fs://`.)*
   - [ ] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical.
 - [ ] Ship retention and maintenance utilities
   - [ ] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable.
+    - [x] CLI landed as `scripts/filesystem_artifacts.py prune` with dry-run default, retention planner, and coverage in `tests/unit/test_filesystem_retention.py`.
+    - [x] Notebook helper cell added to `notebooks/sparkle_motion.ipynb` (see "Filesystem artifact retention helper") with backend validation, ipywidgets inputs, and log streaming around `scripts/filesystem_artifacts.py prune`.
   - [ ] Document the operator workflow for copying artifacts off ephemeral storage (Colab VM vs. mounted Drive) before session teardown, including warnings surfaced via `adk_helpers.write_memory_event()`.
 
 #### Notebook control surface (Colab UI)
@@ -249,9 +251,9 @@
   stay in sync with `docs/NOTEBOOK_AGENT_INTEGRATION.md` expectations.
 
 #### Filesystem shim integration
-- [ ] Add configuration toggles + env plumbing
-  - [ ] Define `ARTIFACTS_BACKEND`, `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` env vars (with validation + defaults) so the runtime can switch between ADK and filesystem storage without code edits.
-  - [ ] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
+- [x] Add configuration toggles + env plumbing
+  - [x] Define `ARTIFACTS_BACKEND`, `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` env vars (with validation + defaults) so the runtime can switch between ADK and filesystem storage without code edits. (`sparkle_motion.utils.env.resolve_artifacts_backend()` enforces allowed values; `FilesystemArtifactsConfig.from_env()` now honors `os.environ`.)
+  - [x] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
 - [ ] Update helpers and services to honor the shim backend
   - [ ] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
   - [ ] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code.

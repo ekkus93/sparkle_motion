@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.lipsync_wav2lip.entrypoint import app
+from tests.unit.utils import assert_managed_artifact_uri
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -31,5 +32,5 @@ def test_invoke_smoke(tmp_path, monkeypatch, deterministic_media_assets: MediaAs
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert_managed_artifact_uri(data["artifact_uri"])
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Configuration helpers for the filesystem ArtifactService shim."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -24,7 +25,7 @@ class FilesystemArtifactsConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> FilesystemArtifactsConfig:
-        data = env or {}
+        data = env or os.environ
         root_hint = data.get("ARTIFACTS_FS_ROOT") or "./artifacts_fs"
         root = Path(root_hint).expanduser().resolve()
         index_hint = data.get("ARTIFACTS_FS_INDEX") or str(root / "index.db")

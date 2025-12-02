@@ -167,7 +167,11 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert (
+        data["artifact_uri"].startswith("file://")
+        or data["artifact_uri"].startswith("artifact://")
+        or data["artifact_uri"].startswith("artifact+fs://")
+    )
 
 '''
 

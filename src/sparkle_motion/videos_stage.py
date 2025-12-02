@@ -280,7 +280,7 @@ def render_video(
                 "artifact_type": config.artifact_type,
                 "media_type": "application/json",
                 "metadata": metadata,
-                "storage": "adk" if canonical.startswith("artifact://") else "local",
+                "storage": adk_helpers.storage_for_artifact_uri(canonical),
                 "run_id": run_id,
             }
             telemetry.emit_event(
@@ -312,7 +312,7 @@ def render_video(
             artifact["metadata"]["deduped"] = True
             artifact["metadata"]["duplicate_of"] = canonical
             artifact["uri"] = canonical
-            artifact["storage"] = "adk" if canonical.startswith("artifact://") else artifact.get("storage", "local")
+            artifact["storage"] = adk_helpers.storage_for_artifact_uri(canonical)
     telemetry.emit_event(
         "videos_stage.render.completed",
         {"plan_id": plan_id, "step_id": step_id, "artifact_uri": artifact["uri"]},

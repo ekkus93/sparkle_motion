@@ -8,6 +8,7 @@ from sparkle_motion import schema_registry
 from sparkle_motion.schemas import MoviePlan
 from sparkle_motion.function_tools.script_agent import entrypoint as script_entrypoint
 from sparkle_motion.function_tools.script_agent.entrypoint import app
+from tests.unit.utils import assert_managed_artifact_uri, artifact_local_path
 
 
 def test_ready_and_invoke(tmp_path, monkeypatch):
@@ -30,7 +31,7 @@ def test_ready_and_invoke(tmp_path, monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert_managed_artifact_uri(data["artifact_uri"])
     assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
 
 
@@ -73,9 +74,11 @@ def test_invoke_rebuilds_base_images(tmp_path, monkeypatch):
     client = TestClient(app)
     resp = client.post("/invoke", json={"prompt": "ignored"})
     assert resp.status_code == 200
-    artifact_uri = resp.json()["artifact_uri"]
-    assert artifact_uri.startswith("file://")
-    artifact_path = Path(artifact_uri.replace("file://", ""))
+    payload = resp.json()
+    artifact_uri = payload["artifact_uri"]
+    assert_managed_artifact_uri(artifact_uri)
+    artifact_path = artifact_local_path(artifact_uri, payload.get("artifact_metadata") or payload.get("metadata"))
+    assert artifact_path is not None, "artifact path unavailable"
     saved = json.loads(artifact_path.read_text(encoding="utf-8"))
     plan = saved["validated_plan"]
     base_images = plan["base_images"]

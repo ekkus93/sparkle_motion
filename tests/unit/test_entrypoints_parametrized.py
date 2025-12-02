@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.unit.utils import assert_backend_artifact_uri, expected_artifact_scheme
+from tests.unit.utils import assert_backend_artifact_uri, artifact_local_path
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -64,16 +64,10 @@ def test_entrypoint_contract(
     assert j.get("status") == "success"
     uri = j.get("artifact_uri")
     assert_backend_artifact_uri(uri)
-    if expected_artifact_scheme() == "filesystem":
-        local_path = (
-            j.get("artifact_metadata", {}).get("local_path")
-            or j.get("metadata", {}).get("local_path")
-        )
-        if local_path:
-            assert Path(local_path).exists()
-    else:
-        local = uri[len("file://"):]
-        assert Path(local).exists()
+    meta = j.get("artifact_metadata") or j.get("metadata")
+    local_path = artifact_local_path(uri, meta)
+    if local_path:
+        assert local_path.exists()
 
 
 @pytest.mark.parametrize("module_path", MODULES)

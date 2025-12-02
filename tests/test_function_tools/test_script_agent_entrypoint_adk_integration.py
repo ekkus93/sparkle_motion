@@ -40,4 +40,6 @@ def test_publish_artifact_returns_artifact_uri(tmp_path: Path):
 
     uri = publish_artifact(str(p))
 
-    assert isinstance(uri, str) and uri.startswith("artifact://"), f"Expected artifact:// URI, got {uri}"
+    assert isinstance(uri, str) and (
+        uri.startswith("artifact://") or uri.startswith("artifact+fs://")
+    ), f"Expected artifact URI, got {uri}"

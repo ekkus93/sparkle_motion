@@ -23,7 +23,7 @@ from typing_extensions import Literal, TypedDict
 from sparkle_motion.filesystem_artifacts import FilesystemArtifactsConfig
 from sparkle_motion.filesystem_artifacts.models import ArtifactManifest, ArtifactRecord
 from sparkle_motion.filesystem_artifacts.storage import FilesystemArtifactStore
-from sparkle_motion.utils.env import fixture_mode_enabled
+from sparkle_motion.utils.env import filesystem_backend_enabled, fixture_mode_enabled
 
 from . import telemetry, schema_registry
 
@@ -89,6 +89,8 @@ _FIXTURE_HUMAN_TASKS: list[dict[str, Any]] = []
 _FILESYSTEM_STORE: FilesystemArtifactStore | None = None
 _ARTIFACT_ID_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 _STAGE_HINT_KEYS = ("stage", "stage_name", "step", "step_type", "pipeline_stage")
+_ADK_ARTIFACT_PREFIX = "artifact://"
+_FILESYSTEM_ARTIFACT_PREFIX = "artifact+fs://"
 
 
 def _current_backend() -> HelperBackend:
@@ -106,13 +108,32 @@ def set_backend(backend: HelperBackend):
         _BACKEND_STACK.pop()
 
 
-def _artifacts_backend(env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> str:
-    data = env or os.environ
-    return (data.get("ARTIFACTS_BACKEND") or "adk").strip().lower()
+def is_adk_artifact_uri(uri: str | None) -> bool:
+    """Return True when the URI belongs to the ADK ArtifactService namespace."""
+
+    return isinstance(uri, str) and uri.startswith(_ADK_ARTIFACT_PREFIX)
 
 
-def _filesystem_backend_enabled() -> bool:
-    return _artifacts_backend() == "filesystem"
+def is_filesystem_artifact_uri(uri: str | None) -> bool:
+    """Return True when the URI belongs to the filesystem shim namespace."""
+
+    return isinstance(uri, str) and uri.startswith(_FILESYSTEM_ARTIFACT_PREFIX)
+
+
+def is_artifact_uri(uri: str | None) -> bool:
+    """Return True when the URI references a managed artifact (ADK or filesystem)."""
+
+    return is_adk_artifact_uri(uri) or is_filesystem_artifact_uri(uri)
+
+
+def storage_for_artifact_uri(uri: str | None) -> Literal["adk", "filesystem", "local"]:
+    """Map artifact URI schemes to storage backends for downstream callers."""
+
+    if is_filesystem_artifact_uri(uri):
+        return "filesystem"
+    if is_adk_artifact_uri(uri):
+        return "adk"
+    return "local"
 
 
 def _get_filesystem_store() -> FilesystemArtifactStore:
@@ -321,7 +342,7 @@ def _finalize_artifact_ref(
 
     storage = ref.get("storage") if isinstance(ref, Mapping) else None
     if not storage:
-        storage = "adk" if str(uri).startswith("artifact://") else "local"
+        storage = storage_for_artifact_uri(str(uri))
 
     ref_metadata = dict(ref.get("metadata", metadata) if isinstance(ref, Mapping) else metadata)
     ref_metadata.setdefault("artifact_type", artifact_type)
@@ -503,7 +524,7 @@ def publish_artifact(
         return result
 
     fixture_mode = fixture_mode_enabled()
-    use_filesystem = _filesystem_backend_enabled()
+    use_filesystem = filesystem_backend_enabled()
 
     if dry_run and not fixture_mode:
         uri = f"dry-run://artifact/{artifact_type}/{uuid.uuid4().hex[:8]}"
@@ -647,7 +668,7 @@ def publish_local(
     meta.setdefault("size_bytes", len(data))
     meta.setdefault("fixture_mode", True)
 
-    if _filesystem_backend_enabled():
+    if filesystem_backend_enabled():
         result = _publish_via_filesystem(
             payload=data,
             artifact_type=artifact_type,

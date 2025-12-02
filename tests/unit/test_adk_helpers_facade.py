@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 
 from sparkle_motion import adk_helpers
+from sparkle_motion.utils.env import filesystem_backend_enabled
 
 
 @pytest.fixture(autouse=True)
@@ -27,10 +27,6 @@ def _uri_to_path(uri: str) -> Path:
 	return Path(parsed.path)
 
 
-def _filesystem_backend_enabled() -> bool:
-	return (os.getenv("ARTIFACTS_BACKEND") or "adk").strip().lower() == "filesystem"
-
-
 def test_publish_artifact_records_fixture_event(monkeypatch, tmp_path: Path):
 	monkeypatch.setenv("SPARKLE_RUN_ID", "run-publish-test")
 	src = tmp_path / "plan.json"
@@ -38,7 +34,7 @@ def test_publish_artifact_records_fixture_event(monkeypatch, tmp_path: Path):
 
 	ref = adk_helpers.publish_artifact(local_path=src, artifact_type="movie_plan", metadata={"priority": "high"})
 
-	expected_storage = "filesystem" if _filesystem_backend_enabled() else "local"
+	expected_storage = "filesystem" if filesystem_backend_enabled() else "local"
 	assert ref["storage"] == expected_storage
 	assert ref["metadata"]["artifact_type"] == "movie_plan"
 	service = adk_helpers.get_memory_service()
@@ -52,7 +48,7 @@ def test_publish_local_persists_payload(monkeypatch, tmp_path: Path):
 	monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
 	ref = adk_helpers.publish_local(payload=b"hello", artifact_type="movie_plan")
 
-	if _filesystem_backend_enabled():
+	if filesystem_backend_enabled():
 		path = Path(ref["metadata"]["local_path"])
 	else:
 		path = _uri_to_path(ref["uri"])

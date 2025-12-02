@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.videos_wan.entrypoint import app
+from tests.unit.utils import assert_managed_artifact_uri
 
 
 def test_health_endpoint():
@@ -21,5 +22,5 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert_managed_artifact_uri(data["artifact_uri"])
 

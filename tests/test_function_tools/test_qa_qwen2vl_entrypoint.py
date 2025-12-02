@@ -10,6 +10,7 @@ from sparkle_motion.function_tools.qa_qwen2vl import adapter
 from sparkle_motion.function_tools.qa_qwen2vl import entrypoint as qa_entrypoint
 from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import make_app
 from sparkle_motion.schemas import QAReport, QAReportPerShot
+from tests.unit.utils import assert_managed_artifact_uri
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -88,7 +89,7 @@ def test_invoke_happy_path_returns_report(qa_client, deterministic_media_assets:
     assert data["status"] == "success"
     assert data["decision"] == "approve"
     assert data["report"]["summary"] == "All frames good"
-    assert data["artifact_uri"].startswith("file://")
+    assert_managed_artifact_uri(data["artifact_uri"])
     assert calls["prompts"] == ["spotlight scene"]
     assert calls["frames"] == [deterministic_media_assets.image.read_bytes()]
     assert calls["opts"]["frame_ids"] == ["frame1"]

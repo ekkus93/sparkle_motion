@@ -175,7 +175,7 @@ def _handle_invoke(req: LipsyncWav2LipRequest, *, request_id: str) -> dict[str, 
     metadata = _build_metadata(req, result.metadata, request_id=request_id)
     artifact_ref = _publish_artifact(result.path, metadata=metadata, run_id=req.run_id)
     artifact_uri = artifact_ref["uri"]
-    if fixture_mode_enabled() and artifact_uri.startswith("artifact://"):
+    if fixture_mode_enabled() and adk_helpers.is_adk_artifact_uri(artifact_uri):
         artifact_uri = f"file://{result.path.resolve()}"
 
     response = LipsyncWav2LipResponse(

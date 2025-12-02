@@ -212,7 +212,7 @@ def _render_and_publish(req: RequestModel, *, request_id: str) -> List[ArtifactP
         metadata = _build_metadata(req, result.metadata, request_id=request_id, index=req.batch_start + idx)
         artifact_ref = _publish_image(result.path, metadata=metadata, run_id=req.run_id)
         uri = artifact_ref["uri"]
-        if fixture_mode_enabled() and uri.startswith("artifact://"):
+        if fixture_mode_enabled() and adk_helpers.is_adk_artifact_uri(uri):
             uri = f"file://{result.path.resolve()}"
         payload = ArtifactPayload(artifact_uri=uri, metadata=dict(artifact_ref.get("metadata", metadata)))
         artifacts.append(payload)

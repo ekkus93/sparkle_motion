@@ -297,6 +297,6 @@ def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
         uri = None
     if not uri:
         uri = f"file://{path}"
-    if fixture_mode_enabled() and isinstance(uri, str) and uri.startswith("artifact://"):
+    if fixture_mode_enabled() and isinstance(uri, str) and adk_helpers.is_adk_artifact_uri(uri):
         return f"file://{path}"
     return str(uri)

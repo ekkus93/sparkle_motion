@@ -3,7 +3,11 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from tests.unit.utils import assert_backend_artifact_uri, expected_artifact_scheme
+from tests.unit.utils import (
+    assert_backend_artifact_uri,
+    assert_managed_artifact_uri,
+    artifact_local_path,
+)
 
 from src.sparkle_motion.function_tools.script_agent.entrypoint import (
     RequestModel,
@@ -32,7 +36,7 @@ def test_response_model_fields_and_types():
     rm = ResponseModel(status="success", artifact_uri="file:///tmp/x.json", request_id="abc")
     d = rm.model_dump() if hasattr(rm, "model_dump") else rm.dict()
     assert d["status"] == "success"
-    assert d["artifact_uri"].startswith("file://")
+    assert_managed_artifact_uri(d["artifact_uri"])
     assert d["request_id"] == "abc"
 
 
@@ -55,12 +59,8 @@ def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path):
     uri = data["artifact_uri"]
     assert_backend_artifact_uri(uri)
 
-    backend = expected_artifact_scheme()
-    local_path: str | None
-    if backend == "filesystem":
-        local_path = data.get("artifact_metadata", {}).get("local_path")
-    else:
-        local_path = uri[len("file://"):]
+    metadata = data.get("artifact_metadata") or data.get("metadata")
+    local_path = artifact_local_path(uri, metadata)
     if not local_path:
         return
     assert os.path.exists(local_path)

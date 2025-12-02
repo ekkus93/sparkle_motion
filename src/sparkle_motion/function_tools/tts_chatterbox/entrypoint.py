@@ -259,6 +259,6 @@ def _publish_artifact(path: Path, metadata: Mapping[str, Any]) -> str:
     except Exception:
         artifact = {"uri": f"file://{path}", "metadata": metadata}
     uri = artifact.get("uri") or f"file://{path}"  # type: ignore[arg-type]
-    if fixture_mode_enabled() and uri.startswith("artifact://"):
+    if fixture_mode_enabled() and adk_helpers.is_adk_artifact_uri(uri):
         return f"file://{path}"
     return uri

@@ -1,11 +1,11 @@
 from __future__ import annotations
 import json
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from sparkle_motion import schema_registry
 from sparkle_motion.function_tools.script_agent.entrypoint import app
+from tests.unit.utils import assert_managed_artifact_uri, artifact_local_path
 
 
 def test_health_endpoint():
@@ -25,12 +25,11 @@ def test_invoke_smoke(tmp_path, monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["status"] == "success"
-    assert data["artifact_uri"].startswith("file://") or data["artifact_uri"].startswith("artifact://")
+    assert_managed_artifact_uri(data["artifact_uri"])
     assert data["schema_uri"] == schema_registry.movie_plan_schema().uri
     artifact_uri = data["artifact_uri"]
-    if artifact_uri.startswith("file://"):
-        artifact_path = Path(artifact_uri.replace("file://", ""))
-        assert artifact_path.exists()
+    artifact_path = artifact_local_path(artifact_uri, data.get("artifact_metadata") or data.get("metadata"))
+    if artifact_path and artifact_path.exists():
         saved = json.loads(artifact_path.read_text(encoding="utf-8"))
         plan = saved.get("validated_plan")
         assert isinstance(plan, dict)

@@ -73,7 +73,7 @@ def test_inspect_frames_parses_structured_response(monkeypatch: pytest.MonkeyPat
 
     published = helper_backend["published"]
     assert published and published[0]["metadata"]["decision"] == "regenerate"
-    assert result.metadata["artifact_uri"].startswith("artifact://")
+    assert adk_helpers.is_artifact_uri(result.metadata["artifact_uri"])
 
 
 def test_structured_payload_inside_markdown_escalates(monkeypatch: pytest.MonkeyPatch, helper_backend: Dict[str, Any]) -> None:

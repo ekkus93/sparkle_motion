@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from fastapi.testclient import TestClient
 
 from sparkle_motion.function_tools.assemble_ffmpeg.entrypoint import app
+from tests.unit.utils import assert_managed_artifact_uri
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -36,7 +37,7 @@ def test_invoke_fixture_path(tmp_path, monkeypatch, deterministic_media_assets: 
     data = r.json()
     assert data["status"] == "success"
     assert data["metadata"]["engine"] == "fixture"
-    assert data["artifact_uri"].startswith("file://")
+    assert_managed_artifact_uri(data["artifact_uri"])
     local_path = Path(data["metadata"]["local_path"])
     assert local_path.exists()
 

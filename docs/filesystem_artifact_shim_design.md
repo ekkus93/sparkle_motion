@@ -21,6 +21,14 @@ Configuration knobs:
   (default `http://127.0.0.1:7077`).
 - `ARTIFACTS_FS_TOKEN` — shared bearer token required on every HTTP request.
 
+`sparkle_motion.utils.env.resolve_artifacts_backend()` centralizes the
+`ARTIFACTS_BACKEND` toggle. The helper defaults to `adk`, rejects unknown values
+early, and exposes `filesystem_backend_enabled()` for call sites that need a
+fast boolean check. `FilesystemArtifactsConfig.from_env()` now reads straight
+from `os.environ` (unless a mapping override is provided) so `ARTIFACTS_FS_*`
+settings take effect without extra plumbing, and it keeps ensuring `root`/index
+directories exist before the shim writes to disk.
+
 ## API surface
 
 | Method | Path | Description |

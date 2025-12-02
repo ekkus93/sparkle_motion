@@ -103,6 +103,31 @@ Run `python -m sparkle_motion.notebook_preflight --requirements-path requirement
 
 > Design note: Drive mounting remains optional for privacy-sensitive runs, but notebook helpers assume Drive when available so that final MP4 files survive VM restarts.
 
+### Artifact backend selection
+
+- The runtime now validates `ARTIFACTS_BACKEND` via
+	`sparkle_motion.utils.env.resolve_artifacts_backend()`. Leaving the env unset
+	defaults to real ADK (`adk`), while setting `ARTIFACTS_BACKEND=filesystem`
+	activates the shim. Any other value raises immediately during helper/CLI
+	startup so misconfigured notebooks fail fast.
+- When the filesystem backend is selected, set
+	`ARTIFACTS_FS_ROOT=/content/sparkle_motion/artifacts_fs` (or a Drive path) and
+	`ARTIFACTS_FS_INDEX=/content/sparkle_motion/artifacts_fs/index.db` in the same
+	env cell. These variables are consumed directly by
+	`FilesystemArtifactsConfig.from_env()`, which now reads `os.environ` and
+	mkdirs the directories automatically.
+- The `Filesystem artifact retention helper` cell already checks that
+	`ARTIFACTS_BACKEND=filesystem` before exposing destructive actions; with the
+	new validation helpers, the CLI emits a descriptive error when the backend is
+	unset or typoed.
+- Toggle guidance:
+	- Use `ARTIFACTS_BACKEND=adk` for production or when ArtifactService is
+		reachable.
+	- Use `ARTIFACTS_BACKEND=filesystem` for Colab/offline runs when you rely on
+		local disk + SQLite manifests. Remember to export the same env vars before
+		running notebooks, CLI retention tasks, or local smoke tests so every
+		process points to the same shim root.
+
 ## Detailed design: end-to-end notebook workflow
 
 ### 1. Notebook scaffolding
