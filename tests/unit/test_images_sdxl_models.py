@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.utils import assert_backend_artifact_uri
 
 from sparkle_motion.function_tools.images_sdxl.entrypoint import make_app
 from sparkle_motion.function_tools.images_sdxl.models import ImagesSDXLRequest
@@ -32,6 +33,6 @@ def test_invoke_returns_artifact_list(monkeypatch, tmp_path):
     assert resp.status_code == 200
     j = resp.json()
     assert j.get("status") == "success"
-    assert j.get("artifact_uri", "").startswith("file://")
+    assert_backend_artifact_uri(j.get("artifact_uri", ""))
     assert isinstance(j.get("artifacts"), list)
     assert j["artifacts"][0]["metadata"]["engine"] == "fixture"

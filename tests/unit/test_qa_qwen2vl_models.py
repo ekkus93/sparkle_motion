@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.utils import assert_backend_artifact_uri
 
 from sparkle_motion.function_tools.qa_qwen2vl.models import QaQwen2VlRequest, QaQwen2VlResponse
 
@@ -56,7 +57,7 @@ def test_invoke_writes_artifact_and_returns_success(
     assert resp.status_code == 200
     j = resp.json()
     assert j.get("status") == "success"
-    assert j.get("artifact_uri", "").startswith("file://")
+    assert_backend_artifact_uri(j.get("artifact_uri", ""))
 
     envelope = QaQwen2VlResponse(**j)
     assert envelope.report

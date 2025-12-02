@@ -2,6 +2,7 @@ from importlib import import_module
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.utils import assert_backend_artifact_uri
 
 from sparkle_motion.function_tools.tts_chatterbox.models import TTSChatterboxRequest, TTSChatterboxResponse
 
@@ -29,7 +30,7 @@ def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path):
     assert resp.status_code == 200
     j = resp.json()
     assert j.get("status") == "success"
-    assert j.get("artifact_uri", "").startswith("file://")
+    assert_backend_artifact_uri(j.get("artifact_uri", ""))
 
     envelope = TTSChatterboxResponse(**j)
     assert envelope.artifact_uri == j["artifact_uri"]

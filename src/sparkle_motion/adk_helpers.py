@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import getpass
 import hashlib
 import json
@@ -19,6 +20,9 @@ from typing import Any, Callable, Mapping, MutableMapping, Optional, Tuple
 
 from typing_extensions import Literal, TypedDict
 
+from sparkle_motion.filesystem_artifacts import FilesystemArtifactsConfig
+from sparkle_motion.filesystem_artifacts.models import ArtifactManifest, ArtifactRecord
+from sparkle_motion.filesystem_artifacts.storage import FilesystemArtifactStore
 from sparkle_motion.utils.env import fixture_mode_enabled
 
 from . import telemetry, schema_registry
@@ -61,7 +65,7 @@ class SchemaRegistryError(RuntimeError):
 
 class ArtifactRef(TypedDict, total=False):
     uri: str
-    storage: Literal["adk", "local"]
+    storage: Literal["adk", "local", "filesystem"]
     artifact_type: str
     media_type: Optional[str]
     metadata: dict[str, Any]
@@ -82,6 +86,9 @@ class HelperBackend:
 _BACKEND_STACK: list[HelperBackend] = []
 _DEFAULT_BACKEND = HelperBackend()
 _FIXTURE_HUMAN_TASKS: list[dict[str, Any]] = []
+_FILESYSTEM_STORE: FilesystemArtifactStore | None = None
+_ARTIFACT_ID_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+_STAGE_HINT_KEYS = ("stage", "stage_name", "step", "step_type", "pipeline_stage")
 
 
 def _current_backend() -> HelperBackend:
@@ -97,6 +104,28 @@ def set_backend(backend: HelperBackend):
         yield
     finally:
         _BACKEND_STACK.pop()
+
+
+def _artifacts_backend(env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> str:
+    data = env or os.environ
+    return (data.get("ARTIFACTS_BACKEND") or "adk").strip().lower()
+
+
+def _filesystem_backend_enabled() -> bool:
+    return _artifacts_backend() == "filesystem"
+
+
+def _get_filesystem_store() -> FilesystemArtifactStore:
+    global _FILESYSTEM_STORE
+    if _FILESYSTEM_STORE is None:
+        cfg = FilesystemArtifactsConfig.from_env(os.environ)
+        _FILESYSTEM_STORE = FilesystemArtifactStore(cfg)
+    return _FILESYSTEM_STORE
+
+
+def _reset_filesystem_store_for_tests():  # pragma: no cover - test helper
+    global _FILESYSTEM_STORE
+    _FILESYSTEM_STORE = None
 
 
 def _generate_run_id() -> str:
@@ -168,6 +197,112 @@ def _payload_to_bytes(payload: bytes | str | Mapping[str, Any]) -> bytes:
     if isinstance(payload, str):
         return payload.encode("utf-8")
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def _clean_identifier(value: str | None, *, fallback: str) -> str:
+    token = (value or "").strip()
+    token = _ARTIFACT_ID_PATTERN.sub("-", token)
+    token = token.strip("-")
+    return token or fallback
+
+
+def _infer_stage(metadata: Mapping[str, Any], artifact_type: str) -> str:
+    for key in _STAGE_HINT_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return _clean_identifier(value, fallback=artifact_type)
+    return _clean_identifier(artifact_type, fallback=artifact_type)
+
+
+def _sanitize_metadata(payload: Any) -> Any:
+    if isinstance(payload, (str, int, float, bool)) or payload is None:
+        return payload
+    if isinstance(payload, (bytes, bytearray)):
+        return base64.b64encode(payload).decode("ascii")
+    if isinstance(payload, Path):
+        return str(payload)
+    if isinstance(payload, Mapping):
+        return {str(key): _sanitize_metadata(value) for key, value in payload.items()}
+    if isinstance(payload, (list, tuple, set)):
+        return [_sanitize_metadata(value) for value in payload]
+    return str(payload)
+
+
+def _build_filesystem_manifest(
+    *,
+    run_id: str,
+    stage: str,
+    artifact_type: str,
+    mime_type: str,
+    metadata: Mapping[str, Any],
+    local_path_hint: str | None,
+) -> ArtifactManifest:
+    sanitized_metadata = _sanitize_metadata(dict(metadata))
+    qa = sanitized_metadata.get("qa") if isinstance(sanitized_metadata, Mapping) else None
+    tags = sanitized_metadata.get("tags") if isinstance(sanitized_metadata, Mapping) else None
+    return ArtifactManifest(
+        run_id=_clean_identifier(run_id, fallback="local-run"),
+        stage=stage,
+        artifact_type=artifact_type,
+        mime_type=mime_type,
+        metadata=dict(sanitized_metadata) if isinstance(sanitized_metadata, Mapping) else {},
+        qa=qa if isinstance(qa, Mapping) else None,
+        tags=tags if isinstance(tags, Mapping) else None,
+        local_path_hint=local_path_hint,
+    )
+
+
+def _artifact_record_to_ref(
+    record: ArtifactRecord,
+    *,
+    artifact_type: str,
+    media_type: Optional[str],
+    metadata: MutableMapping[str, Any],
+) -> ArtifactRef:
+    metadata.setdefault("local_path", record.storage.absolute_path)
+    metadata.setdefault("manifest_path", record.storage.manifest_path)
+    metadata.setdefault("storage_backend", "filesystem")
+    metadata.setdefault("artifact_uri", record.artifact_uri)
+    return {
+        "uri": record.artifact_uri,
+        "storage": "filesystem",
+        "artifact_type": artifact_type,
+        "media_type": media_type or record.mime_type,
+        "metadata": dict(metadata),
+        "run_id": record.run_id,
+    }
+
+
+def _publish_via_filesystem(
+    *,
+    payload: bytes,
+    artifact_type: str,
+    media_type: Optional[str],
+    metadata: MutableMapping[str, Any],
+    run_id: str,
+    filename_hint: str | None,
+    local_path_hint: str | None,
+) -> ArtifactRef:
+    stage = _infer_stage(metadata, artifact_type)
+    manifest = _build_filesystem_manifest(
+        run_id=run_id,
+        stage=stage,
+        artifact_type=artifact_type,
+        mime_type=media_type or metadata.get("media_type") or "application/octet-stream",
+        metadata=metadata,
+        local_path_hint=local_path_hint,
+    )
+    try:
+        store = _get_filesystem_store()
+        record = store.save_artifact(manifest=manifest, payload=payload, filename_hint=filename_hint)
+    except Exception as exc:  # pragma: no cover - escalated as artifact error
+        raise ArtifactPublishError(
+            "Failed to persist artifact via filesystem backend",
+            path=Path(local_path_hint or filename_hint or artifact_type),
+            artifact_type=artifact_type,
+            cause=exc,
+        ) from exc
+    return _artifact_record_to_ref(record, artifact_type=artifact_type, media_type=media_type, metadata=metadata)
 
 
 def _finalize_artifact_ref(
@@ -368,6 +503,7 @@ def publish_artifact(
         return result
 
     fixture_mode = fixture_mode_enabled()
+    use_filesystem = _filesystem_backend_enabled()
 
     if dry_run and not fixture_mode:
         uri = f"dry-run://artifact/{artifact_type}/{uuid.uuid4().hex[:8]}"
@@ -385,6 +521,24 @@ def publish_artifact(
             {"uri": result["uri"], "storage": result["storage"], "metadata": metadata_dict},
         )
         _emit_publish_completed(result, source="dry-run")
+        return result
+
+    if use_filesystem:
+        result = _publish_via_filesystem(
+            payload=path.read_bytes(),
+            artifact_type=artifact_type,
+            media_type=metadata_dict.get("media_type"),
+            metadata=metadata_dict,
+            run_id=resolved_run,
+            filename_hint=path.name,
+            local_path_hint=str(path),
+        )
+        _record_memory_event(
+            "adk_helpers.publish_artifact",
+            resolved_run,
+            {"uri": result["uri"], "storage": result["storage"], "metadata": metadata_dict},
+        )
+        _emit_publish_completed(result, source="filesystem")
         return result
 
     publish_errors: list[Exception] = []
@@ -486,20 +640,40 @@ def publish_local(
     """Persist payload locally for fixture/testing scenarios."""
 
     resolved_run = run_id or _generate_run_id()
+    data = _payload_to_bytes(payload)
+    meta = dict(metadata or {})
+    meta.setdefault("artifact_type", artifact_type)
+    meta.setdefault("media_type", mimetypes.guess_type(f"placeholder{suffix}")[0] or "application/octet-stream")
+    meta.setdefault("size_bytes", len(data))
+    meta.setdefault("fixture_mode", True)
+
+    if _filesystem_backend_enabled():
+        result = _publish_via_filesystem(
+            payload=data,
+            artifact_type=artifact_type,
+            media_type=meta.get("media_type"),
+            metadata=meta,
+            run_id=resolved_run,
+            filename_hint=f"{artifact_type}{suffix or '.bin'}",
+            local_path_hint=None,
+        )
+        _record_memory_event(
+            "adk_helpers.publish_local",
+            resolved_run,
+            {"uri": result["uri"], "storage": result["storage"], "metadata": meta},
+        )
+        _emit_publish_completed(result, source="filesystem-local")
+        return result
+
     dest_root = _resolve_runs_root() / resolved_run
     dest_root.mkdir(parents=True, exist_ok=True)
     suffix = suffix or ".bin"
     dest_path = dest_root / f"{artifact_type}-{uuid.uuid4().hex}{suffix}"
-    data = _payload_to_bytes(payload)
     dest_path.write_bytes(data)
 
-    meta = dict(metadata or {})
-    meta.setdefault("artifact_type", artifact_type)
-    meta.setdefault("media_type", mimetypes.guess_type(str(dest_path))[0] or "application/octet-stream")
-    meta.setdefault("size_bytes", len(data))
+    meta.setdefault("media_type", mimetypes.guess_type(str(dest_path))[0] or meta.get("media_type") or "application/octet-stream")
     meta.setdefault("source_path", str(dest_path))
     meta.setdefault("checksum_sha256", _hash_file(dest_path))
-    meta.setdefault("fixture_mode", True)
 
     result: ArtifactRef = {
         "uri": dest_path.as_uri(),

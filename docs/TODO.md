@@ -100,6 +100,20 @@
 - [x] `function_tools/lipsync_wav2lip`
   - [x] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
+#### Filesystem ArtifactService shim
+- [ ] Draft the shim design + storage layout spec
+  - [x] Capture endpoint contract (`POST /artifacts`, `GET /artifacts/<id>`, listing APIs), auth model, and error semantics in `docs/filesystem_artifact_shim_design.md` (linked from THE_PLAN.md).
+  - [x] Define the deterministic directory schema (`${ARTIFACTS_FS_ROOT}/${run_id}/${stage}/${artifact_id}`) plus the SQLite index DDL (artifact id, run id, stage, mime, checksum, created_at) in `docs/filesystem_artifact_shim_design.md#storage-layout--indexing`.
+- [ ] Implement the shim service + storage engine
+  - [ ] Stand up a FastAPI (or in-process) server that persists uploads, serves metadata, and exposes a health endpoint guarded by a shared token/env var.
+  - [ ] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
+- [ ] Finalize URI and manifest compatibility
+  - [ ] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers so callers remain agnostic to the backend.
+  - [ ] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical.
+- [ ] Ship retention and maintenance utilities
+  - [ ] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable.
+  - [ ] Document the operator workflow for copying artifacts off ephemeral storage (Colab VM vs. mounted Drive) before session teardown, including warnings surfaced via `adk_helpers.write_memory_event()`.
+
 #### Notebook control surface (Colab UI)
 - [x] Build the end-to-end `ipywidgets` control panel cell described in
   `docs/NOTEBOOK_AGENT_INTEGRATION.md`: prompt/title inputs, Generate Plan /
@@ -233,6 +247,20 @@
 - [x] Finalize the dialogue timeline builder API ownership (production_agent vs.
   helper module) and cover it with unit tests so plan edits and TTS synthesis
   stay in sync with `docs/NOTEBOOK_AGENT_INTEGRATION.md` expectations.
+
+#### Filesystem shim integration
+- [ ] Add configuration toggles + env plumbing
+  - [ ] Define `ARTIFACTS_BACKEND`, `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` env vars (with validation + defaults) so the runtime can switch between ADK and filesystem storage without code edits.
+  - [ ] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
+- [ ] Update helpers and services to honor the shim backend
+  - [ ] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
+  - [ ] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code.
+- [ ] Notebook + CLI wiring
+  - [ ] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.
+  - [ ] Document the “local filesystem” flow alongside the existing Google Cloud instructions so operators can flip between them confidently.
+- [ ] Test coverage + smoke runs
+  - [ ] Extend pytest/smoke coverage to run `production_agent.execute_plan()` end-to-end with `ARTIFACTS_BACKEND=filesystem`, asserting artifact URIs, manifest entries, and `/artifacts` outputs.
+  - [ ] Add regression tests that exercise URI parsing + manifest retrieval across both backends to prevent ADK-only assumptions from creeping back in.
 
 #### P1 tasks still open (GPU-dependent deferrals)
 

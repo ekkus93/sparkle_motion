@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.utils import assert_backend_artifact_uri
 
 from sparkle_motion.function_tools.lipsync_wav2lip.models import LipsyncWav2LipRequest, LipsyncWav2LipResponse
 
@@ -49,7 +50,7 @@ def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path, deter
     assert resp.status_code == 200
     j = resp.json()
     assert j.get("status") == "success"
-    assert j.get("artifact_uri", "").startswith("file://")
+    assert_backend_artifact_uri(j.get("artifact_uri", ""))
 
     envelope = LipsyncWav2LipResponse(**j)
     assert envelope.logs

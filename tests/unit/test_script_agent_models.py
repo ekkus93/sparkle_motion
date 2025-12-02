@@ -3,6 +3,7 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+from tests.unit.utils import assert_backend_artifact_uri, expected_artifact_scheme
 
 from src.sparkle_motion.function_tools.script_agent.entrypoint import (
     RequestModel,
@@ -52,10 +53,16 @@ def test_invoke_writes_artifact_and_returns_success(monkeypatch, tmp_path):
     assert data["status"] == "success"
     assert "artifact_uri" in data
     uri = data["artifact_uri"]
-    assert uri.startswith("file://")
+    assert_backend_artifact_uri(uri)
 
-    # Verify artifact file exists on disk
-    local_path = uri[len("file://"):]
+    backend = expected_artifact_scheme()
+    local_path: str | None
+    if backend == "filesystem":
+        local_path = data.get("artifact_metadata", {}).get("local_path")
+    else:
+        local_path = uri[len("file://"):]
+    if not local_path:
+        return
     assert os.path.exists(local_path)
     # verify content matches
     with open(local_path, "r", encoding="utf-8") as fh:

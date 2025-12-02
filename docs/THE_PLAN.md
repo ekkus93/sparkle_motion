@@ -175,6 +175,87 @@ Notes:
 
 ---
 
+## Filesystem ArtifactService shim initiative
+
+We now have a concrete requirement to run real models while avoiding Google
+Cloud billing. The plan below captures the scope, constraints, and phased work
+needed to stand up a local filesystem-backed ArtifactService shim that mimics
+the ADK artifact contract without touching GCS. See
+`docs/filesystem_artifact_shim_design.md` for the detailed endpoint/auth/error
+design referenced by the tasks below.
+
+### Goals
+
+1. Allow WorkflowAgent + production_agent to publish/read artifacts without
+   provisioning Google Cloud buckets or service accounts.
+2. Preserve the existing ADK contracts (`artifact://` URIs, manifests,
+   `/status` + `/artifacts` semantics) so notebooks and dashboards remain
+   unchanged.
+3. Run entirely inside a Colab session (or any single-node dev host) using the
+   local filesystem or a mounted Drive directory for durability.
+
+### Non-goals
+
+- Multi-tenant auth or IAM parity with Google Cloud (single-user only).
+- Horizontal scalability; the shim assumes the current single-job workflow.
+- Long-term archival; operators remain responsible for copying artifacts off
+  the Colab VM or Drive when the session ends.
+
+### Component plan
+
+1. **Shim API surface** – build a lightweight FastAPI (or in-process) service
+   that implements the subset of ADK ArtifactService endpoints we use today:
+   `POST /artifacts` (upload), `GET /artifacts/<id>` (metadata), and optional
+   listing helpers. Requests authenticate via a shared token/env var since this
+   is single-user.
+2. **Storage engine** – store payloads under a deterministic root such as
+   `${WORKSPACE_ROOT}/artifacts_fs/<run_id>/...`, mirroring the existing
+   ArtifactService prefix layout. Persist a tiny SQLite index that maps
+   `artifact_id -> relative_path, metadata, created_at` so `/artifacts` queries
+   remain fast.
+3. **URI scheme** – introduce `artifact+fs://` URIs (or reuse `artifact://` but
+   with a `filesystem` namespace) and teach `adk_helpers.publish_artifact()` to
+   switch between shim vs. real ADK based on `ARTIFACTS_BACKEND=filesystem`.
+4. **Manifest compatibility** – ensure the shim writes manifest files identical
+   to ADK’s (checksum, size, mime, QA linkage). Production notebooks should not
+   need to branch on backend.
+5. **Cleanup & retention** – add a simple garbage collector (CLI or notebook
+   helper) that prunes artifacts older than `N` days to keep Drive usage in
+   check.
+
+### Integration steps
+
+1. Add configuration knobs: `ARTIFACTS_BACKEND` (`adk` | `filesystem`),
+   `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` (SQLite path). Default to
+   `filesystem` only when explicitly requested; otherwise keep the current ADK
+   path.
+2. Extend `adk_helpers.publish_artifact()` and friends to delegate to the shim
+   when the filesystem backend is enabled. All helpers must still raise the
+   same domain errors so callers remain untouched.
+3. Update notebooks and docs to show both flows: Google Cloud path (service
+   account) and shim path (toggle env vars, run shim server cell, verify health
+   endpoint).
+4. Teach `/artifacts` and `/status` handlers to read manifest data from either
+   source. For the shim, they may query the SQLite index directly instead of
+   the ADK API.
+5. Provide smoke tests that run production_agent end-to-end with
+   `ARTIFACTS_BACKEND=filesystem`, ensuring real models can generate artifacts
+   without Cloud dependencies.
+
+### Rollout phases
+
+| Phase | Deliverable | Notes |
+| --- | --- | --- |
+| P0 | Detailed design doc + storage layout spec | Identify directory schema, URI format, error handling. |
+| P1 | Shim service + helper integration in `adk_helpers` | Feature-flagged, default off. Includes new env vars. |
+| P2 | Notebook + CLI wiring | Add Colab cells to launch the shim, update docs, ensure `/artifacts` uses it. |
+| P3 | Testing + cleanup utilities | Smoke tests, retention scripts, Drive pruning guidance. |
+
+We will capture the concrete engineering tasks for each phase in the shared
+TODO once this plan lands.
+
+---
+
 ## ADK helper modules (spec reference)
 
 ### `src/sparkle_motion/adk_factory.py`

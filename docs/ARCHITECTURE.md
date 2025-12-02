@@ -255,8 +255,10 @@ Canonical model reference:
 	`local-colab` profile). Each FunctionTool process should instantiate its
 	ADK LlmAgent as needed (we currently instantiate ScriptAgent only) or
 	obtain one via a shared factory (recommended next step).
-- Persistence: ADK ArtifactService + MemoryService are the sources of truth;
-	local files and caches are developer conveniences only.
+- Persistence: ADK ArtifactService + MemoryService remain the sources of
+	truth when `ARTIFACTS_BACKEND=adk`. When toggled to `filesystem`, the shim
+	provides an ArtifactService-compatible surface backed by local disk while
+	MemoryService stays on SQLite.
 
 ### Service & tool wiring
 
@@ -266,18 +268,22 @@ Canonical model reference:
 	info, and run state live there permanently; local folders mount as ephemeral
 	caches only when a developer needs to inspect artifacts on Colab.
 - **ArtifactService** – MoviePlan, AssetRefs, QA reports, checkpoints, and
-	final renders are stored in ADK’s artifact buckets. We mount Google Drive
+	final renders can now target **either** the canonical ADK ArtifactService
+	(backed by Google Drive/GCS) **or** the new filesystem shim described below.
+	When `ARTIFACTS_BACKEND=adk` we mount Google Drive
 	(`/content/drive/MyDrive/sparkle_artifacts`) and treat it as the artifact
-	root. Tools receive Drive-backed handles; no bespoke file paths are passed
-	outside ADK.
+	root; tools receive Drive-backed handles and no bespoke file paths are
+	passed outside ADK. When `ARTIFACTS_BACKEND=filesystem`, helpers talk to the
+	shim and emit `artifact+fs://` URIs that resolve against a local directory
+	tree while retaining the same manifest format.
 
-- Local-only artifacts: for isolated or single-user environments we accept an
-	alternative artifact root under `artifacts/` (for example
-	`artifacts/schemas/`). In that mode tools and operators may reference
-	artifacts using `file://` URIs or repo-relative paths. This is a
-	developer-only fallback for environments without ADK credentials and is not
-	a substitute for publishing artifacts into the ADK control plane for shared
-	deployments.
+- **Filesystem shim (local-only)** – single-user environments may run the
+	lightweight shim that mirrors the ArtifactService contract. Payloads live
+	under `ARTIFACTS_FS_ROOT` (default `./artifacts_fs/<run_id>/...`) and index
+	rows live inside `ARTIFACTS_FS_INDEX` (SQLite). `/status` and `/artifacts`
+	endpoints query the same manifest data regardless of backend, so UIs do not
+	branch on storage. This path is the recommended way to run real models
+	locally without provisioning Google Cloud resources.
 - **MemoryService** – long-lived run logs, QA outcomes, and human decisions
 	are appended through ADK’s memory APIs backed by a SQLite file such as
 	`/content/sparkle_memory.db` so any agent (ScriptAgent, QA Agent, future
@@ -331,6 +337,42 @@ Canonical model reference:
 	metadata (capabilities, IAM scopes, cost hints). WorkflowAgent binds to
 	tool IDs rather than importing Python modules, which keeps deployments
 	consistent across revisions.
+
+### Filesystem ArtifactService shim (design recap)
+
+To unblock real-model runs without Google Cloud access, we layer a shim that
+reimplements the subset of ArtifactService APIs our runtime depends on. This
+shim runs in-process (or as a FastAPI microservice) inside the Colab session
+and is selected via `ARTIFACTS_BACKEND=filesystem`.
+
+- **Directory layout** – artifacts live under
+	`${ARTIFACTS_FS_ROOT}/${run_id}/${stage}/${artifact_id}/...` with manifest
+	JSON stored beside payloads. Binary blobs (images, WAVs, MP4s) keep their
+	original extensions so notebook previews still work via `file://` mounts.
+- **Index** – a SQLite file (`ARTIFACTS_FS_INDEX`, default
+	`./artifacts_fs/index.db`) tracks `artifact_id`, `run_id`, stage, relative
+	path, MIME, checksum, and created_at timestamps. `/artifacts` queries hit
+	this index, mirroring ADK response schemas.
+- **Manifests & URIs** – helpers emit `artifact+fs://<run_id>/<artifact_id>`
+	values. UI code and `production_agent` resolve the URI by consulting the
+	index + manifest data, so no caller needs to know the filesystem path.
+- **API surface** – the shim exposes `POST /artifacts`, `GET /artifacts/<id>`,
+	`GET /artifacts?run_id=...`, and health metadata used by `/status`. Payload
+	uploads accept multipart/form-data (for large binaries) or JSON bodies (for
+	manifests-only). Requests authenticate via a shared secret env var since this
+	remains single-user.
+- **Compatibility guarantees** – manifest JSON matches ADK’s schema, including
+	QA linkage metadata, checksums, and download URLs (local `file://` paths in
+	shim mode). `production_agent` and the Colab dashboards treat both backends
+	identically because the helper API (`adk_helpers.publish_artifact()` and
+	friends) normalizes responses.
+- **Retention** – optional cleanup helpers prune artifacts older than `N`
+	days or exceeding `MAX_BYTES`. This is a maintenance task for operators once
+	runs are copied off the Colab VM or Drive.
+
+This section codifies the architecture decisions from `THE_PLAN.md`; future
+implementation docs must keep the env var names and API surface synchronized
+with this contract.
 
 ## Workflow walk-through
 

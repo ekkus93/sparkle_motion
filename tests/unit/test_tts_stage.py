@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from sparkle_motion import adk_helpers, tts_stage
+from tests.unit.utils import assert_backend_artifact_uri, expected_artifact_scheme
 
 if TYPE_CHECKING:
     from tests.conftest import MediaAssets
@@ -38,9 +39,16 @@ def publish_backend() -> Iterator[List[Dict[str, Any]]]:
 
     def _publisher(**kwargs: Any) -> Dict[str, Any]:  # pragma: no cover - helper
         published.append(kwargs)
+        local_path = str(kwargs["local_path"])
+        if expected_artifact_scheme() == "filesystem":
+            uri = f"artifact+fs://fixture/{Path(local_path).name}"
+            storage = "filesystem"
+        else:
+            uri = f"file://{local_path}"
+            storage = "local"
         return {
-            "uri": f"file://{kwargs['local_path']}",
-            "storage": "local",
+            "uri": uri,
+            "storage": storage,
             "metadata": kwargs["metadata"],
             "run_id": kwargs.get("run_id"),
         }
@@ -164,7 +172,7 @@ def test_provider_fallback_on_quota(
         run_id="run-123",
     )
 
-    assert artifact["uri"].startswith("file://")
+    assert_backend_artifact_uri(artifact["uri"])
     assert call_sequence == ["pro-cloud", "fixture-local"]
     published_meta = publish_backend[0]["metadata"]
     assert published_meta["provider_id"] == "fixture-local"
