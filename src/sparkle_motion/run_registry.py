@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 import threading
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
 from . import adk_helpers, telemetry
 from .filesystem_artifacts.config import FilesystemArtifactsConfig
@@ -33,6 +35,12 @@ def _get_filesystem_store() -> FilesystemArtifactStore:
         _filesystem_store = FilesystemArtifactStore(config)
         _filesystem_store_config = config
     return _filesystem_store
+
+
+def _reset_filesystem_store_for_tests() -> None:  # pragma: no cover - helper
+    global _filesystem_store, _filesystem_store_config
+    _filesystem_store = None
+    _filesystem_store_config = None
 
 
 @dataclass
@@ -403,6 +411,8 @@ class RunRegistry:
         with self._lock:
             state = self._runs.get(run_id)
             if not state:
+                if filesystem_backend_enabled():
+                    return self._filesystem_status_payload(run_id)
                 raise KeyError(run_id)
             payload = self._serialize_state(state)
             memory_groups = self._snapshot_artifacts(state, None)
@@ -432,6 +442,69 @@ class RunRegistry:
             memory_groups = self._snapshot_artifacts(state, None)
         merged = self._merge_with_filesystem(run_id, None, memory_groups)
         return {stage_name: [entry.as_dict() for entry in entries] for stage_name, entries in merged.items()}
+
+    def _filesystem_status_payload(self, run_id: str) -> Dict[str, Any]:
+        entries = self._load_filesystem_artifacts(run_id, None)
+        if not entries:
+            raise KeyError(run_id)
+        stage_groups = _group_entries_by_stage(entries)
+        artifact_counts = {stage: len(items) for stage, items in stage_groups.items()}
+        started_at = _select_timestamp(entries, prefer_min=True) or _now_iso()
+        updated_at = _select_timestamp(entries, prefer_min=False) or started_at
+        plan_id = _first_metadata_value(entries, "plan_id") or run_id
+        plan_title = _first_metadata_value(entries, "plan_title") or plan_id
+        qa_mode = _first_metadata_value(entries, "qa_mode") or "full"
+        qa_skipped_flag = _first_metadata_value(entries, "qa_skipped")
+        qa_skipped = bool(qa_skipped_flag)
+        schema_uri = _first_metadata_value(entries, "schema_uri")
+        completed = _filesystem_run_completed(entries)
+        current_stage = _last_stage_name(stage_groups)
+        steps = self._build_filesystem_step_records(stage_groups)
+        timeline = [self._format_timeline_entry(record, qa_mode) for record in steps]
+        render_profile: Dict[str, Any] = {}
+        metadata: Dict[str, Any] = {"source": "filesystem_fallback"}
+        context_payload = _load_run_context_payload(entries)
+        if context_payload:
+            plan_title = context_payload.get("plan_title") or plan_title
+            context_render = context_payload.get("render_profile")
+            if isinstance(context_render, dict):
+                render_profile = dict(context_render)
+            context_meta = context_payload.get("metadata")
+            if isinstance(context_meta, dict):
+                metadata.update(context_meta)
+            schema_uri = context_payload.get("schema_uri") or schema_uri
+        metadata.setdefault("plan_id", plan_id)
+        progress = 1.0 if completed else (0.0 if not steps else min(0.95, len(steps) / max(len(steps) + 1, 1)))
+        expected_steps = len(stage_groups) or None
+        status = "succeeded" if completed else "unknown"
+        payload = {
+            "run_id": run_id,
+            "plan_id": plan_id,
+            "plan_title": plan_title,
+            "mode": "run",
+            "status": status,
+            "started_at": started_at,
+            "updated_at": updated_at,
+            "current_stage": current_stage,
+            "progress": progress,
+            "expected_steps": expected_steps,
+            "last_error": None,
+            "steps": steps,
+            "artifact_counts": artifact_counts,
+            "control": {
+                "pause_requested": False,
+                "stop_requested": False,
+                "last_command": {},
+            },
+            "metadata": metadata,
+            "render_profile": render_profile,
+            "qa_mode": qa_mode,
+            "qa_skipped": qa_skipped,
+            "schema_uri": schema_uri,
+            "timeline": timeline,
+            "log": list(timeline),
+        }
+        return payload
 
     def pre_step_hook(self, run_id: str) -> Callable[[str], None]:
         def _hook(step_id: str) -> None:
@@ -575,6 +648,33 @@ class RunRegistry:
         merged = self._merge_with_filesystem(run_id, None, base)
         return {stage: len(entries) for stage, entries in merged.items()}
 
+    def _build_filesystem_step_records(self, stage_groups: Dict[str, List[ArtifactEntry]]) -> List[Dict[str, Any]]:
+        ordered: List[Tuple[str, Dict[str, Any]]] = []
+        for stage, entries in stage_groups.items():
+            if not entries:
+                continue
+            sorted_entries = sorted(entries, key=lambda item: item.created_at or "")
+            start_time = sorted_entries[0].created_at
+            end_time = sorted_entries[-1].created_at
+            record = {
+                "step_id": stage,
+                "step_type": stage,
+                "status": "succeeded",
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_s": _duration_between(start_time, end_time),
+                "attempts": 1,
+                "artifact_uri": sorted_entries[-1].artifact_uri,
+                "meta": {
+                    "storage": "filesystem",
+                    "artifacts": [entry.artifact_uri for entry in sorted_entries],
+                    "artifact_types": sorted({entry.artifact_type for entry in sorted_entries}),
+                },
+            }
+            ordered.append((start_time or "", record))
+        ordered.sort(key=lambda item: item[0])
+        return [record for _, record in ordered]
+
     def _load_filesystem_artifacts(self, run_id: str, stage_filter: Optional[str]) -> List[ArtifactEntry]:
         if not filesystem_backend_enabled():
             return []
@@ -666,3 +766,85 @@ __all__ = [
     "RunHalted",
     "get_run_registry",
 ]
+
+
+def _group_entries_by_stage(entries: Iterable[ArtifactEntry]) -> Dict[str, List[ArtifactEntry]]:
+    grouped: Dict[str, List[ArtifactEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(entry.stage, []).append(entry)
+    for bucket in grouped.values():
+        bucket.sort(key=lambda item: item.created_at or "")
+    return grouped
+
+
+def _select_timestamp(entries: Iterable[ArtifactEntry], *, prefer_min: bool) -> Optional[str]:
+    stamps = [entry.created_at for entry in entries if entry.created_at]
+    if not stamps:
+        return None
+    return min(stamps) if prefer_min else max(stamps)
+
+
+def _first_metadata_value(entries: Iterable[ArtifactEntry], key: str) -> Any:
+    for entry in entries:
+        value = entry.metadata.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _last_stage_name(stage_groups: Dict[str, List[ArtifactEntry]]) -> Optional[str]:
+    latest: Optional[ArtifactEntry] = None
+    for bucket in stage_groups.values():
+        if not bucket:
+            continue
+        candidate = bucket[-1]
+        if latest is None or (candidate.created_at or "") > (latest.created_at or ""):
+            latest = candidate
+    return latest.stage if latest else None
+
+
+def _duration_between(start_iso: Optional[str], end_iso: Optional[str]) -> Optional[float]:
+    start_dt = _coerce_datetime(start_iso)
+    end_dt = _coerce_datetime(end_iso)
+    if not start_dt or not end_dt:
+        return None
+    delta = (end_dt - start_dt).total_seconds()
+    return max(0.0, delta)
+
+
+def _coerce_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    token = value
+    if token.endswith("Z"):
+        token = f"{token[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(token)
+    except ValueError:
+        return None
+
+
+def _filesystem_run_completed(entries: Iterable[ArtifactEntry]) -> bool:
+    return any(entry.stage == "qa_publish" and entry.artifact_type == "video_final" for entry in entries)
+
+
+def _load_run_context_payload(entries: Iterable[ArtifactEntry]) -> Optional[Dict[str, Any]]:
+    for entry in entries:
+        if entry.artifact_type != "plan_run_context":
+            continue
+        local_path = entry.local_path
+        if not local_path:
+            continue
+        payload = _safe_read_json(local_path)
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _safe_read_json(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        data = Path(path).read_text(encoding="utf-8")
+        payload = json.loads(data)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
