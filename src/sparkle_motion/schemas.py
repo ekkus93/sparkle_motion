@@ -365,7 +365,7 @@ class StageManifest(BaseModel):
     media_type: Optional[str] = None
     local_path: Optional[str] = None
     download_url: Optional[str] = None
-    storage_hint: Optional[Literal["adk", "local"]] = None
+    storage_hint: Optional[Literal["adk", "local", "filesystem"]] = None
     mime_type: Optional[str] = None
     size_bytes: Optional[int] = Field(default=None, ge=0)
     duration_s: Optional[float] = Field(default=None, ge=0)

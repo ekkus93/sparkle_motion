@@ -255,7 +255,7 @@
   - [x] Define `ARTIFACTS_BACKEND`, `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` env vars (with validation + defaults) so the runtime can switch between ADK and filesystem storage without code edits. (`sparkle_motion.utils.env.resolve_artifacts_backend()` enforces allowed values; `FilesystemArtifactsConfig.from_env()` now honors `os.environ`.)
   - [x] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
 - [ ] Update helpers and services to honor the shim backend
-  - [ ] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
+  - [x] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
   - [ ] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code.
 - [ ] Notebook + CLI wiring
   - [ ] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.

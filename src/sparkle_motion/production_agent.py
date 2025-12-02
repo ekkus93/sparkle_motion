@@ -29,6 +29,7 @@ from .run_registry import ArtifactEntry, get_run_registry
 from .images_stage import RateLimitExceeded, RateLimitQueued
 from .ratelimit import RateLimitDecision
 from .schemas import BaseImageSpec, DialogueLine, MoviePlan, ShotSpec, RunContext, StageEvent, StageManifest
+from .utils.env import filesystem_backend_enabled
 
 
 class ProductionAgentError(RuntimeError):
@@ -2018,11 +2019,103 @@ def _record_stage_event(
         pass
 
 
+def _update_stage_manifest(manifest: StageManifest, **updates: Any) -> StageManifest:
+    metadata = updates.pop("metadata", None)
+    if metadata is not None:
+        manifest.metadata = dict(metadata)
+    for field, value in updates.items():
+        setattr(manifest, field, value)
+    return manifest
+
+
+def _string_to_path(candidate: Optional[str]) -> Optional[Path]:
+    if not candidate:
+        return None
+    if candidate.startswith("artifact://") or candidate.startswith("artifact+fs://"):
+        return None
+    if candidate.startswith("file://"):
+        parsed = urlparse(candidate)
+        if parsed.path:
+            return Path(unquote(parsed.path))
+        return None
+    return Path(candidate)
+
+
+def _manifest_source_path(manifest: StageManifest) -> Optional[Path]:
+    for value in (manifest.local_path, manifest.download_url, manifest.artifact_uri):
+        path = _string_to_path(value)
+        if path and path.exists() and path.is_file():
+            return path
+    return None
+
+
+def _route_manifest_via_filesystem(manifest: StageManifest) -> StageManifest:
+    if adk_helpers.is_artifact_uri(manifest.artifact_uri):
+        if adk_helpers.is_filesystem_artifact_uri(manifest.artifact_uri) and manifest.storage_hint != "filesystem":
+            return _update_stage_manifest(manifest, storage_hint="filesystem")
+        return manifest
+
+    source_path = _manifest_source_path(manifest)
+    if source_path is None:
+        return manifest
+
+    metadata = dict(manifest.metadata or {})
+    if "stage_manifest_snapshot" not in metadata:
+        metadata["stage_manifest_snapshot"] = (
+            manifest.model_dump() if hasattr(manifest, "model_dump") else manifest.dict()
+        )
+    metadata.setdefault("stage", manifest.stage_id)
+    metadata.setdefault("artifact_type", manifest.artifact_type)
+    metadata.setdefault("run_id", manifest.run_id)
+    metadata.setdefault("source_local_path", source_path.as_posix())
+
+    ref = adk_helpers.publish_artifact(
+        local_path=source_path,
+        artifact_type=manifest.artifact_type,
+        metadata=metadata,
+        media_type=manifest.media_type or manifest.mime_type,
+        run_id=manifest.run_id,
+    )
+
+    fs_metadata = dict(ref.get("metadata") or {})
+    fs_local_path = fs_metadata.get("local_path")
+    fs_manifest_path = fs_metadata.get("manifest_path")
+    if fs_local_path:
+        metadata.setdefault("filesystem_local_path", fs_local_path)
+    if fs_manifest_path:
+        metadata.setdefault("filesystem_manifest_path", fs_manifest_path)
+    metadata.setdefault("storage_backend", "filesystem")
+
+    download_url: Optional[str]
+    if fs_local_path:
+        download_url = Path(fs_local_path).resolve().as_uri()
+    else:
+        download_url = manifest.download_url or ref["uri"]
+
+    updates: Dict[str, Any] = {
+        "artifact_uri": ref["uri"],
+        "storage_hint": "filesystem",
+        "metadata": metadata,
+    }
+    if fs_local_path:
+        updates["local_path"] = fs_local_path
+    if download_url:
+        updates["download_url"] = download_url
+    media_type = ref.get("media_type") or manifest.media_type or manifest.mime_type
+    if media_type:
+        updates["media_type"] = media_type
+
+    return _update_stage_manifest(manifest, **updates)
+
+
 def _record_stage_manifest_entries(*, run_id: str, manifests: Sequence[StageManifest]) -> None:
-    if not manifests:
+    manifest_list = list(manifests)
+    if filesystem_backend_enabled():
+        manifest_list = [_route_manifest_via_filesystem(entry) for entry in manifest_list]
+    if not manifest_list:
         return
     registry = get_run_registry()
-    for manifest in manifests:
+    for manifest in manifest_list:
         payload = manifest.model_dump() if hasattr(manifest, "model_dump") else manifest.dict()
         try:
             adk_helpers.write_memory_event(

@@ -449,15 +449,19 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
         errors.append("frame_rate invalid")
 
     storage_hint = manifest.get("storage_hint")
-    if storage_hint not in {"adk", "local"}:
+    if storage_hint not in {"adk", "local", "filesystem"}:
         errors.append("storage_hint invalid")
 
     download_url = manifest.get("download_url")
+    local_path = manifest.get("local_path")
     if storage_hint == "adk":
         if not isinstance(download_url, str) or not download_url.strip():
             errors.append("download_url missing for adk storage")
-    elif download_url not in (None, "") and not isinstance(download_url, str):
-        errors.append("download_url invalid")
+    else:
+        if not isinstance(local_path, str) or not local_path.strip():
+            errors.append("local_path missing for non-adk storage")
+        if download_url not in (None, "") and not isinstance(download_url, str):
+            errors.append("download_url invalid")
 
     qa_passed = manifest.get("qa_passed")
     if not isinstance(qa_passed, bool):

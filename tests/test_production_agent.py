@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, 
 import pytest
 
 import sparkle_motion.production_agent as production_agent
-from sparkle_motion import tts_stage
+from sparkle_motion import adk_helpers, tts_stage
 
 from sparkle_motion.images_stage import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
@@ -311,6 +311,37 @@ def test_record_stage_manifest_entries_publish_events(monkeypatch: pytest.Monkey
     assert len(stage_artifacts) == len(result.stage_manifests)
     assert {entry["artifact_type"] for entry in stage_artifacts} == {manifest.artifact_type for manifest in result.stage_manifests}
     registry.discard_run("run-events")
+
+
+def test_record_stage_manifest_entries_filesystem_backend(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
+    fs_root = tmp_path / "fs"
+    fs_index = fs_root / "index.db"
+    output_dir = tmp_path / "runs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(output_dir))
+    monkeypatch.setenv("ARTIFACTS_BACKEND", "filesystem")
+    monkeypatch.setenv("ARTIFACTS_FS_ROOT", str(fs_root))
+    monkeypatch.setenv("ARTIFACTS_FS_INDEX", str(fs_index))
+    monkeypatch.setenv("ARTIFACTS_FS_ALLOW_INSECURE", "1")
+    adk_helpers._reset_filesystem_store_for_tests()
+
+    result = production_agent._run_plan_intake(sample_plan, plan_id="plan-fs", run_id="run-fs", output_dir=output_dir)
+    registry = get_run_registry()
+    registry.discard_run("run-fs")
+    registry.start_run(run_id="run-fs", plan_id="plan-fs", plan_title=sample_plan.title, mode="run")
+
+    production_agent._record_stage_manifest_entries(run_id="run-fs", manifests=result.stage_manifests)
+
+    artifacts = registry.get_artifacts("run-fs", stage="plan_intake")
+    assert artifacts, "expected plan_intake manifests to be recorded"
+    assert all(entry["artifact_uri"].startswith("artifact+fs://") for entry in artifacts)
+    assert all(entry.get("storage_hint") == "filesystem" for entry in artifacts)
+    for entry in artifacts:
+        local_path = entry.get("local_path")
+        assert local_path, "filesystem manifest should expose local_path"
+        assert local_path.startswith(str(fs_root)), "local_path should point to filesystem root"
+        assert Path(local_path).exists(), "filesystem copy should exist on disk"
+    registry.discard_run("run-fs")
 
 
 def test_qa_publish_stage_emits_video_final_manifest(

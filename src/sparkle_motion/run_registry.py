@@ -4,9 +4,14 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import threading
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from . import adk_helpers, telemetry
+from .filesystem_artifacts.config import FilesystemArtifactsConfig
+from .filesystem_artifacts.models import ArtifactRecord
+from .filesystem_artifacts.storage import FilesystemArtifactStore
+from .schemas import StageManifest
+from .utils.env import filesystem_backend_enabled
 
 RunStatus = Literal["pending", "running", "paused", "stopped", "failed", "succeeded", "queued"]
 QAMode = Literal["full", "skip"]
@@ -14,6 +19,20 @@ QAMode = Literal["full", "skip"]
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_FILESYSTEM_FETCH_LIMIT = 200
+_filesystem_store: Optional[FilesystemArtifactStore] = None
+_filesystem_store_config: Optional[FilesystemArtifactsConfig] = None
+
+
+def _get_filesystem_store() -> FilesystemArtifactStore:
+    global _filesystem_store, _filesystem_store_config
+    config = FilesystemArtifactsConfig.from_env()
+    if _filesystem_store is None or _filesystem_store_config != config:
+        _filesystem_store = FilesystemArtifactStore(config)
+        _filesystem_store_config = config
+    return _filesystem_store
 
 
 @dataclass
@@ -67,6 +86,112 @@ class ArtifactEntry:
             "created_at": self.created_at,
         }
 
+
+def _artifact_identity(entry: ArtifactEntry) -> str:
+    candidate = entry.artifact_uri or ""
+    if candidate:
+        return candidate
+    return f"{entry.stage}:{entry.name}:{entry.created_at}"
+
+
+def _iso_from_epoch(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, str) and value:
+        return value
+    return _now_iso()
+
+
+def _entry_from_stage_manifest(manifest: StageManifest, *, record: Optional[ArtifactRecord] = None) -> ArtifactEntry:
+    metadata = dict(manifest.metadata or {})
+    artifact_uri = manifest.artifact_uri
+    local_path = manifest.local_path
+    download_url = manifest.download_url
+    storage_hint: Optional[str] = manifest.storage_hint
+    media_type = manifest.media_type or manifest.mime_type
+    if record is not None:
+        metadata.setdefault("filesystem_manifest_path", record.storage.manifest_path)
+        metadata.setdefault("filesystem_relative_path", record.storage.relative_path)
+        metadata["storage_backend"] = "filesystem"
+        metadata.setdefault("artifact_uri", record.artifact_uri)
+        artifact_uri = record.artifact_uri
+        storage_hint = "filesystem"
+        local_path = record.storage.absolute_path
+        download_url = record.manifest.get("download_url") or download_url
+        if not media_type:
+            media_type = record.mime_type
+    checksum = manifest.checksum_sha256
+    if checksum is None and record is not None:
+        checksum = (record.manifest.get("checksum") or {}).get("sha256")
+    return ArtifactEntry(
+        stage=manifest.stage_id,
+        artifact_type=manifest.artifact_type,
+        name=manifest.name,
+        artifact_uri=artifact_uri,
+        media_type=media_type,
+        local_path=local_path,
+        download_url=download_url,
+        storage_hint=storage_hint,
+        mime_type=manifest.mime_type,
+        size_bytes=manifest.size_bytes,
+        duration_s=manifest.duration_s,
+        frame_rate=manifest.frame_rate,
+        resolution_px=manifest.resolution_px,
+        checksum_sha256=checksum,
+        qa_report_uri=manifest.qa_report_uri,
+        qa_passed=manifest.qa_passed,
+        qa_mode=manifest.qa_mode,
+        qa_skipped=manifest.qa_skipped,
+        playback_ready=manifest.playback_ready,
+        notes=manifest.notes,
+        metadata=metadata,
+        created_at=manifest.created_at,
+    )
+
+
+def _entry_from_artifact_record(record: ArtifactRecord) -> ArtifactEntry:
+    manifest_payload = record.manifest
+    metadata = dict(manifest_payload.get("metadata") or record.metadata or {})
+    snapshot = metadata.get("stage_manifest_snapshot")
+    if isinstance(snapshot, dict):
+        try:
+            stage_manifest = StageManifest.model_validate(snapshot)
+            return _entry_from_stage_manifest(stage_manifest, record=record)
+        except Exception:
+            pass
+    checksum_payload = manifest_payload.get("checksum")
+    checksum = checksum_payload.get("sha256") if isinstance(checksum_payload, dict) else None
+    metadata.setdefault("filesystem_manifest_path", record.storage.manifest_path)
+    metadata.setdefault("filesystem_relative_path", record.storage.relative_path)
+    metadata.setdefault("storage_backend", "filesystem")
+    metadata.setdefault("artifact_uri", record.artifact_uri)
+    local_path = manifest_payload.get("local_path") or metadata.get("local_path") or record.storage.absolute_path
+    download_url = manifest_payload.get("download_url") or metadata.get("download_url")
+    created_at = _iso_from_epoch(manifest_payload.get("created_at") or record.created_at)
+    return ArtifactEntry(
+        stage=record.stage,
+        artifact_type=record.artifact_type,
+        name=metadata.get("name") or record.artifact_type,
+        artifact_uri=record.artifact_uri,
+        media_type=manifest_payload.get("mime_type") or record.mime_type,
+        local_path=local_path,
+        download_url=download_url,
+        storage_hint="filesystem",
+        mime_type=record.mime_type,
+        size_bytes=manifest_payload.get("size_bytes"),
+        duration_s=metadata.get("duration_s"),
+        frame_rate=metadata.get("frame_rate"),
+        resolution_px=metadata.get("resolution_px"),
+        checksum_sha256=checksum,
+        qa_report_uri=metadata.get("qa_report_uri"),
+        qa_passed=metadata.get("qa_passed"),
+        qa_mode=metadata.get("qa_mode"),
+        qa_skipped=metadata.get("qa_skipped"),
+        playback_ready=metadata.get("playback_ready"),
+        notes=metadata.get("notes"),
+        metadata=metadata,
+        created_at=created_at,
+    )
 
 class AsyncControlGate:
     """Dual-mode gate that mirrors state between threading and asyncio events."""
@@ -279,29 +404,34 @@ class RunRegistry:
             state = self._runs.get(run_id)
             if not state:
                 raise KeyError(run_id)
-            return self._serialize_state(state)
+            payload = self._serialize_state(state)
+            memory_groups = self._snapshot_artifacts(state, None)
+        payload["artifact_counts"] = self._compute_artifact_counts(run_id, memory_groups)
+        return payload
 
     def get_artifacts(self, run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        stage_filter = stage.strip() if stage else None
         with self._lock:
             state = self._runs.get(run_id)
-            if not state:
+            if not state and not filesystem_backend_enabled():
                 raise KeyError(run_id)
-            if stage:
-                return [entry.as_dict() for entry in state.artifacts.get(stage, [])]
-            result: List[Dict[str, Any]] = []
-            for entries in state.artifacts.values():
-                result.extend(entry.as_dict() for entry in entries)
-            return result
+            memory_groups = self._snapshot_artifacts(state, stage_filter)
+        merged = self._merge_with_filesystem(run_id, stage_filter, memory_groups)
+        if stage_filter:
+            return [entry.as_dict() for entry in merged.get(stage_filter, [])]
+        payload: List[Dict[str, Any]] = []
+        for entries in merged.values():
+            payload.extend(entry.as_dict() for entry in entries)
+        return payload
 
     def get_artifacts_by_stage(self, run_id: str) -> Dict[str, List[Dict[str, Any]]]:
         with self._lock:
             state = self._runs.get(run_id)
-            if not state:
+            if not state and not filesystem_backend_enabled():
                 raise KeyError(run_id)
-            grouped: Dict[str, List[Dict[str, Any]]] = {}
-            for stage_name, entries in state.artifacts.items():
-                grouped[stage_name] = [entry.as_dict() for entry in entries]
-            return grouped
+            memory_groups = self._snapshot_artifacts(state, None)
+        merged = self._merge_with_filesystem(run_id, None, memory_groups)
+        return {stage_name: [entry.as_dict() for entry in entries] for stage_name, entries in merged.items()}
 
     def pre_step_hook(self, run_id: str) -> Callable[[str], None]:
         def _hook(step_id: str) -> None:
@@ -404,6 +534,77 @@ class RunRegistry:
             "timeline": timeline,
             "log": timeline,
         }
+
+    def _snapshot_artifacts(self, state: Optional[RunState], stage_filter: Optional[str]) -> Dict[str, List[ArtifactEntry]]:
+        if state is None:
+            return {}
+        if stage_filter:
+            entries = list(state.artifacts.get(stage_filter, []))
+            return {stage_filter: entries} if entries else {}
+        return {stage: list(entries) for stage, entries in state.artifacts.items()}
+
+    def _merge_with_filesystem(
+        self,
+        run_id: str,
+        stage_filter: Optional[str],
+        base: Dict[str, List[ArtifactEntry]],
+    ) -> Dict[str, List[ArtifactEntry]]:
+        grouped: Dict[str, List[ArtifactEntry]] = {stage: list(entries) for stage, entries in base.items()}
+        if not filesystem_backend_enabled():
+            return grouped
+        seen: Dict[str, set[str]] = {
+            stage: {_artifact_identity(entry) for entry in entries} for stage, entries in grouped.items()
+        }
+        filesystem_entries = self._load_filesystem_artifacts(run_id, stage_filter)
+        for entry in filesystem_entries:
+            stage_name = entry.stage
+            if stage_filter and stage_name != stage_filter:
+                continue
+            bucket = grouped.setdefault(stage_name, [])
+            stage_seen = seen.setdefault(stage_name, set())
+            identity = _artifact_identity(entry)
+            if identity in stage_seen:
+                continue
+            bucket.append(entry)
+            stage_seen.add(identity)
+        for entries in grouped.values():
+            entries.sort(key=lambda item: item.created_at)
+        return grouped
+
+    def _compute_artifact_counts(self, run_id: str, base: Dict[str, List[ArtifactEntry]]) -> Dict[str, int]:
+        merged = self._merge_with_filesystem(run_id, None, base)
+        return {stage: len(entries) for stage, entries in merged.items()}
+
+    def _load_filesystem_artifacts(self, run_id: str, stage_filter: Optional[str]) -> List[ArtifactEntry]:
+        if not filesystem_backend_enabled():
+            return []
+        try:
+            store = _get_filesystem_store()
+        except Exception:
+            return []
+        results: List[ArtifactEntry] = []
+        page_marker: Optional[Tuple[int, str]] = None
+        while True:
+            try:
+                records, _ = store.list_artifacts(
+                    run_id=run_id,
+                    stage=stage_filter,
+                    artifact_type=None,
+                    limit=_FILESYSTEM_FETCH_LIMIT,
+                    order="asc",
+                    page_marker=page_marker,
+                )
+            except Exception:
+                break
+            if not records:
+                break
+            for record in records:
+                results.append(_entry_from_artifact_record(record))
+            if len(records) < _FILESYSTEM_FETCH_LIMIT:
+                break
+            last = records[-1]
+            page_marker = (last.created_at, last.artifact_id)
+        return results
 
     def _format_timeline_entry(self, record: Dict[str, Any], qa_mode: QAMode) -> Dict[str, Any]:
         meta = dict(record.get("meta") or {})

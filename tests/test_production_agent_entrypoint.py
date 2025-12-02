@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi.testclient import TestClient
 import pytest
 
-from sparkle_motion import schema_registry
+from sparkle_motion import adk_helpers, schema_registry
 import sparkle_motion.function_tools.production_agent.entrypoint as production_entrypoint
 from sparkle_motion.function_tools.production_agent.entrypoint import app
 
@@ -254,6 +254,41 @@ def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient,
     assert "download_url" in resp.json()["detail"]
 
 
+def test_artifacts_endpoint_accepts_filesystem_video_final_manifest(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        return [
+            {
+                "stage": "qa_publish",
+                "artifact_type": "video_final",
+                "name": "video_final.mp4",
+                "artifact_uri": "artifact+fs://foo",
+                "media_type": "video/mp4",
+                "local_path": "/tmp/video_final.mp4",
+                "storage_hint": "filesystem",
+                "mime_type": "video/mp4",
+                "size_bytes": 2048,
+                "duration_s": 1.5,
+                "frame_rate": 24.0,
+                "resolution_px": "1280x720",
+                "checksum_sha256": "a" * 64,
+                "qa_report_uri": "artifact://sparkle/qa_report",
+                "qa_passed": True,
+                "qa_mode": "full",
+                "playback_ready": True,
+                "metadata": {},
+            }
+        ]
+
+    monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
+    resp = client.get("/artifacts", params={"run_id": "fs-run", "stage": "qa_publish"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["artifacts"], "filesystem manifests should be accepted"
+
+
 def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
@@ -283,6 +318,42 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
     resp = client.get("/artifacts", params={"run_id": "missing-final", "stage": "qa_publish"})
     assert resp.status_code == 409
     assert "video_final" in resp.json()["detail"]
+
+
+def test_artifacts_endpoint_reads_filesystem_store_when_registry_empty(
+    client: TestClient,
+    sample_plan: dict,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fs_root = tmp_path / "fs"
+    fs_index = fs_root / "index.db"
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path / "runs"))
+    monkeypatch.setenv("ARTIFACTS_BACKEND", "filesystem")
+    monkeypatch.setenv("ARTIFACTS_FS_ROOT", str(fs_root))
+    monkeypatch.setenv("ARTIFACTS_FS_INDEX", str(fs_index))
+    monkeypatch.setenv("ARTIFACTS_FS_ALLOW_INSECURE", "1")
+    adk_helpers._reset_filesystem_store_for_tests()
+
+    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+
+    registry = production_entrypoint.registry
+    with registry._lock:  # type: ignore[attr-defined]
+        state = registry._runs.get(run_id)  # type: ignore[attr-defined]
+        assert state is not None
+        state.artifacts.clear()
+
+    artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "plan_intake"})
+    assert artifacts_resp.status_code == 200
+    artifacts_data = artifacts_resp.json()
+    assert artifacts_data["artifacts"], "filesystem artifacts should materialize even when registry memory is empty"
+
+    status_resp = client.get("/status", params={"run_id": run_id})
+    assert status_resp.status_code == 200
+    status_data = status_resp.json()
+    assert status_data["artifact_counts"].get("plan_intake", 0) >= 1
 
 
 def test_artifacts_endpoint_validates_video_final_on_aggregate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
