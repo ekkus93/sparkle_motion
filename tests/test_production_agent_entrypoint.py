@@ -145,7 +145,7 @@ def test_artifacts_endpoint_returns_video_final_manifest(
     assert resp.status_code == 200
     run_id = resp.json()["run_id"]
 
-    artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "qa_publish"})
+    artifacts_resp = client.get("/artifacts", params={"run_id": run_id, "stage": "finalize"})
     assert artifacts_resp.status_code == 200
     data = artifacts_resp.json()
     assert data["run_id"] == run_id
@@ -155,8 +155,7 @@ def test_artifacts_endpoint_returns_video_final_manifest(
     assert data["artifacts"] == entries, "stage-filtered response should flatten to the same entries"
     final_entry = entries[0]
     assert final_entry["artifact_type"] == "video_final"
-    assert final_entry["stage_id"] == "qa_publish"
-    assert isinstance(final_entry["qa_passed"], bool)
+    assert final_entry["stage_id"] == "finalize"
     assert isinstance(final_entry["qa_skipped"], bool)
     assert isinstance(final_entry["playback_ready"], bool)
     assert final_entry["checksum_sha256"]
@@ -166,7 +165,6 @@ def test_artifacts_endpoint_returns_video_final_manifest(
         assert final_entry["local_path"], "local_path required for local storage"
     stage_section = data["stages"][0]
     assert stage_section["preview"].get("video"), "video preview metadata should be available"
-    assert stage_section["qa_summary"]["total"] >= 1
 
 
 def test_artifacts_endpoint_stage_filter_isolated(
@@ -196,7 +194,7 @@ def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestCli
     def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
             {
-                "stage": "qa_publish",
+                "stage": "finalize",
                 "artifact_type": "video_final",
                 "name": "video_final.mp4",
                 "artifact_uri": "artifact://sparkle/video_final",
@@ -209,8 +207,6 @@ def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestCli
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_report_uri": "artifact://sparkle/qa_report",
-                "qa_passed": True,
                 "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
@@ -218,7 +214,7 @@ def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestCli
         ]
 
     monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
-    resp = client.get("/artifacts", params={"run_id": "invalid-run", "stage": "qa_publish"})
+    resp = client.get("/artifacts", params={"run_id": "invalid-run", "stage": "finalize"})
     assert resp.status_code == 500
     assert "size_bytes" in resp.json()["detail"]
 
@@ -227,7 +223,7 @@ def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient,
     def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
             {
-                "stage": "qa_publish",
+                "stage": "finalize",
                 "artifact_type": "video_final",
                 "name": "video_final.mp4",
                 "artifact_uri": "artifact://sparkle/video_final",
@@ -240,8 +236,6 @@ def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient,
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_report_uri": "artifact://sparkle/qa_report",
-                "qa_passed": True,
                 "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
@@ -249,7 +243,7 @@ def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient,
         ]
 
     monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
-    resp = client.get("/artifacts", params={"run_id": "adk-missing", "stage": "qa_publish"})
+    resp = client.get("/artifacts", params={"run_id": "adk-missing", "stage": "finalize"})
     assert resp.status_code == 500
     assert "download_url" in resp.json()["detail"]
 
@@ -261,7 +255,7 @@ def test_artifacts_endpoint_accepts_filesystem_video_final_manifest(
     def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
             {
-                "stage": "qa_publish",
+                "stage": "finalize",
                 "artifact_type": "video_final",
                 "name": "video_final.mp4",
                 "artifact_uri": "artifact+fs://foo",
@@ -274,8 +268,6 @@ def test_artifacts_endpoint_accepts_filesystem_video_final_manifest(
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_report_uri": "artifact://sparkle/qa_report",
-                "qa_passed": True,
                 "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
@@ -283,7 +275,7 @@ def test_artifacts_endpoint_accepts_filesystem_video_final_manifest(
         ]
 
     monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
-    resp = client.get("/artifacts", params={"run_id": "fs-run", "stage": "qa_publish"})
+    resp = client.get("/artifacts", params={"run_id": "fs-run", "stage": "finalize"})
     assert resp.status_code == 200
     data = resp.json()
     assert data["artifacts"], "filesystem manifests should be accepted"
@@ -293,7 +285,7 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
     def _fake_get_artifacts(run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
         return [
             {
-                "stage": "qa_publish",
+                "stage": "finalize",
                 "artifact_type": "qa_report",
                 "name": "qa_report.json",
                 "artifact_uri": "artifact://sparkle/qa_report",
@@ -307,7 +299,6 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
                 "resolution_px": None,
                 "checksum_sha256": None,
                 "qa_report_uri": None,
-                "qa_passed": True,
                 "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
@@ -315,7 +306,7 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
         ]
 
     monkeypatch.setattr(production_entrypoint.registry, "get_artifacts", _fake_get_artifacts)
-    resp = client.get("/artifacts", params={"run_id": "missing-final", "stage": "qa_publish"})
+    resp = client.get("/artifacts", params={"run_id": "missing-final", "stage": "finalize"})
     assert resp.status_code == 409
     assert "video_final" in resp.json()["detail"]
 
@@ -359,10 +350,10 @@ def test_artifacts_endpoint_reads_filesystem_store_when_registry_empty(
 def test_artifacts_endpoint_validates_video_final_on_aggregate(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_grouped(run_id: str) -> Dict[str, List[Dict[str, Any]]]:
         return {
-            "qa_publish": [
+            "finalize": [
                 {
                     "run_id": run_id,
-                    "stage": "qa_publish",
+                    "stage": "finalize",
                     "artifact_type": "qa_report",
                     "name": "qa_report.json",
                     "artifact_uri": "artifact://sparkle/qa_report",
@@ -371,8 +362,6 @@ def test_artifacts_endpoint_validates_video_final_on_aggregate(client: TestClien
                     "storage_hint": "local",
                     "mime_type": "application/json",
                     "size_bytes": 128,
-                    "qa_report_uri": "artifact://sparkle/qa_report",
-                    "qa_passed": True,
                     "qa_mode": "full",
                     "playback_ready": True,
                     "metadata": {},

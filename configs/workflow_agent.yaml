@@ -1,8 +1,6 @@
 # Canonical WorkflowAgent definition (draft)
-# Stages: script_stage -> production_stage (orchestrates images/videos/TTS/etc.) -> qa_stage
-# Only the `script_stage` and `production_stage` entries are true ADK agents. The
-# final `qa_stage` references the `qa_qwen2vl` FunctionTool directly until QA logic is fully
-# embedded inside `production_agent`.
+# Stages: script_stage -> production_stage (orchestrates images/videos/TTS/etc.)
+# Only the `script_stage` and `production_stage` entries are true ADK agents.
 # This file is a draft and intended for local dry-run validation.
 
 name: sparkle-motion/workflow/movie_pipeline
@@ -33,15 +31,6 @@ stages:
       max_backoff_seconds: 60
       jitter: true
 
-  - id: qa_stage
-    tool_id: qa_qwen2vl:local-colab  # FunctionTool entrypoint, not an ADK agent
-    input_schema: configs/schema_artifacts.yaml#/schemas/asset_refs
-    output_schema: configs/schema_artifacts.yaml#/schemas/qa_report
-    retry:
-      attempts: 1
-      backoff_seconds: 1
-      max_backoff_seconds: 10
-      jitter: false
 
 defaults:
   timeout_seconds: 600

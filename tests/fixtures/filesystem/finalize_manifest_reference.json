@@ -1,0 +1,27 @@
+{
+  "artifact_id": "run_demo_final/finalize/video_final/33333333333333333333333333333333",
+  "artifact_uri": "artifact+fs://run_demo_final/finalize/video_final/33333333333333333333333333333333",
+  "artifact_type": "video_final",
+  "run_id": "run_demo_final",
+  "stage": "finalize",
+  "mime_type": "video/mp4",
+  "size_bytes": 13,
+  "checksum": {
+    "sha256": "cf5664a86426afa42799efd6c0e8b2e9df0ef34c9024dc89e132032872edf938"
+  },
+  "local_path": "{{ROOT}}/run_demo_final/finalize/video_final/33333333333333333333333333333333/artifact.mp4",
+  "download_url": "{{LOCAL_PATH_URI}}",
+  "metadata": {
+    "plan_id": "plan-final",
+    "qa_mode": "full",
+    "qa_skipped": false,
+    "duration_s": 9.5,
+    "frame_rate": 24.0,
+    "resolution_px": "1280x720"
+  },
+  "qa": null,
+  "tags": null,
+  "local_path_hint": "/tmp/final_video.mp4",
+  "storage_backend": "filesystem",
+  "created_at": 1700000000
+}

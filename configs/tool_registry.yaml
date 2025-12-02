@@ -111,20 +111,6 @@ tools:
     endpoints:
       local-colab: "http://127.0.0.1:5006/invoke"
 
-  qa_qwen2vl:
-    description: "QA/Policy (Qwen2VL)"
-    ports:
-      default: 5007
-    schemas:
-      input:
-        artifact_uri: "artifact://sparkle-motion/schemas/QARequest/v1"
-      output:
-        registry_name: qa_report
-    retry_hints:
-      attempts: 3
-      backoff_s: 2
-    endpoints:
-      local-colab: "http://127.0.0.1:5007/invoke"
 
 # Example usage notes:
 # - For the local-colab profile start the tool in-process and point ToolRegistry

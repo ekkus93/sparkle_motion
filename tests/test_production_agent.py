@@ -399,7 +399,7 @@ def test_execute_plan_filesystem_backend_end_to_end(
     registry.discard_run(run_id)
 
 
-def test_qa_publish_stage_emits_video_final_manifest(
+def test_finalize_stage_emits_video_final_manifest(
     monkeypatch: pytest.MonkeyPatch,
     sample_plan: MoviePlan,
     tmp_path: Path,
@@ -408,16 +408,15 @@ def test_qa_publish_stage_emits_video_final_manifest(
     monkeypatch.setenv("SMOKE_ADAPTERS", "1")
     monkeypatch.setenv("SMOKE_TTS", "1")
     monkeypatch.setenv("SMOKE_LIPSYNC", "1")
-    run_id = "run-qa-publish"
+    run_id = "run-finalize"
     registry = get_run_registry()
     registry.discard_run(run_id)
     registry.start_run(run_id=run_id, plan_id="plan-qa", plan_title=sample_plan.title, mode="run")
     result = execute_plan(sample_plan, mode="run", run_id=run_id)
-    artifacts = registry.get_artifacts(run_id, stage="qa_publish")
-    assert artifacts, "expected qa_publish manifest entry"
+    artifacts = registry.get_artifacts(run_id, stage="finalize")
+    assert artifacts, "expected finalize manifest entry"
     final_entry = artifacts[-1]
     assert final_entry["artifact_type"] == "video_final"
-    assert final_entry["qa_passed"] is True
     assert final_entry["local_path"]
     assert Path(final_entry["local_path"]).exists()
     assert final_entry["checksum_sha256"] and len(final_entry["checksum_sha256"]) == 64
@@ -457,13 +456,6 @@ def test_shot_and_assemble_stage_manifests_recorded(
     lipsync_entries = registry.get_artifacts(run_id, stage="shot-1:lipsync")
     assert lipsync_entries, "expected shot lipsync manifest"
     assert lipsync_entries[-1]["artifact_type"] == "shot_lipsync_video"
-    qa_frames_entries = registry.get_artifacts(run_id, stage="shot-1:qa_base_images")
-    assert qa_frames_entries, "expected shot base-image QA manifest"
-    assert qa_frames_entries[-1]["artifact_type"] == "shot_qa_base_images"
-    assert qa_frames_entries[-1]["local_path"].endswith("shot-1.json")
-    qa_video_entries = registry.get_artifacts(run_id, stage="shot-1:qa_video")
-    assert qa_video_entries, "expected shot video QA manifest"
-    assert qa_video_entries[-1]["artifact_type"] == "shot_qa_video"
     assemble_entries = registry.get_artifacts(run_id, stage="assemble")
     assert assemble_entries, "expected assemble manifest"
     assert assemble_entries[-1]["artifact_type"] == "assembly_plan"
@@ -486,49 +478,20 @@ def test_gate_flags(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp
     result = execute_plan(sample_plan, mode="run")
     statuses = {record.step_id.split(":")[-1]: record.status for record in result.steps}
     adapters_enabled = os.getenv("SMOKE_ADAPTERS") not in {None, "", "0", "false"}
+    tts_enabled = os.getenv("SMOKE_TTS") not in {None, "", "0", "false"}
+    lipsync_enabled = os.getenv("SMOKE_LIPSYNC") not in {None, "", "0", "false"}
     expected = "succeeded" if adapters_enabled else "simulated"
     assert statuses["plan_intake"] == "succeeded"
     assert statuses["images"] == expected
     assert statuses["video"] == expected
-    assert statuses["qa_base_images"] == "succeeded"
-    assert statuses["qa_video"] == "succeeded"
+    assert statuses["tts"] == ("succeeded" if tts_enabled else "simulated")
+    if "lipsync" in statuses:
+        assert statuses["lipsync"] == ("succeeded" if lipsync_enabled else "simulated")
+    assert "qa_base_images" not in statuses
+    assert "qa_video" not in statuses
 
 
-class FakeError(Exception):
-    pass
-
-
-def test_base_image_qa_retries_until_pass(
-    monkeypatch: pytest.MonkeyPatch,
-    sample_plan: MoviePlan,
-    tmp_path: Path,
-    _stub_qa_inspect: Dict[str, Any],
-) -> None:
-    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
-    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
-    monkeypatch.setenv("SMOKE_TTS", "1")
-    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
-    decisions = _stub_qa_inspect["decisions"]
-    decisions.extend(["reject", "approve", "approve", "approve"])
-    result = execute_plan(sample_plan, mode="run")
-    image_records = [rec for rec in result.steps if rec.step_type == "images"]
-    assert any("retry" in rec.meta for rec in image_records)
-    qa_records = [rec for rec in result.steps if rec.step_type == "qa_base_images"]
-    assert any(not rec.meta.get("qa_passed") for rec in qa_records)
-    assert qa_records[-1].meta.get("qa_passed") is True
-
-
-def test_qa_steps_skipped_in_skip_mode(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
-    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
-    result = execute_plan(sample_plan, mode="run", qa_mode="skip")
-    qa_records = [rec for rec in result.steps if rec.step_type in {"qa_base_images", "qa_video"}]
-    assert qa_records, "expected QA step records"
-    for rec in qa_records:
-        assert rec.status == "skipped"
-        assert rec.meta.get("qa_skipped") is True
-
-
-def test_run_registry_badges_qa_skipped(
+def test_run_registry_marks_skip_mode(
     monkeypatch: pytest.MonkeyPatch,
     sample_plan: MoviePlan,
     tmp_path: Path,
@@ -557,29 +520,10 @@ def test_run_registry_badges_qa_skipped(
     timeline = status["timeline"]
     assert all(entry["qa_mode"] == "skip" for entry in timeline)
     assert all(entry["qa_skipped"] is True for entry in timeline)
-    artifacts = registry.get_artifacts(run_id, stage="qa_publish")
+    artifacts = registry.get_artifacts(run_id, stage="finalize")
     final_entry = next(entry for entry in artifacts if entry["artifact_type"] == "video_final")
     assert final_entry["qa_skipped"] is True
-    assert final_entry["qa_passed"] is False
     registry.discard_run(run_id)
-
-
-def test_video_qa_failure_raises_after_retries(
-    monkeypatch: pytest.MonkeyPatch,
-    sample_plan: MoviePlan,
-    tmp_path: Path,
-    _stub_qa_inspect: Dict[str, Any],
-) -> None:
-    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
-    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
-    monkeypatch.setenv("SMOKE_TTS", "1")
-    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
-    decisions = _stub_qa_inspect["decisions"]
-    # First call (base images) passes, video QA keeps failing
-    decisions.extend(["approve", "reject", "reject", "approve", "approve"])
-    cfg = ProductionAgentConfig(qa_retry_attempts=1)
-    with pytest.raises(StepExecutionError):
-        execute_plan(sample_plan, mode="run", config=cfg)
 
 
 def test_retry_behavior(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:

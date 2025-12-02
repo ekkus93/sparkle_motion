@@ -864,7 +864,7 @@ def _coerce_datetime(value: Optional[str]) -> Optional[datetime]:
 
 
 def _filesystem_run_completed(entries: Iterable[ArtifactEntry]) -> bool:
-    return any(entry.stage == "qa_publish" and entry.artifact_type == "video_final" for entry in entries)
+    return any(entry.stage == "finalize" and entry.artifact_type == "video_final" for entry in entries)
 
 
 def _load_run_context_payload(entries: Iterable[ArtifactEntry]) -> Optional[Dict[str, Any]]:

@@ -13,11 +13,6 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Mutabl
 
 from pydantic import ValidationError
 
-try:  # qa_qwen2vl is optional in fixture-only environments
-    from function_tools.qa_qwen2vl import entrypoint as qa_entrypoint
-except Exception:  # pragma: no cover - optional dependency
-    qa_entrypoint = None
-
 from . import adk_helpers, observability, telemetry, videos_stage, tts_stage, schema_registry
 from .dialogue_timeline import (
     DialogueTimelineBuilder,
@@ -115,9 +110,6 @@ class StepResult:
 
 
 StepActionReturn = Optional[Union[Path, StepResult, str]]
-
-QA_FAIL_DECISIONS = {"reject", "escalate", "manual_review", "fail"}
-MAX_QA_FRAME_BYTES = 512 * 1024
 
 
 class StepRateLimitError(StepExecutionError):
@@ -351,8 +343,6 @@ def execute_plan(
                 voice_profiles=voice_profiles,
                 base_images=base_images,
                 base_image_assets=base_image_assets,
-                qa_mode=qa_mode,
-                plan_title=model.title,
             )
             shot_artifacts.append(artifacts)
     except StepRateLimitError:
@@ -393,11 +383,11 @@ def execute_plan(
         metadata={"plan_id": plan_id, "shot_count": len(model.shots)},
     )
 
-    qa_publish_holder: Dict[str, adk_helpers.ArtifactRef] = {}
+    final_delivery_holder: Dict[str, adk_helpers.ArtifactRef] = {}
 
-    def _qa_publish_action() -> StepResult:
+    def _finalize_action() -> StepResult:
         dialogue_result = dialogue_stage_holder.get("result")
-        manifests, qa_artifact_ref, step_result = _run_qa_publish_stage(
+        manifests, final_artifact_ref, step_result = _run_final_delivery_stage(
             plan=model,
             plan_id=plan_id,
             run_id=run_id,
@@ -407,24 +397,24 @@ def execute_plan(
             assemble_path=final_result.path,
             qa_mode=qa_mode,
         )
-        qa_publish_holder["artifact"] = qa_artifact_ref
+        final_delivery_holder["artifact"] = final_artifact_ref
         _record_stage_manifest_entries(run_id=run_id, manifests=manifests)
         return step_result
 
     try:
-        qa_record, _ = _run_step(
+        finalize_record, _ = _run_step(
             plan_id=plan_id,
             run_id=run_id,
-            step_id=f"{plan_id}:qa_publish",
-            step_type="qa_publish",
+            step_id=f"{plan_id}:finalize",
+            step_type="finalize",
             gate_flag=None,
             cfg=cfg,
             progress_callback=progress_callback,
             pre_step_hook=pre_step_hook,
-            action=_qa_publish_action,
-            meta={"stage": "qa_publish", "shot_count": len(model.shots)},
+            action=_finalize_action,
+            meta={"stage": "finalize", "shot_count": len(model.shots)},
         )
-        records.append(qa_record)
+        records.append(finalize_record)
     except StepRateLimitError as exc:
         records.append(exc.record)
         _record_summary_event(run_id, plan_id, "run", records)
@@ -440,9 +430,9 @@ def execute_plan(
     )
     _record_summary_event(run_id, plan_id, "run", records)
     artifacts: List[adk_helpers.ArtifactRef] = [artifact_ref]
-    qa_artifact = qa_publish_holder.get("artifact")
-    if qa_artifact:
-        artifacts.append(qa_artifact)
+    final_artifact = final_delivery_holder.get("artifact")
+    if final_artifact:
+        artifacts.append(final_artifact)
     return ProductionResult(artifacts, steps=records)
 
 
@@ -523,7 +513,6 @@ def _run_policy_checks(plan: MoviePlan, base_images: Mapping[str, BaseImageSpec]
             decisions.append(f"shot:{shot.id} exceeds duration target")
     return decisions
 
-
 def _run_plan_intake(
     plan: MoviePlan,
     *,
@@ -533,16 +522,13 @@ def _run_plan_intake(
 ) -> _PlanIntakeResult:
     base_image_lookup = _build_base_image_lookup(plan)
     policy_decisions = _run_policy_checks(plan, base_image_lookup)
-
     plan_dir: Optional[Path] = None
     if output_dir is not None:
         plan_dir = output_dir / "plan"
         plan_dir.mkdir(parents=True, exist_ok=True)
-
     base_image_assets = _build_base_image_assets(plan.base_images, plan_dir)
     plan_path = _persist_plan_payload(plan, plan_dir)
     timeline_path = _persist_dialogue_timeline(plan, plan_dir)
-
     schema_meta = {
         "movie_plan": _schema_metadata(schema_registry.movie_plan_schema()),
         "run_context": _schema_metadata(schema_registry.run_context_schema()),
@@ -558,7 +544,6 @@ def _run_plan_intake(
             if isinstance(uri_value, str) and uri_value.strip():
                 entry = uri_value
         base_image_map[image_id] = entry or asset.spec.prompt
-
     run_context = RunContext.from_plan(
         plan,
         run_id=run_id,
@@ -569,7 +554,6 @@ def _run_plan_intake(
         policy_decisions=policy_decisions,
     )
     run_context_path = _persist_run_context(run_context, plan_dir)
-
     stage_manifests = _build_plan_intake_manifests(
         plan=plan,
         plan_id=plan_id,
@@ -751,7 +735,7 @@ def _build_plan_intake_manifests(
         if extra:
             metadata.update(extra)
         return metadata
-
+    
     def _append_manifest(
         *,
         path: Optional[Path],
@@ -986,75 +970,6 @@ def _build_shot_lipsync_manifests(
     )
     return [manifest]
 
-
-def _build_shot_qa_manifests(
-    *,
-    run_id: str,
-    plan_id: str,
-    shot: ShotSpec,
-    stage: Literal["qa_base_images", "qa_video"],
-    output_dir: Path,
-    qa_record: Optional[StepExecutionRecord],
-    qa_mode: str,
-) -> List[StageManifest]:
-    if qa_record is None:
-        return []
-    qa_meta = dict(qa_record.meta or {})
-    qa_meta.setdefault("qa_mode", qa_mode)
-    qa_passed = bool(qa_meta.get("qa_passed", qa_mode == "skip"))
-    qa_skipped = bool(qa_meta.get("qa_skipped", qa_mode == "skip"))
-    qa_dir = output_dir / "qa" / stage
-    qa_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = qa_dir / f"{shot.id}.json"
-    payload = {
-        "plan_id": plan_id,
-        "shot_id": shot.id,
-        "qa_stage": stage,
-        "qa_mode": qa_meta.get("qa_mode", qa_mode),
-        "qa_passed": qa_passed,
-        "qa_skipped": qa_skipped,
-        "qa_decision": qa_meta.get("qa_decision"),
-        "qa_report_uri": qa_meta.get("qa_report_uri"),
-        "issue_count": qa_meta.get("issue_count"),
-        "qa_metadata": qa_meta.get("qa_metadata"),
-        "qa_report": qa_meta.get("qa_report"),
-        "human_task_id": qa_meta.get("human_task_id"),
-        "frames_inspected": qa_meta.get("frames_inspected"),
-    }
-    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    artifact_type = "shot_qa_base_images" if stage == "qa_base_images" else "shot_qa_video"
-    metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": stage,
-            "shot_id": shot.id,
-            "qa_passed": qa_passed,
-            "qa_skipped": qa_skipped,
-            "qa_decision": qa_meta.get("qa_decision"),
-            "issue_count": qa_meta.get("issue_count"),
-            "qa_report_uri": qa_meta.get("qa_report_uri"),
-            "stage_manifest_schema": stage_manifest_schema_meta,
-        }
-    )
-    manifest = StageManifest(
-        run_id=run_id,
-        stage_id=f"{shot.id}:{stage}",
-        artifact_type=artifact_type,
-        name=summary_path.name,
-        artifact_uri=summary_path.as_posix(),
-        media_type="application/json",
-        local_path=summary_path.as_posix(),
-        storage_hint="local",
-        mime_type="application/json",
-        size_bytes=_file_size(summary_path),
-        metadata=metadata,
-        qa_report_uri=qa_meta.get("qa_report_uri"),
-        qa_passed=qa_passed,
-        qa_mode=qa_meta.get("qa_mode", qa_mode),
-        qa_skipped=qa_skipped,
-    )
-    return [manifest]
 
 
 def _build_assemble_stage_manifests(
@@ -1322,7 +1237,6 @@ def _voice_config_for_character(
             return dict(profile)
     return dict(fallback) if fallback else None
 
-
 def _execute_shot(
     shot: ShotSpec,
     *,
@@ -1336,8 +1250,6 @@ def _execute_shot(
     voice_profiles: Mapping[str, Mapping[str, Any]],
     base_images: Mapping[str, BaseImageSpec],
     base_image_assets: Mapping[str, _BaseImageAsset],
-    qa_mode: str,
-    plan_title: str,
 ) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
@@ -1353,7 +1265,6 @@ def _execute_shot(
         _append_record(record)
         return record, step_result
 
-    frames_retry_count = 0
     _frames_record, frames_result = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
@@ -1367,53 +1278,6 @@ def _execute_shot(
         meta={"shot_id": shot.id},
     )
     artifacts.frames_path = frames_result.path
-
-    while True:
-        qa_base_meta = {
-            "shot_id": shot.id,
-            "stage": "qa_base_images",
-            "qa_mode": qa_mode,
-        }
-        if qa_mode == "skip":
-            qa_base_meta.update({"qa_skipped": True, "qa_passed": True})
-        qa_record, qa_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:qa_base_images",
-            step_type="qa_base_images",
-            gate_flag=None,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            meta=qa_base_meta,
-            enabled=qa_mode != "skip",
-            action=lambda: _perform_base_image_qa(
-                shot,
-                base_image_assets=base_image_assets,
-                plan_id=plan_id,
-                run_id=run_id,
-                plan_title=plan_title,
-            ),
-        )
-        if qa_mode == "skip" or bool(qa_record.meta.get("qa_passed", True)):
-            break
-        frames_retry_count += 1
-        if frames_retry_count >= max(1, cfg.qa_retry_attempts):
-            raise StepExecutionError(f"{shot.id}:qa_base_images failed after {cfg.qa_retry_attempts} attempts")
-        _frames_record, frames_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:images",
-            step_type="images",
-            gate_flag=cfg.adapters_flag,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            action=lambda: _render_frames(shot, output_dir, base_images, base_image_assets),
-            meta={"shot_id": shot.id, "retry": frames_retry_count},
-        )
-        artifacts.frames_path = frames_result.path
-
     frame_meta = dict(frames_result.meta or {})
     _record_stage_manifest_entries(
         run_id=run_id,
@@ -1424,18 +1288,6 @@ def _execute_shot(
             summary_path=frames_result.path,
             start_frame_path=frame_meta.get("start_frame_path"),
             end_frame_path=frame_meta.get("end_frame_path"),
-        ),
-    )
-    _record_stage_manifest_entries(
-        run_id=run_id,
-        manifests=_build_shot_qa_manifests(
-            run_id=run_id,
-            plan_id=plan_id,
-            shot=shot,
-            stage="qa_base_images",
-            output_dir=output_dir,
-            qa_record=qa_record,
-            qa_mode=qa_mode,
         ),
     )
 
@@ -1478,8 +1330,7 @@ def _execute_shot(
             ),
         )
 
-    video_retry_count = 0
-    _video_record, video_result = _run_with_tracking(
+    _, video_result = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:video",
@@ -1501,61 +1352,6 @@ def _execute_shot(
     )
     artifacts.video_path = video_result.path
 
-    while True:
-        qa_video_meta = {
-            "shot_id": shot.id,
-            "stage": "qa_video",
-            "qa_mode": qa_mode,
-        }
-        if qa_mode == "skip":
-            qa_video_meta.update({"qa_skipped": True, "qa_passed": True})
-        qa_video_record, qa_video_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:qa_video",
-            step_type="qa_video",
-            gate_flag=None,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            meta=qa_video_meta,
-            enabled=qa_mode != "skip",
-            action=lambda: _perform_video_qa(
-                shot,
-                artifacts,
-                plan_id=plan_id,
-                run_id=run_id,
-                plan_title=plan_title,
-                base_image_assets=base_image_assets,
-            ),
-        )
-        if qa_mode == "skip" or bool(qa_video_record.meta.get("qa_passed", True)):
-            break
-        video_retry_count += 1
-        if video_retry_count >= max(1, cfg.qa_retry_attempts):
-            raise StepExecutionError(f"{shot.id}:qa_video failed after {cfg.qa_retry_attempts} attempts")
-        _video_record, video_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:video",
-            step_type="video",
-            gate_flag=cfg.adapters_flag,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            action=lambda: _render_video_clip(
-                shot,
-                output_dir,
-                plan_id,
-                run_id,
-                base_images,
-                base_image_assets,
-                progress_callback,
-            ),
-            meta={"shot_id": shot.id, "duration_sec": shot.duration_sec, "retry": video_retry_count},
-        )
-        artifacts.video_path = video_result.path
-
     _record_stage_manifest_entries(
         run_id=run_id,
         manifests=_build_shot_video_manifests(
@@ -1563,18 +1359,6 @@ def _execute_shot(
             plan_id=plan_id,
             shot=shot,
             video_path=artifacts.video_path,
-        ),
-    )
-    _record_stage_manifest_entries(
-        run_id=run_id,
-        manifests=_build_shot_qa_manifests(
-            run_id=run_id,
-            plan_id=plan_id,
-            shot=shot,
-            stage="qa_video",
-            output_dir=output_dir,
-            qa_record=qa_video_record,
-            qa_mode=qa_mode,
         ),
     )
 
@@ -1788,182 +1572,6 @@ def _run_step(
     return record, step_result
 
 
-def _perform_base_image_qa(
-    shot: ShotSpec,
-    *,
-    base_image_assets: Mapping[str, _BaseImageAsset],
-    plan_id: str,
-    run_id: str,
-    plan_title: str,
-) -> StepResult:
-    frames, prompts, frame_ids = _collect_base_image_frames(shot, base_image_assets)
-    if not frames:
-        return StepResult(
-            meta={
-                "qa_stage": "qa_base_images",
-                "shot_id": shot.id,
-                "qa_passed": True,
-                "qa_reason": "no_frames",
-            }
-        )
-    return _qa_inspect_frames(
-        frames,
-        prompts,
-        frame_ids=frame_ids,
-        stage="qa_base_images",
-        plan_id=plan_id,
-        run_id=run_id,
-        shot_id=shot.id,
-        plan_title=plan_title,
-    )
-
-
-def _perform_video_qa(
-    shot: ShotSpec,
-    artifacts: _ShotArtifacts,
-    *,
-    plan_id: str,
-    run_id: str,
-    plan_title: str,
-    base_image_assets: Mapping[str, _BaseImageAsset],
-) -> StepResult:
-    frames, prompts, frame_ids = _collect_video_frames(shot, artifacts, base_image_assets)
-    if not frames:
-        return StepResult(
-            meta={
-                "qa_stage": "qa_video",
-                "shot_id": shot.id,
-                "qa_passed": True,
-                "qa_reason": "no_frames",
-            }
-        )
-    return _qa_inspect_frames(
-        frames,
-        prompts,
-        frame_ids=frame_ids,
-        stage="qa_video",
-        plan_id=plan_id,
-        run_id=run_id,
-        shot_id=shot.id,
-        plan_title=plan_title,
-    )
-
-
-def _collect_base_image_frames(
-    shot: ShotSpec,
-    base_image_assets: Mapping[str, _BaseImageAsset],
-) -> tuple[list[bytes], list[str], list[str]]:
-    frames: list[bytes] = []
-    prompts: list[str] = []
-    frame_ids: list[str] = []
-    seen: set[str] = set()
-    for suffix, image_id in (("start", shot.start_base_image_id), ("end", shot.end_base_image_id)):
-        if not image_id or image_id in seen:
-            continue
-        asset = base_image_assets.get(image_id)
-        if not asset or not asset.payload_bytes:
-            continue
-        seen.add(image_id)
-        frames.append(asset.payload_bytes[:MAX_QA_FRAME_BYTES])
-        prompt = asset.spec.prompt or shot.visual_description or f"Shot {shot.id} {suffix}"
-        prompts.append(prompt)
-        frame_ids.append(f"{shot.id}_{suffix}")
-    return frames, prompts, frame_ids
-
-
-def _collect_video_frames(
-    shot: ShotSpec,
-    artifacts: _ShotArtifacts,
-    base_image_assets: Mapping[str, _BaseImageAsset],
-) -> tuple[list[bytes], list[str], list[str]]:
-    frames: list[bytes] = []
-    prompts: list[str] = []
-    frame_ids: list[str] = []
-    if artifacts.video_path and artifacts.video_path.exists():
-        frames.append(_read_frame_bytes(artifacts.video_path))
-        prompts.append(shot.visual_description or f"Video clip {shot.id}")
-        frame_ids.append(f"{shot.id}_video")
-    if artifacts.lipsync_path and artifacts.lipsync_path.exists():
-        frames.append(_read_frame_bytes(artifacts.lipsync_path))
-        prompts.append(f"Lipsync clip {shot.id}")
-        frame_ids.append(f"{shot.id}_lipsync")
-    if not frames:
-        fallback_frames, fallback_prompts, fallback_ids = _collect_base_image_frames(shot, base_image_assets)
-        frames.extend(fallback_frames)
-        prompts.extend(fallback_prompts)
-        frame_ids.extend(fallback_ids)
-    return frames, prompts, frame_ids
-
-
-def _read_frame_bytes(path: Path) -> bytes:
-    if not path.exists():
-        return b""
-    with path.open("rb") as handle:
-        data = handle.read(MAX_QA_FRAME_BYTES)
-    return data
-
-
-def _qa_inspect_frames(
-    frames: Sequence[bytes],
-    prompts: Sequence[str],
-    *,
-    frame_ids: Sequence[str],
-    stage: str,
-    plan_id: str,
-    run_id: str,
-    shot_id: str,
-    plan_title: str,
-) -> StepResult:
-    if not frames:
-        return StepResult(meta={"qa_stage": stage, "qa_passed": True, "qa_reason": "no_frames"})
-    inspector = getattr(qa_entrypoint, "inspect_frames", None)
-    if not callable(inspector):
-        return StepResult(
-            meta={
-                "qa_stage": stage,
-                "qa_passed": True,
-                "qa_reason": "qa_entrypoint_unavailable",
-                "shot_id": shot_id,
-            }
-        )
-    opts = {
-        "plan_id": plan_id,
-        "run_id": run_id,
-        "step_id": f"{shot_id}:{stage}",
-        "movie_title": plan_title,
-        "metadata": {"shot_id": shot_id, "qa_stage": stage},
-        "frame_ids": list(frame_ids),
-    }
-    try:
-        payload = inspector(list(frames), list(prompts), opts=opts)
-    except ValueError as exc:
-        raise ProductionAgentError(f"QA inspection failed for {shot_id}: {exc}") from exc
-    report = payload.get("report") or {}
-    decision = str(payload.get("decision") or payload.get("status") or "unknown").lower()
-    qa_passed = decision not in QA_FAIL_DECISIONS
-    metadata = payload.get("metadata") or {}
-    meta: Dict[str, Any] = {
-        "qa_stage": stage,
-        "shot_id": shot_id,
-        "qa_passed": qa_passed,
-        "qa_decision": decision,
-        "qa_report_uri": payload.get("artifact_uri"),
-        "frames_inspected": len(frames),
-    }
-    if isinstance(metadata, Mapping):
-        meta["qa_metadata"] = dict(metadata)
-    if report:
-        meta["qa_report"] = report
-        issues = report.get("issues")
-        if isinstance(issues, Sequence):
-            meta["issue_count"] = len(list(issues))
-    human_task_id = payload.get("human_task_id")
-    if human_task_id:
-        meta["human_task_id"] = human_task_id
-    return StepResult(
-        artifact_uri=payload.get("artifact_uri"),
-        meta=meta,
-    )
 
 
 def _emit_step_record(
@@ -2455,7 +2063,7 @@ def _assemble_plan(plan: MoviePlan, shots: Sequence[_ShotArtifacts], output_dir:
     return dest
 
 
-def _run_qa_publish_stage(
+def _run_final_delivery_stage(
     *,
     plan: MoviePlan,
     plan_id: str,
@@ -2477,55 +2085,19 @@ def _run_qa_publish_stage(
     total_duration = dialogue_result.total_duration_s if dialogue_result else sum(shot.duration_sec for shot in plan.shots)
     frame_rate = float(plan.render_profile.video.max_fps or _default_video_fps())
     resolution = _resolve_render_resolution(plan)
-    qa_skipped = qa_mode == "skip"
-    issues = _collect_qa_publish_issues(
-        plan=plan,
-        shot_artifacts=shot_artifacts,
-        final_video_path=final_video_path,
-        timeline_audio_path=timeline_audio_path,
-    )
-    qa_passed = not issues and not qa_skipped
-    qa_report_path, _ = _write_qa_publish_report(
-        plan=plan,
-        plan_id=plan_id,
-        run_id=run_id,
-        output_dir=output_dir,
-        issues=issues,
-        qa_mode=qa_mode,
-        qa_passed=qa_passed,
-        qa_skipped=qa_skipped,
-        duration_s=total_duration,
-        frame_rate=frame_rate,
-        resolution=resolution,
-    )
-    qa_report_ref = adk_helpers.publish_artifact(
-        local_path=qa_report_path,
-        artifact_type="qa_publish_report",
-        media_type="application/json",
-        metadata={
-            "plan_id": plan_id,
-            "run_id": run_id,
-            "qa_mode": qa_mode,
-            "qa_passed": qa_passed,
-            "issue_count": len(issues),
-        },
-        run_id=run_id,
-    )
     checksum = _hash_file_path(final_video_path)
     size_bytes = final_video_path.stat().st_size if final_video_path.exists() else None
+    qa_skipped = qa_mode == "skip"
     video_metadata = {
         "plan_id": plan_id,
         "run_id": run_id,
-        "qa_mode": qa_mode,
-        "qa_passed": qa_passed,
-        "qa_skipped": qa_skipped,
-        "issue_count": len(issues),
-        "issues": issues,
         "duration_s": total_duration,
         "frame_rate": frame_rate,
         "resolution_px": resolution,
         "checksum_sha256": checksum,
-        "stage": "qa_publish",
+        "stage": "finalize",
+        "qa_mode": qa_mode,
+        "qa_skipped": qa_skipped,
     }
     video_artifact_ref = adk_helpers.publish_artifact(
         local_path=final_video_path,
@@ -2542,20 +2114,17 @@ def _run_qa_publish_stage(
     manifest_metadata = _stage_event_metadata(
         {
             "plan_id": plan_id,
-            "stage": "qa_publish",
-            "qa_mode": qa_mode,
-            "qa_skipped": qa_skipped,
-            "issue_count": len(issues),
-            "issues": issues,
+            "stage": "finalize",
             "stage_manifest_schema": stage_manifest_schema_meta,
-            "qa_report_uri": qa_report_ref.get("uri"),
             "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
             "assemble_path": assemble_path.as_posix(),
+            "qa_mode": qa_mode,
+            "qa_skipped": qa_skipped,
         }
     )
     manifest = StageManifest(
         run_id=run_id,
-        stage_id="qa_publish",
+        stage_id="finalize",
         artifact_type="video_final",
         name=final_video_path.name,
         artifact_uri=str(video_artifact_ref["uri"]),
@@ -2569,12 +2138,9 @@ def _run_qa_publish_stage(
         frame_rate=frame_rate,
         resolution_px=resolution,
         checksum_sha256=checksum,
-        qa_report_uri=qa_report_ref.get("uri"),
-        qa_passed=qa_passed,
         qa_mode=qa_mode,
         qa_skipped=qa_skipped,
         playback_ready=final_video_path.exists(),
-        notes="qa_skipped" if qa_skipped else None,
         metadata=manifest_metadata,
     )
     step_result = StepResult(
@@ -2582,7 +2148,7 @@ def _run_qa_publish_stage(
         paths=(final_video_path,),
         artifact_uri=str(video_artifact_ref["uri"]),
         meta={
-            "stage": "qa_publish",
+            "stage": "finalize",
             "artifact_type": "video_final",
             "media_type": "video/mp4",
             "local_path": final_video_path.as_posix(),
@@ -2594,13 +2160,8 @@ def _run_qa_publish_stage(
             "frame_rate": frame_rate,
             "resolution_px": resolution,
             "checksum_sha256": checksum,
-            "qa_report_uri": qa_report_ref.get("uri"),
-            "qa_report_local_path": qa_report_path.as_posix(),
-            "qa_passed": qa_passed,
             "qa_mode": qa_mode,
             "qa_skipped": qa_skipped,
-            "issue_count": len(issues),
-            "issues": issues,
             "playback_ready": final_video_path.exists(),
         },
     )
@@ -2631,70 +2192,10 @@ def _prepare_final_video(
     placeholder = {
         "plan_id": plan_id,
         "generated_at": _now_iso(),
-        "note": "qa_publish placeholder",
+        "note": "finalize placeholder",
     }
     dest.write_text(json.dumps(placeholder, ensure_ascii=False, indent=2), encoding="utf-8")
     return dest
-
-
-def _collect_qa_publish_issues(
-    *,
-    plan: MoviePlan,
-    shot_artifacts: Sequence[_ShotArtifacts],
-    final_video_path: Path,
-    timeline_audio_path: Optional[Path],
-) -> List[str]:
-    issues: List[str] = []
-    artifacts_by_shot = {art.shot_id: art for art in shot_artifacts}
-    if not final_video_path.exists():
-        issues.append("final_video_missing")
-    if timeline_audio_path is not None and not timeline_audio_path.exists():
-        issues.append("timeline_audio_missing")
-    for shot in plan.shots:
-        art = artifacts_by_shot.get(shot.id)
-        if art is None:
-            issues.append(f"missing_artifacts:{shot.id}")
-            continue
-        if art.video_path is None or not art.video_path.exists():
-            issues.append(f"video_missing:{shot.id}")
-        if shot.dialogue and not art.dialogue_paths:
-            issues.append(f"dialogue_missing:{shot.id}")
-    return issues
-
-
-def _write_qa_publish_report(
-    *,
-    plan: MoviePlan,
-    plan_id: str,
-    run_id: str,
-    output_dir: Path,
-    issues: Sequence[str],
-    qa_mode: str,
-    qa_passed: bool,
-    qa_skipped: bool,
-    duration_s: float,
-    frame_rate: float,
-    resolution: str,
-) -> tuple[Path, Dict[str, Any]]:
-    report_path = output_dir / "final" / f"{plan_id}-qa_report.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "plan_id": plan_id,
-        "run_id": run_id,
-        "title": plan.title,
-        "qa_mode": qa_mode,
-        "qa_passed": qa_passed,
-        "qa_skipped": qa_skipped,
-        "issues": list(issues),
-        "issue_count": len(issues),
-        "duration_s": duration_s,
-        "frame_rate": frame_rate,
-        "resolution_px": resolution,
-        "generated_at": _now_iso(),
-    }
-    payload.setdefault("summary", "pass" if qa_passed else "manual_review")
-    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report_path, payload
 
 
 def _resolve_render_resolution(plan: MoviePlan) -> str:

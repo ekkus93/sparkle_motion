@@ -78,10 +78,10 @@ def test_get_status_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
     _save_manifest(
         store,
         run_id=run_id,
-        stage="qa_publish",
+        stage="finalize",
         artifact_type="video_final",
         payload={"ok": True},
-        metadata={"plan_id": plan_id},
+        metadata={"plan_id": plan_id, "qa_mode": "skip", "qa_skipped": True},
     )
     registry = get_run_registry()
     registry.discard_run(run_id)
@@ -94,7 +94,7 @@ def test_get_status_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert status["status"] == "succeeded"
     assert status["qa_mode"] == "skip"
     assert status["qa_skipped"] is True
-    assert status["artifact_counts"]["qa_publish"] == 1
+    assert status["artifact_counts"]["finalize"] == 1
     assert status["render_profile"]["video"]["model_id"] == "wan-2.1"
     assert status["metadata"]["foo"] == "bar"
     assert status["timeline"], "expected synthesized timeline entries"
@@ -112,7 +112,7 @@ def test_get_status_filesystem_missing_run(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     store = _setup_filesystem_env(monkeypatch, tmp_path)
     run_id = "run_fs_artifacts"
-    stage = "qa_publish"
+    stage = "finalize"
     artifact_type = "video_final"
     artifact_uri = f"artifact+fs://{run_id}/{stage}/{artifact_type}/demo"
     plan_id = "plan-filesystem-artifacts"
@@ -132,8 +132,7 @@ def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp
         "frame_rate": 24.0,
         "resolution_px": "1280x720",
         "checksum_sha256": "f" * 64,
-        "qa_report_uri": "artifact://qa/report",
-        "qa_passed": True,
+        "qa_report_uri": None,
         "qa_mode": "full",
         "qa_skipped": False,
         "playback_ready": True,
@@ -149,7 +148,7 @@ def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp
         payload={"ok": True},
         metadata={
             "plan_id": plan_id,
-            "qa_passed": True,
+            "qa_skipped": False,
             "stage_manifest_snapshot": manifest_snapshot,
         },
     )
@@ -223,17 +222,17 @@ def test_list_artifacts_merges_adk_and_filesystem(monkeypatch: pytest.MonkeyPatc
     _save_manifest(
         store,
         run_id=run_id,
-        stage="qa_publish",
+        stage="finalize",
         artifact_type="video_final",
         payload={"ok": True},
         metadata={
             "plan_id": plan_id,
             "stage_manifest_snapshot": {
                 "run_id": run_id,
-                "stage_id": "qa_publish",
+                "stage_id": "finalize",
                 "artifact_type": "video_final",
                 "name": "final.mp4",
-                "artifact_uri": f"artifact+fs://{run_id}/qa_publish/video_final/fixture",
+                "artifact_uri": f"artifact+fs://{run_id}/finalize/video_final/fixture",
                 "storage_hint": "filesystem",
             },
         },
@@ -243,5 +242,5 @@ def test_list_artifacts_merges_adk_and_filesystem(monkeypatch: pytest.MonkeyPatc
     assert len(manifests) >= 2
     assert any(item["artifact_uri"].startswith("artifact://") for item in manifests)
     assert any(item["artifact_uri"].startswith("artifact+fs://") for item in manifests)
-    assert {item["stage_id"] for item in manifests} == {"plan_intake", "qa_publish"}
+    assert {item["stage_id"] for item in manifests} == {"plan_intake", "finalize"}
     registry.discard_run(run_id)

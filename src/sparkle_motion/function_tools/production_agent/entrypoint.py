@@ -195,12 +195,12 @@ def artifacts(run_id: str, stage: Optional[str] = None) -> Dict[str, Any]:
         manifests_by_stage[stage_id] = stage_manifests
         total_count += len(stage_manifests)
 
-    qa_stage_entries = manifests_by_stage.get("qa_publish")
+    finalize_stage_entries = manifests_by_stage.get("finalize")
     stage_filter_normalized = stage_filter.lower() if stage_filter else None
-    if stage_filter_normalized == "qa_publish":
-        _ensure_video_final_manifest_present(qa_stage_entries or [])
-    elif qa_stage_entries:
-        _ensure_video_final_manifest_present(qa_stage_entries)
+    if stage_filter_normalized == "finalize":
+        _ensure_video_final_manifest_present(finalize_stage_entries or [])
+    elif finalize_stage_entries:
+        _ensure_video_final_manifest_present(finalize_stage_entries)
 
     stage_sections: List[Dict[str, Any]] = []
     for stage_id, manifest_entries in manifests_by_stage.items():
@@ -392,7 +392,7 @@ def _estimate_expected_steps(plan: MoviePlan | Mapping[str, Any]) -> Optional[in
         shots_iter = plan.get("shots") if isinstance(plan, Mapping) else None
         if not isinstance(shots_iter, list):
             return None
-    total = 2  # assemble + qa_publish
+    total = 2  # assemble + finalize
     for shot in shots_iter:
         shot_mapping: Mapping[str, Any]
         if isinstance(shot, dict):
@@ -410,7 +410,7 @@ def _estimate_expected_steps(plan: MoviePlan | Mapping[str, Any]) -> Optional[in
 
 
 def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
-    if manifest.get("stage_id") != "qa_publish":
+    if manifest.get("stage_id") != "finalize":
         return
     if manifest.get("artifact_type") != "video_final":
         return
@@ -425,8 +425,9 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
     _require_str("local_path")
     _require_str("mime_type")
     _require_str("resolution_px")
-    _require_str("qa_report_uri")
-    _require_str("qa_mode")
+    qa_mode = manifest.get("qa_mode")
+    if not isinstance(qa_mode, str) or not qa_mode.strip():
+        errors.append("qa_mode missing")
 
     checksum = manifest.get("checksum_sha256")
     if not isinstance(checksum, str) or len(checksum) != 64:
@@ -463,23 +464,19 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
         if download_url not in (None, "") and not isinstance(download_url, str):
             errors.append("download_url invalid")
 
-    qa_passed = manifest.get("qa_passed")
-    if not isinstance(qa_passed, bool):
-        errors.append("qa_passed invalid")
-
     playback_ready = manifest.get("playback_ready")
     if not isinstance(playback_ready, bool):
         errors.append("playback_ready invalid")
 
     if errors:
-        raise HTTPException(status_code=500, detail="Invalid qa_publish manifest: " + ", ".join(errors))
+        raise HTTPException(status_code=500, detail="Invalid finalize manifest: " + ", ".join(errors))
 
 
 def _ensure_video_final_manifest_present(manifests: Sequence[Mapping[str, Any]]) -> None:
     for manifest in manifests:
-        if manifest.get("artifact_type") == "video_final" and manifest.get("stage_id") == "qa_publish":
+        if manifest.get("artifact_type") == "video_final" and manifest.get("stage_id") == "finalize":
             return
-    raise HTTPException(status_code=409, detail="qa_publish manifest missing video_final entry")
+    raise HTTPException(status_code=409, detail="finalize manifest missing video_final entry")
 
 
 def _summarize_stage_section(stage_id: str, manifest_entries: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:

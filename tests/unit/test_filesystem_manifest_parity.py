@@ -27,6 +27,7 @@ class ManifestScenario:
     qa: dict[str, Any] | None
     tags: dict[str, Any] | None
     local_path_hint: str
+    critical_paths: tuple[str, ...]
 
 
 _SCENARIOS = (
@@ -55,37 +56,49 @@ _SCENARIOS = (
         },
         tags={"qa_mode": "full"},
         local_path_hint="/tmp/original_tts_timeline.wav",
+        critical_paths=(
+            "size_bytes",
+            "checksum.sha256",
+            "metadata.schema_uri",
+            "metadata.size_bytes",
+            "metadata.checksum.sha256",
+            "metadata.qa_report_uri",
+            "qa.decision",
+            "qa.report_uri",
+            "qa.issues",
+        ),
     ),
     ManifestScenario(
-        id="qa_report",
-        reference_key="qa_reference",
-        artifact_slug="22222222222222222222222222222222",
-        run_id="run_demo_qa",
-        stage="qa_publish",
-        artifact_type="qa_report",
-        mime_type="application/json",
-        payload=b"qa-report-payload",
-        filename_hint="qa_report.json",
+        id="finalize_video",
+        reference_key="finalize_reference",
+        artifact_slug="33333333333333333333333333333333",
+        run_id="run_demo_final",
+        stage="finalize",
+        artifact_type="video_final",
+        mime_type="video/mp4",
+        payload=b"fixture-video",
+        filename_hint="final.mp4",
         metadata={
-            "schema_uri": "artifact://sparkle-motion/schemas/qa_report/v1",
-            "size_bytes": 17,
-            "checksum": {
-                "sha256": "a81cdbeb446ca71026f84735a0e834107721392786350bfa7996d3993d0ef855",
-            },
-            "qa_report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
-            "qa_summary": {
-                "issues": 0,
-                "warnings": 0,
-                "notes": ["fixture"],
-            },
+            "plan_id": "plan-final",
+            "qa_mode": "full",
+            "qa_skipped": False,
+            "duration_s": 9.5,
+            "frame_rate": 24.0,
+            "resolution_px": "1280x720",
         },
-        qa={
-            "decision": "approve",
-            "report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
-            "issues": [],
-        },
-        tags={"qa_mode": "skip"},
-        local_path_hint="/tmp/qa_report.json",
+        qa=None,
+        tags=None,
+        local_path_hint="/tmp/final_video.mp4",
+        critical_paths=(
+            "size_bytes",
+            "checksum.sha256",
+            "metadata.plan_id",
+            "metadata.qa_mode",
+            "metadata.qa_skipped",
+            "metadata.duration_s",
+            "metadata.frame_rate",
+            "metadata.resolution_px",
+        ),
     ),
 )
 
@@ -95,7 +108,7 @@ def fixture_paths() -> dict[str, Path]:
     root = Path(__file__).resolve().parents[1] / "fixtures" / "filesystem"
     return {
         "tts_reference": root / "adk_manifest_reference.json",
-        "qa_reference": root / "qa_report_manifest_reference.json",
+        "finalize_reference": root / "finalize_manifest_reference.json",
     }
 
 
@@ -105,7 +118,7 @@ def manifest_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fixture_paths: dict[str, Path],
-) -> tuple[str, dict[str, Any], dict[str, Any]]:
+) -> tuple[ManifestScenario, dict[str, Any], dict[str, Any]]:
     scenario: ManifestScenario = request.param
 
     class _FixedUUID:
@@ -152,33 +165,22 @@ def manifest_pair(
     reference["local_path"] = actual["local_path"]
     reference["download_url"] = actual["download_url"]
 
-    return scenario.id, actual, reference
+    return scenario, actual, reference
 
 
 def test_filesystem_manifest_matches_adk_reference(
-    manifest_pair: tuple[str, dict[str, Any], dict[str, Any]]
+    manifest_pair: tuple[ManifestScenario, dict[str, Any], dict[str, Any]]
 ) -> None:
     _, actual, reference = manifest_pair
     assert actual == reference
 
 
 def test_filesystem_manifest_reports_no_diffs_for_critical_fields(
-    manifest_pair: tuple[str, dict[str, Any], dict[str, Any]],
+    manifest_pair: tuple[ManifestScenario, dict[str, Any], dict[str, Any]],
 ) -> None:
-    scenario_id, actual, reference = manifest_pair
-    critical_paths = (
-        "size_bytes",
-        "checksum.sha256",
-        "metadata.schema_uri",
-        "metadata.size_bytes",
-        "metadata.checksum.sha256",
-        "metadata.qa_report_uri",
-        "qa.decision",
-        "qa.report_uri",
-        "qa.issues",
-    )
-    diffs = _diff_manifest_fields(actual, reference, critical_paths)
-    assert diffs == [], f"{scenario_id}: Unexpected manifest differences: {diffs}"
+    scenario, actual, reference = manifest_pair
+    diffs = _diff_manifest_fields(actual, reference, scenario.critical_paths)
+    assert diffs == [], f"{scenario.id}: Unexpected manifest differences: {diffs}"
 
 
 def _diff_manifest_fields(

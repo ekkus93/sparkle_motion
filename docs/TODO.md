@@ -209,6 +209,16 @@
 - [x] Rewrite user-facing docs (README, notebook instructions, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, control panel text) to explain that only WorkflowAgent + ScriptAgent are ADK agents; all other stages are FunctionTools with the new names.
 - [x] Add a release/migration note (docs + CHANGELOG) describing the renaming, run the full pytest suite, and verify that no references to the old `_agent` identifiers remain outside of the historical note. *(2025-12-01 — `docs/RELEASE_NOTES.md` updated with the agent→stage table, `docs/ARCHITECTURE.md` holds the sole historical matrix, and `PYTHONPATH=.:src pytest -q` reported 326 passed / 1 skipped.)*
 
+### P0 — QA stage removal (qa_qwen2vl sunset)
+- [ ] Inventory every runtime/doc/test dependency on `qa_qwen2vl` (production agent, images_stage, configs, notebooks, tests) and capture the impacted files before editing so regressions are traceable.
+- [ ] Remove the base-image, per-shot video, and terminal `qa_publish` stages from `production_agent` (and related telemetry/RunRegistry wiring), ensuring retries/policy gates degrade gracefully without the QA tool.
+- [ ] Strip QA invocations from `images_stage` (pre-render reference QA + post-render hooks) and delete any remaining QA-specific adapters/helpers while keeping rate limits/dedupe behavior intact.
+- [ ] Update configuration surfaces (`configs/tool_registry.yaml`, `configs/workflow_agent.yaml`, CLI defaults, notebooks/control panel) to drop QA tool registrations, hard-code `qa_mode` semantics for the no-QA world, and document the temporary removal flag.
+- [ ] Refresh docs (`docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, Colab checklist) to explain that QA stages are disabled, including new operator guidance and known limitations until QA is reintroduced.
+- [ ] Update `notebooks/sparkle_motion.ipynb` control panel + helper cells (qa_mode inputs, qa_publish helpers, QA badges) so the Colab workflow matches the no-QA pipeline and points to the new terminal stage.
+- [ ] Revise unit/integration tests (e.g., `tests/test_production_agent.py`, `tests/unit/test_images_stage.py`, CLI/entrypoint suites) plus schema samples to remove QA expectations and add regression tests proving the pipeline still succeeds without QA artifacts.
+- [ ] Run representative dry/run production executions (fixture + filesystem backend) to validate `/status`, `/artifacts`, and final deliverable helpers continue to function with QA stages removed, capturing evidence for future rollback notes.
+
 #### Production agent observability & controls
 - [x] Persist StepExecutionRecord history (and run metadata such as
   `plan_id`, `render_profile`, and `qa_mode`) so the new `/status` endpoint can
