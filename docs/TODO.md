@@ -109,7 +109,7 @@
   - [x] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
 - [ ] Finalize URI and manifest compatibility
   - [x] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers/tests so callers remain agnostic to the backend. *(2025-12-01 — helpers emit filesystem URIs, contract tests + scaffolds accept `artifact+fs://`.)*
-  - [ ] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical.
+  - [x] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical. *(2025-12-02 — `tests/unit/test_filesystem_manifest_parity.py` now normalizes paths and asserts parity for all critical manifest fields.)*
 - [ ] Ship retention and maintenance utilities
   - [ ] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable.
     - [x] CLI landed as `scripts/filesystem_artifacts.py prune` with dry-run default, retention planner, and coverage in `tests/unit/test_filesystem_retention.py`.

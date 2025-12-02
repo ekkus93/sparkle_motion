@@ -1,0 +1,40 @@
+{
+  "artifact_id": "run_demo_qa/qa_publish/qa_report/22222222222222222222222222222222",
+  "artifact_uri": "artifact+fs://run_demo_qa/qa_publish/qa_report/22222222222222222222222222222222",
+  "artifact_type": "qa_report",
+  "run_id": "run_demo_qa",
+  "stage": "qa_publish",
+  "mime_type": "application/json",
+  "size_bytes": 17,
+  "checksum": {
+    "sha256": "a81cdbeb446ca71026f84735a0e834107721392786350bfa7996d3993d0ef855"
+  },
+  "local_path": "{{ROOT}}/run_demo_qa/qa_publish/qa_report/22222222222222222222222222222222/artifact.json",
+  "download_url": "{{LOCAL_PATH_URI}}",
+  "metadata": {
+    "schema_uri": "artifact://sparkle-motion/schemas/qa_report/v1",
+    "size_bytes": 17,
+    "checksum": {
+      "sha256": "a81cdbeb446ca71026f84735a0e834107721392786350bfa7996d3993d0ef855"
+    },
+    "qa_report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
+    "qa_summary": {
+      "issues": 0,
+      "warnings": 0,
+      "notes": [
+        "fixture"
+      ]
+    }
+  },
+  "qa": {
+    "decision": "approve",
+    "report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
+    "issues": []
+  },
+  "tags": {
+    "qa_mode": "skip"
+  },
+  "local_path_hint": "/tmp/qa_report.json",
+  "storage_backend": "filesystem",
+  "created_at": 1700000000
+}
