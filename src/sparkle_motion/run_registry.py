@@ -201,6 +201,35 @@ def _entry_from_artifact_record(record: ArtifactRecord) -> ArtifactEntry:
         created_at=created_at,
     )
 
+
+def _entry_to_stage_manifest(entry: ArtifactEntry, run_id: str) -> Dict[str, Any]:
+    manifest = StageManifest(
+        run_id=run_id,
+        stage_id=entry.stage,
+        artifact_type=entry.artifact_type,
+        name=entry.name,
+        artifact_uri=entry.artifact_uri,
+        media_type=entry.media_type,
+        local_path=entry.local_path,
+        download_url=entry.download_url,
+        storage_hint=entry.storage_hint,
+        mime_type=entry.mime_type,
+        size_bytes=entry.size_bytes,
+        duration_s=entry.duration_s,
+        frame_rate=entry.frame_rate,
+        resolution_px=entry.resolution_px,
+        checksum_sha256=entry.checksum_sha256,
+        qa_report_uri=entry.qa_report_uri,
+        qa_passed=entry.qa_passed,
+        qa_mode=entry.qa_mode,
+        qa_skipped=entry.qa_skipped,
+        playback_ready=entry.playback_ready,
+        notes=entry.notes,
+        metadata=dict(entry.metadata),
+        created_at=entry.created_at,
+    )
+    return manifest.model_dump()
+
 class AsyncControlGate:
     """Dual-mode gate that mirrors state between threading and asyncio events."""
 
@@ -420,28 +449,16 @@ class RunRegistry:
         return payload
 
     def get_artifacts(self, run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
-        stage_filter = stage.strip() if stage else None
-        with self._lock:
-            state = self._runs.get(run_id)
-            if not state and not filesystem_backend_enabled():
-                raise KeyError(run_id)
-            memory_groups = self._snapshot_artifacts(state, stage_filter)
-        merged = self._merge_with_filesystem(run_id, stage_filter, memory_groups)
-        if stage_filter:
-            return [entry.as_dict() for entry in merged.get(stage_filter, [])]
-        payload: List[Dict[str, Any]] = []
-        for entries in merged.values():
-            payload.extend(entry.as_dict() for entry in entries)
-        return payload
+        entries = self._collect_artifact_entries(run_id, stage)
+        return [entry.as_dict() for entry in entries]
 
     def get_artifacts_by_stage(self, run_id: str) -> Dict[str, List[Dict[str, Any]]]:
-        with self._lock:
-            state = self._runs.get(run_id)
-            if not state and not filesystem_backend_enabled():
-                raise KeyError(run_id)
-            memory_groups = self._snapshot_artifacts(state, None)
-        merged = self._merge_with_filesystem(run_id, None, memory_groups)
-        return {stage_name: [entry.as_dict() for entry in entries] for stage_name, entries in merged.items()}
+        groups = self._collect_artifact_groups(run_id, None)
+        return {stage_name: [entry.as_dict() for entry in entries] for stage_name, entries in groups.items()}
+
+    def list_artifacts(self, run_id: str, stage: Optional[str] = None) -> List[Dict[str, Any]]:
+        entries = self._collect_artifact_entries(run_id, stage)
+        return [_entry_to_stage_manifest(entry, run_id) for entry in entries]
 
     def _filesystem_status_payload(self, run_id: str) -> Dict[str, Any]:
         entries = self._load_filesystem_artifacts(run_id, None)
@@ -615,6 +632,28 @@ class RunRegistry:
             entries = list(state.artifacts.get(stage_filter, []))
             return {stage_filter: entries} if entries else {}
         return {stage: list(entries) for stage, entries in state.artifacts.items()}
+
+    def _collect_artifact_groups(self, run_id: str, stage_filter: Optional[str]) -> Dict[str, List[ArtifactEntry]]:
+        normalized_stage = stage_filter.strip() if stage_filter else None
+        with self._lock:
+            state = self._runs.get(run_id)
+            if not state and not filesystem_backend_enabled():
+                raise KeyError(run_id)
+            memory_groups = self._snapshot_artifacts(state, normalized_stage)
+        merged = self._merge_with_filesystem(run_id, normalized_stage, memory_groups)
+        if normalized_stage:
+            return {normalized_stage: list(merged.get(normalized_stage, []))}
+        return merged
+
+    def _collect_artifact_entries(self, run_id: str, stage_filter: Optional[str]) -> List[ArtifactEntry]:
+        groups = self._collect_artifact_groups(run_id, stage_filter)
+        if stage_filter:
+            normalized = stage_filter.strip()
+            return list(groups.get(normalized, []))
+        entries: List[ArtifactEntry] = []
+        for stage_entries in groups.values():
+            entries.extend(stage_entries)
+        return entries
 
     def _merge_with_filesystem(
         self,

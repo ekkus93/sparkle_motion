@@ -106,3 +106,67 @@ def test_get_status_filesystem_missing_run(monkeypatch: pytest.MonkeyPatch, tmp_
 
     with pytest.raises(KeyError):
         registry.get_status("missing-run")
+
+
+def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    store = _setup_filesystem_env(monkeypatch, tmp_path)
+    run_id = "run_fs_artifacts"
+    stage = "qa_publish"
+    artifact_type = "video_final"
+    artifact_uri = f"artifact+fs://{run_id}/{stage}/{artifact_type}/demo"
+    plan_id = "plan-filesystem-artifacts"
+    manifest_snapshot = {
+        "run_id": run_id,
+        "stage_id": stage,
+        "artifact_type": artifact_type,
+        "name": "final.mp4",
+        "artifact_uri": artifact_uri,
+        "media_type": "video/mp4",
+        "local_path": "/tmp/final.mp4",
+        "download_url": None,
+        "storage_hint": "filesystem",
+        "mime_type": "video/mp4",
+        "size_bytes": 1024,
+        "duration_s": 9.5,
+        "frame_rate": 24.0,
+        "resolution_px": "1280x720",
+        "checksum_sha256": "f" * 64,
+        "qa_report_uri": "artifact://qa/report",
+        "qa_passed": True,
+        "qa_mode": "full",
+        "qa_skipped": False,
+        "playback_ready": True,
+        "notes": "filesystem fixture",
+        "metadata": {"plan_id": plan_id},
+        "created_at": "2025-12-02T00:00:00Z",
+    }
+    _save_manifest(
+        store,
+        run_id=run_id,
+        stage=stage,
+        artifact_type=artifact_type,
+        payload={"ok": True},
+        metadata={
+            "plan_id": plan_id,
+            "qa_passed": True,
+            "stage_manifest_snapshot": manifest_snapshot,
+        },
+    )
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+
+    manifests = registry.list_artifacts(run_id)
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest["run_id"] == run_id
+    assert manifest["stage_id"] == stage
+    assert manifest["artifact_type"] == artifact_type
+    assert manifest["storage_hint"] == "filesystem"
+    assert manifest["metadata"]["plan_id"] == plan_id
+    assert manifest["artifact_uri"].startswith(f"artifact+fs://{run_id}/{stage}/{artifact_type}/")
+    assert manifest["mime_type"] == "video/mp4"
+
+    filtered_manifests = registry.list_artifacts(run_id, stage=stage)
+    assert filtered_manifests == manifests
+
+    assert registry.list_artifacts(run_id, stage="unknown-stage") == []

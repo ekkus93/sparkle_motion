@@ -256,7 +256,7 @@
   - [x] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
 - [ ] Update helpers and services to honor the shim backend
   - [x] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
-  - [ ] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code.
+  - [x] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code. *(2025-12-04 — RunRegistry now rehydrates manifests via `_collect_artifact_entries`/`list_artifacts`, with regression coverage in `tests/unit/test_run_registry_filesystem_status.py::test_list_artifacts_filesystem_fallback`.)*
 - [ ] Notebook + CLI wiring
   - [ ] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.
   - [ ] Document the “local filesystem” flow alongside the existing Google Cloud instructions so operators can flip between them confidently.
