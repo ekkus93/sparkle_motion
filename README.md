@@ -315,3 +315,34 @@ Release notes
 	orchestrates the `images_sdxl` FunctionTool). Update any local configs or
 	notebooks that previously referenced `*_agent` identifiers to use the new
 	names listed in `docs/ARCHITECTURE.md#_agent-naming-matrix`.
+
+Running the Colab notebook (`notebooks/sparkle_motion.ipynb`)
+------------------------------------------------------------
+Follow these steps to run the full notebook workflow inside Google Colab with a GPU runtime. The steps map directly to the notebook sections so you can keep track of where you are.
+
+1. **Open Colab + set runtime.** Upload or clone this repo into Drive, open `notebooks/sparkle_motion.ipynb` in Colab, and switch the runtime to GPU (Runtime → Change runtime type → GPU).
+2. **Configure workspace inputs (Cell 1).** Edit the `WORKSPACE_NAME`, `HF_MODELS`, `DRY_RUN`, and `MOUNT_POINT` values to match the Drive folder you want to use. This cell also prints the repo root Colab detects.
+3. **Load secrets (Cell 2).** Run the `.env` loader so ADK variables (`ADK_PROJECT`, `ADK_API_KEY`, etc.) are available to the Workflow Agent helpers. The cell auto-installs `python-dotenv` if needed and scans common locations (`.env.local`, `/content/.env`, Drive workspace).
+4. **Mount Google Drive (Cell 3).** The cell detects Colab, mounts Drive under `MOUNT_POINT`, and ensures `MyDrive/WORKSPACE_NAME/` exists. Skip manually mounting in the sidebar—the cell handles everything.
+5. **Install ML deps (Cell 4).** Installs the packages listed in `requirements-ml.txt`. This is optional but recommended for GPU smoke tests. Outside Colab the cell prints the equivalent pip command for local shells.
+6. **Run the Colab preflight helper (Cell 5).** Executes `sparkle_motion.notebook_preflight` to confirm Drive is mounted, `/ready` endpoints respond, required env vars are present, and GPU checks pass. Fix any failures before moving on.
+7. **Prepare Drive workspace + download models (Cells 6–7).**
+   - Cell 6 pins `REPO_ROOT` if you opened Colab from a different path.
+   - Cell 7 invokes `scripts/colab_drive_setup.py` to create the workspace folders, optionally download Hugging Face weights listed in `HF_MODELS`, and emit a smoke JSON under `outputs/colab_smoke.json`. Use Cell 7b to inspect that smoke artifact.
+8. **Launch Workflow Agent servers (new "Workflow Agent server controls" section).** Use the start/stop widgets to spawn `script_agent` (port 8101) and `production_agent` (port 8200) via uvicorn inside Colab. Logs land in `tmp/script_agent.log` and `tmp/production_agent.log`. Skip this if you already run the servers elsewhere—just leave the widgets alone.
+9. **Quickstart control panel (Cells 8–11).**
+   - Cell 8 makes sure `REPO_ROOT/src` is on `sys.path`.
+   - Cell 9 imports and displays the ipywidgets control panel wired to the `local-colab` profile described in `configs/tool_registry.yaml`.
+   - Cell 10 syncs a known run ID into the control panel.
+   - Cell 11 demonstrates starting a production run via raw HTTP (`/invoke`) and polling `/status`, updating the control panel with the new run ID when finished.
+10. **Advanced control + artifacts tooling (Cells 12–19).**
+	- The advanced control panel cell shows how to instantiate `ControlPanel` manually with custom profiles/timeouts.
+	- The final deliverable helper (Cells 13–14) fetches the `qa_publish` manifest, embeds QA badges, downloads the final MP4, and optionally triggers a Colab download prompt.
+	- The artifacts viewer (Cells 15–18) refreshes `/artifacts` responses for any run/stage, supports auto-refresh, and renders inline previews when local paths exist.
+11. **Optional smoke + notebook helpers (Cells 20+).**
+	- Cell 19 runs `preview_helpers` to embed audio/video previews inline.
+	- Cell 20 triggers a manual artifacts refresh and captures a JSON snapshot for logs.
+	- Cell 21 runs the orchestrator `Runner` in pure Python (fixture) mode to ensure Drive folders are writable without touching Workflow Agent APIs.
+12. **Shut down servers.** When your session ends, use the server-control widgets to stop `script_agent` and `production_agent`, releasing the GPU. If you started them outside Colab, stop those processes in the original terminal instead.
+
+For more context on each helper cell, see `docs/NOTEBOOK_AGENT_INTEGRATION.md` (control panel behavior, QA manifest layouts) and `docs/TODO.md` (live checklist + validation notes). If anything differs from these instructions, re-sync the repo and re-open the notebook to pick up the latest workflow helpers.
