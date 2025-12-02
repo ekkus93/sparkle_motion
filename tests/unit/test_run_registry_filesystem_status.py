@@ -10,6 +10,7 @@ from sparkle_motion.filesystem_artifacts.config import FilesystemArtifactsConfig
 from sparkle_motion.filesystem_artifacts.models import ArtifactManifest
 from sparkle_motion.filesystem_artifacts.storage import FilesystemArtifactStore
 from sparkle_motion.run_registry import (
+    ArtifactEntry,
     get_run_registry,
     _reset_filesystem_store_for_tests,
 )
@@ -170,3 +171,77 @@ def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp
     assert filtered_manifests == manifests
 
     assert registry.list_artifacts(run_id, stage="unknown-stage") == []
+
+
+def test_list_artifacts_preserves_adk_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = get_run_registry()
+    run_id = "run_adk_registry"
+    plan_id = "plan-adk"
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id=plan_id, plan_title="ADK Plan", mode="run")
+
+    adk_entry = ArtifactEntry(
+        stage="plan_intake",
+        artifact_type="movie_plan",
+        name="plan.json",
+        artifact_uri="artifact://sparkle-motion/plans/plan-adk",
+        storage_hint="adk",
+        metadata={"plan_id": plan_id},
+    )
+    registry.record_artifact(run_id, adk_entry)
+
+    manifests = registry.list_artifacts(run_id)
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    assert manifest["artifact_uri"].startswith("artifact://sparkle-motion/plans/plan-adk")
+    assert manifest["stage_id"] == "plan_intake"
+    assert manifest["artifact_type"] == "movie_plan"
+    assert manifest["metadata"]["plan_id"] == plan_id
+    stage_filtered = registry.list_artifacts(run_id, stage="plan_intake")
+    assert stage_filtered == manifests
+    registry.discard_run(run_id)
+
+
+def test_list_artifacts_merges_adk_and_filesystem(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    store = _setup_filesystem_env(monkeypatch, tmp_path)
+    registry = get_run_registry()
+    run_id = "run_mixed_backends"
+    plan_id = "plan-mixed"
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id=plan_id, plan_title="Mixed Plan", mode="run")
+
+    adk_entry = ArtifactEntry(
+        stage="plan_intake",
+        artifact_type="movie_plan",
+        name="plan.json",
+        artifact_uri="artifact://sparkle-motion/plans/plan-mixed",
+        storage_hint="adk",
+        metadata={"plan_id": plan_id},
+    )
+    registry.record_artifact(run_id, adk_entry)
+
+    _save_manifest(
+        store,
+        run_id=run_id,
+        stage="qa_publish",
+        artifact_type="video_final",
+        payload={"ok": True},
+        metadata={
+            "plan_id": plan_id,
+            "stage_manifest_snapshot": {
+                "run_id": run_id,
+                "stage_id": "qa_publish",
+                "artifact_type": "video_final",
+                "name": "final.mp4",
+                "artifact_uri": f"artifact+fs://{run_id}/qa_publish/video_final/fixture",
+                "storage_hint": "filesystem",
+            },
+        },
+    )
+
+    manifests = registry.list_artifacts(run_id)
+    assert len(manifests) >= 2
+    assert any(item["artifact_uri"].startswith("artifact://") for item in manifests)
+    assert any(item["artifact_uri"].startswith("artifact+fs://") for item in manifests)
+    assert {item["stage_id"] for item in manifests} == {"plan_intake", "qa_publish"}
+    registry.discard_run(run_id)

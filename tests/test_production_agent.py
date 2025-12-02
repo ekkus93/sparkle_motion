@@ -23,7 +23,7 @@ from sparkle_motion.production_agent import (
     execute_plan,
 )
 from sparkle_motion.ratelimit import RateLimitDecision
-from sparkle_motion.run_registry import get_run_registry
+from sparkle_motion.run_registry import get_run_registry, _reset_filesystem_store_for_tests
 from sparkle_motion.dialogue_timeline import DialogueTimelineBuild
 from sparkle_motion.schemas import (
     BaseImageSpec,
@@ -342,6 +342,61 @@ def test_record_stage_manifest_entries_filesystem_backend(monkeypatch: pytest.Mo
         assert local_path.startswith(str(fs_root)), "local_path should point to filesystem root"
         assert Path(local_path).exists(), "filesystem copy should exist on disk"
     registry.discard_run("run-fs")
+
+
+def test_execute_plan_filesystem_backend_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    runs_root = tmp_path / "runs"
+    fs_root = tmp_path / "fs"
+    fs_index = fs_root / "index.db"
+    monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(runs_root))
+    monkeypatch.setenv("ARTIFACTS_BACKEND", "filesystem")
+    monkeypatch.setenv("ARTIFACTS_FS_ROOT", str(fs_root))
+    monkeypatch.setenv("ARTIFACTS_FS_INDEX", str(fs_index))
+    monkeypatch.setenv("ARTIFACTS_FS_ALLOW_INSECURE", "1")
+    monkeypatch.setenv("SMOKE_ADAPTERS", "1")
+    monkeypatch.setenv("SMOKE_TTS", "1")
+    monkeypatch.setenv("SMOKE_LIPSYNC", "1")
+    adk_helpers._reset_filesystem_store_for_tests()
+    _reset_filesystem_store_for_tests()
+
+    run_id = "run-fs-end-to-end"
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+
+    result = execute_plan(sample_plan, mode="run", run_id=run_id)
+    assert isinstance(result, ProductionResult)
+    assert result.steps, "expected stage execution records"
+
+    stage_groups = registry.get_artifacts_by_stage(run_id)
+    assert stage_groups, "expected artifacts to be grouped by stage"
+    assert "plan_intake" in stage_groups
+
+    for entries in stage_groups.values():
+        for entry in entries:
+            assert entry["artifact_uri"].startswith("artifact+fs://"), "filesystem URIs should use artifact+fs scheme"
+            local_path = entry.get("local_path")
+            if local_path:
+                assert local_path.startswith(str(fs_root)), "local_path should point inside filesystem root"
+                assert Path(local_path).exists(), "filesystem artifact should exist on disk"
+
+    manifest_rows = registry.list_artifacts(run_id)
+    assert manifest_rows, "list_artifacts should surface manifest rows"
+    assert {row["run_id"] for row in manifest_rows} == {run_id}
+    assert all(row["artifact_uri"].startswith("artifact+fs://") for row in manifest_rows)
+    assert {row["storage_hint"] for row in manifest_rows} <= {"filesystem"}
+
+    plan_manifests = [row for row in manifest_rows if row["stage_id"] == "plan_intake"]
+    assert plan_manifests, "plan_intake manifests should be present"
+    for row in plan_manifests:
+        local_path = row.get("local_path")
+        if local_path:
+            assert Path(local_path).exists()
+
+    registry.discard_run(run_id)
 
 
 def test_qa_publish_stage_emits_video_final_manifest(

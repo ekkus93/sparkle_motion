@@ -101,17 +101,17 @@
   - [x] Wrap Wav2Lip CLI/API invocation with deterministic stub + retries/cleanup API.
 
 #### Filesystem ArtifactService shim
-- [ ] Draft the shim design + storage layout spec
+- [x] Draft the shim design + storage layout spec *(see `docs/filesystem_artifact_shim_design.md` for the finalized contract + storage layout)*
   - [x] Capture endpoint contract (`POST /artifacts`, `GET /artifacts/<id>`, listing APIs), auth model, and error semantics in `docs/filesystem_artifact_shim_design.md` (linked from THE_PLAN.md).
   - [x] Define the deterministic directory schema (`${ARTIFACTS_FS_ROOT}/${run_id}/${stage}/${artifact_id}`) plus the SQLite index DDL (artifact id, run id, stage, mime, checksum, created_at) in `docs/filesystem_artifact_shim_design.md#storage-layout--indexing`.
 - [x] Implement the shim service + storage engine
   - [x] Stand up a FastAPI (or in-process) server that persists uploads, serves metadata, and exposes a health endpoint guarded by a shared token/env var.
   - [x] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
-- [ ] Finalize URI and manifest compatibility
+- [x] Finalize URI and manifest compatibility *(coverage: `docs/filesystem_artifact_shim_design.md`, `tests/unit/test_filesystem_manifest_parity.py`)*
   - [x] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers/tests so callers remain agnostic to the backend. *(2025-12-01 — helpers emit filesystem URIs, contract tests + scaffolds accept `artifact+fs://`.)*
   - [x] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical. *(2025-12-02 — `tests/unit/test_filesystem_manifest_parity.py` now normalizes paths and asserts parity for all critical manifest fields.)*
-- [ ] Ship retention and maintenance utilities
-  - [ ] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable.
+- [x] Ship retention and maintenance utilities *(complete via `scripts/filesystem_artifacts.py prune`, notebook retention helper cells, and `docs/NOTEBOOK_AGENT_INTEGRATION.md` evacuation workflow guidance)*
+  - [x] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable. *(coverage: `scripts/filesystem_artifacts.py prune`, `sparkle_motion/filesystem_artifacts/cli.py`, notebook Cell 39–40 in `notebooks/sparkle_motion.ipynb` "Filesystem artifact retention helper")*
     - [x] CLI landed as `scripts/filesystem_artifacts.py prune` with dry-run default, retention planner, and coverage in `tests/unit/test_filesystem_retention.py`.
     - [x] Notebook helper cell added to `notebooks/sparkle_motion.ipynb` (see "Filesystem artifact retention helper") with backend validation, ipywidgets inputs, and log streaming around `scripts/filesystem_artifacts.py prune`.
   - [x] Document the operator workflow for copying artifacts off ephemeral storage (Colab VM vs. mounted Drive) before session teardown, including warnings surfaced via `adk_helpers.write_memory_event()` (see `docs/NOTEBOOK_AGENT_INTEGRATION.md` §Filesystem artifact evacuation workflow).
@@ -143,7 +143,7 @@
   - [x] Run the full Colab preflight sequence (auth, env vars, pip installs, Drive mount, GPU/disk checks, `/ready` probes) and confirm each helper cell succeeds end-to-end.
   - [x] Generate multiple MoviePlans via the control panel, inspect the rendered plan JSON/tables, and confirm dialogue timeline, base_images count, and `render_profile` constraints all validate before production. *(2025-12-01 — Ran the script_agent entrypoint in fixture mode for three distinct prompts; resulting artifacts live under `artifacts/runs/local-fb446ec56a4e468b898599311dbe78ac/`, `artifacts/runs/local-12db9a36ccd24367a4f513627fbeabdb/`, and `artifacts/runs/local-865d54d8a012446e95898b56cecfc280/`. Each `validated_plan` showed 2 shots / 3 base_images, 9.0 s total timeline, and `render_profile.video.model_id="wan-2.1"`. Tampering with the final base image (e.g., editing `script_agent_movie_plan-11f90cdf1573.json` in the first run) triggered the expected Pydantic `ValueError` about base-image mismatches, proving the validator catches continuity errors before production.)*
   - [x] Manually edit a plan in-notebook (e.g., tweak shot durations or base-image references) and ensure the MoviePlan validator surfaces mismatches (shot runtime vs. dialogue timeline, base_images count) before allowing production. *(2025-12-01 — Tampered saved plans by removing the terminal base image and by shortening dialogue timeline segments; validators raised the documented errors, and `tests/unit/test_script_agent.py::test_generate_plan_rejects_missing_terminal_base_image` now codifies the base-image mismatch check so future schema tweaks keep the failure messaging intact.)*
-   - [ ] Kick off production runs with `qa_mode="full"` and `qa_mode="skip"`, verifying that StepExecutionRecord history, QA badges, and `/status` responses reflect the requested mode.
+  - [x] Kick off production runs with `qa_mode="full"` and `qa_mode="skip"`, verifying that StepExecutionRecord history, QA badges, and `/status` responses reflect the requested mode. *(2025-12-05 — Invoked `production_agent` locally via the FastAPI entrypoint using the minimal `qa-mode-demo` plan: run `run_c302c0ce1b30` (`qa_mode="full"`) and run `run_cb665575d7c5` (`qa_mode="skip"`). `/status` returned timelines with homogeneous `qa_mode` fields plus `metadata.qa_mode` for each run, and the `qa_publish` stage manifests exposed the expected QA badges (`qa_summary` + preview metadata) with `qa_skipped=True` only on the skip run.)*
   - [x] Observe the dialogue/TTS stage outputs: confirm per-line artifacts, stitched `tts_timeline.wav`, and timeline-with-actuals manifests appear in `/artifacts` and render inside the notebook viewers. *(2025-12-01 — Reused plan `tide-whisper` under `run_dialogue_tts_1764604382` with `SMOKE_TTS=1`; stage output lives in `artifacts/runs/run_dialogue_tts_1764604382/tide-whisper/audio/timeline/` and includes per-line WAVs (`fixture-emma-078d...wav`, `fixture-emma-36fd...wav`), the stitched `tts_timeline.wav`, and `dialogue_timeline_audio.json` whose `local_path` entries back the ipywidgets audio previews via `notebooks/preview_helpers.py`.)*
   - [ ] Validate base-image QA flows by forcing a known failure (bad prompt/fixture), confirming the notebook surfaces the QA report, regenerates via `images_stage`, and only proceeds after a pass.
   - [x] Validate clip-level QA + retry behavior by injecting a `qa_qwen2vl` failure, checking that the control panel pauses, surfaces retry counts, and resumes automatically once QA passes. *(2025-12-02 — patched `sparkle_motion.production_agent._qa_inspect_frames` via a `FailOnceVideoQA` helper so every shot fails its first `qa_video` attempt, then re-ran `production_agent` against `artifacts/runs/local-fb446ec56a4e468b898599311dbe78ac/script_agent_movie_plan-11f90cdf1573.json`. Run `run_1b9bf916e6be` recorded the expected retry trail, and the control-panel snapshot (last-three QA entries) showed `shot_002:qa_video | qa_attempt=1 | decision=regenerate | issues=1` followed by `shot_002:qa_video | qa_attempt=2 | decision=approve`, proving the UI surfaces retry counts before resuming automatically.)*
@@ -254,15 +254,15 @@
 - [x] Add configuration toggles + env plumbing
   - [x] Define `ARTIFACTS_BACKEND`, `ARTIFACTS_FS_ROOT`, and `ARTIFACTS_FS_INDEX` env vars (with validation + defaults) so the runtime can switch between ADK and filesystem storage without code edits. (`sparkle_motion.utils.env.resolve_artifacts_backend()` enforces allowed values; `FilesystemArtifactsConfig.from_env()` now honors `os.environ`.)
   - [x] Update config docs and `docs/NOTEBOOK_AGENT_INTEGRATION.md` to explain when to use each backend, including failure/rollback guidance.
-- [ ] Update helpers and services to honor the shim backend
+- [x] Update helpers and services to honor the shim backend
   - [x] Teach `adk_helpers.publish_artifact()`/`publish_local()`/manifest writers to delegate to the shim when `ARTIFACTS_BACKEND=filesystem`, preserving domain errors and telemetry fields.
   - [x] Ensure `/status` + `/artifacts` (and any RunRegistry consumers) can read manifests from either ADK or the shim’s SQLite index without branching in UI code. *(2025-12-04 — RunRegistry now rehydrates manifests via `_collect_artifact_entries`/`list_artifacts`, with regression coverage in `tests/unit/test_run_registry_filesystem_status.py::test_list_artifacts_filesystem_fallback`.)*
-- [ ] Notebook + CLI wiring
+- [x] Notebook + CLI wiring
   - [x] Add Colab cells / CLI commands that launch the shim server, set the required env vars, verify the health endpoint, and surface status inside the control panel.
   - [x] Document the “local filesystem” flow alongside the existing Google Cloud instructions so operators can flip between them confidently.
 - [ ] Test coverage + smoke runs
-  - [ ] Extend pytest/smoke coverage to run `production_agent.execute_plan()` end-to-end with `ARTIFACTS_BACKEND=filesystem`, asserting artifact URIs, manifest entries, and `/artifacts` outputs.
-  - [ ] Add regression tests that exercise URI parsing + manifest retrieval across both backends to prevent ADK-only assumptions from creeping back in.
+  - [x] Extend pytest/smoke coverage to run `production_agent.execute_plan()` end-to-end with `ARTIFACTS_BACKEND=filesystem`, asserting artifact URIs, manifest entries, and `/artifacts` outputs.
+  - [x] Add regression tests that exercise URI parsing + manifest retrieval across both backends to prevent ADK-only assumptions from creeping back in.
 
 #### P1 tasks still open (GPU-dependent deferrals)
 

@@ -1,6 +1,8 @@
 import json
 
+import pytest
 
+from sparkle_motion import adk_helpers
 from sparkle_motion.adk_helpers import publish_with_cli
 
 
@@ -38,3 +40,29 @@ def test_publish_with_cli_parses_json_stdout(monkeypatch):
 
     uri = publish_with_cli("/tmp/x.schema.json", "test_art", None, False, None)
     assert uri == "artifact://proj/schemas/test_art/v9"
+
+
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        ("artifact://project/artifacts/foo", "adk"),
+        ("artifact+fs://run-id/stage/artifact", "filesystem"),
+        ("file:///tmp/local.bin", "local"),
+        (None, "local"),
+    ],
+)
+def test_storage_for_artifact_uri_handles_all_backends(uri, expected):
+    assert adk_helpers.storage_for_artifact_uri(uri) == expected
+
+
+def test_is_artifact_uri_recognizes_managed_schemes():
+    assert adk_helpers.is_artifact_uri("artifact://project/foo")
+    assert adk_helpers.is_artifact_uri("artifact+fs://run/stage/artifact")
+    assert not adk_helpers.is_artifact_uri("file:///tmp/foo")
+    assert not adk_helpers.is_artifact_uri(None)
+
+
+def test_is_filesystem_artifact_uri_matches_only_filesystem_scheme():
+    assert adk_helpers.is_filesystem_artifact_uri("artifact+fs://run/plan/artifact")
+    assert not adk_helpers.is_filesystem_artifact_uri("artifact://project/foo")
+    assert not adk_helpers.is_filesystem_artifact_uri("file:///tmp/bar")
