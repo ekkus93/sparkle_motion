@@ -4,12 +4,25 @@ This document captures how users interact with the Sparkle Motion agents from a
 Google Colab notebook. It is intentionally iterative; we will refine the flow as
 the UI and orchestration harden.
 
-> **QA automation status (2025-12-07):** Automated QA tooling (`qa_qwen2vl`,
-> QA badges, and `qa_mode` toggles) has been removed from the runtime. The
-> notebook now reflects a streamlined pipeline that ends with the `assemble`
-> stage and expects humans to perform any content or safety review outside of
-> the control panel. All instructions below have been updated to match this
-> QA-free state.
+> **Delivery status (2025-12-07):** Automated QA tooling (`qa_qwen2vl`) has been
+> removed from the runtime. Production runs now terminate at the `finalize`
+> stage, which publishes the `video_final` artifact and relies on manual review
+> outside the control panel. The instructions below describe this
+> finalize-first, QA-free state.
+
+### Manual review flag (`QA_AUTOMATION_REMOVED`)
+
+- QA automation remains disabled by default. Export `QA_AUTOMATION_REMOVED=1`
+	in notebook + CLI environments to make the manual-review banner visible and
+	to document that finalize artifacts require human sign-off. Leave the flag at
+	`1` until the QA tool is stable again.
+- When QA tooling returns, set `QA_AUTOMATION_REMOVED=0` before launching the
+	control panel or CLI. Doing so removes the banner and lets us re-enable
+	automated QA stages without editing notebooks.
+- Regardless of the flag, operators must review the `video_final` artifact and
+	emit `finalize_manual_review` events (see `docs/THE_PLAN.md`) before sharing
+	deliverables. The control panel mirrors this requirement by inserting a
+	manual review banner whenever `QA_AUTOMATION_REMOVED=1`.
 
 ## Colab-first workflow snapshot
 
@@ -228,8 +241,9 @@ run.
 - The `Mode` dropdown mirrors the production_agent `mode` flag (`dry` vs.
 	`run`). Dry-runs stop after validation so operators can iterate quickly, while
 	`run` drives the full clip rendering + lipsync path.
-- With QA removed, the control panel surfaces a static banner reminding users to
-	perform manual review of assembled artifacts before sharing them externally.
+- The control panel surfaces a static finalize-stage reminder so operators
+	perform manual review of the published `video_final` artifact before sharing
+	anything externally.
 
 #### Plan artifact loader vs. inline submission
 
@@ -537,7 +551,7 @@ points at the correct endpoints.
 
 ### 5. Manual clip review + retries
 
-Automated clip-level QA no longer runs inside the notebook workflow. After each
+Clip-level automation is paused inside the notebook workflow. After each
 `videos_wan` invocation completes, operators should:
 
 1. Inspect the emitted MP4 plus thumbnails via the artifact viewer to confirm
@@ -547,7 +561,7 @@ Automated clip-level QA no longer runs inside the notebook workflow. After each
 	the StepExecutionRecord snapshot so history stays auditable.
 3. Document any manual overrides (e.g., “shot_002 regenerations: 2”) in the run
 	notes field or via `adk_helpers.write_memory_event()` so `/status` reflects the
-	missing automation until QA returns.
+	manual review coverage while automation is paused.
 
 ### 6. Assembly + lipsync integration
 
@@ -577,16 +591,22 @@ the user prompt into concrete inputs/outputs:
 | **Base images** | `base_images` array, SDXL config (prompt, seed, guidance), regeneration policy | PNG/WEBP URIs (one per base image), render metadata, optional reviewer notes | Operators manually inspect frames after rendering and re-run `images_sdxl` when continuity or safety issues appear. |
 | **Video clips** | Shot list (start/end base-image URIs, duration, motion prompt, fps, frame count), video `render_profile` entry (model_id, caps), continuity constraints | Per-shot MP4/PNG sequences, motion metadata (num frames, seed), continuity confirmation records | Uses shot *N* end frame as shot *N+1* start frame; stores asset refs for assembly; honoring the declared model is mandatory. |
 | **Assembly & lipsync** | Ordered clip URIs, per-shot durations, stitched WAV, lipsync model config | `video_raw_concat.mp4`, lip-synced `video_final.mp4`, alignment map between audio and frames | Ensures total runtime parity between audio and video before invoking lipsync. |
-| **Manual review & publish** | Final video/audio artifacts, run metadata, reviewer checklist | Notebook/Drive notes, `video_final` artifact manifest, memory events documenting review outcome | Teams perform safety/continuity signoff here until automated QA returns; use `/artifacts` + inline previews to guide decisions. |
+| **Manual review & publish** | Final video/audio artifacts, run metadata, reviewer checklist | Notebook/Drive notes, `video_final` artifact manifest, memory events documenting review outcome | Teams perform safety/continuity signoff here until automated review returns; use `/artifacts` + inline previews to guide decisions. |
 
 ##### Manual review expectations
 
-- Because automated QA has been removed, every production run should include a
+- Because automated checks have been removed, every production run should include a
 	manual review note before sharing outputs. The control panel surfaces a
 	reminder banner near the final deliverable helper; update it with reviewer
 	initials and date when signoff is complete.
+- The notebook honors `QA_AUTOMATION_REMOVED=1` by default. Leaving it set keeps
+	the warning banner visible, forces CLI/control-panel payloads to send
+	`qa_mode="disabled"`, and records `manual_review_required=True` in manifests.
+- Known limitations while the flag remains enabled: final deliverable cells no
+	longer show QA badges, `/status` timelines omit QA entries, and downstream
+	automation must rely on the manual review memory events described above.
 - If a run bypasses manual review (e.g., fixture-only experimentation), log the
-	decision via `adk_helpers.write_memory_event(event_type="qa_manual_review",
+	decision via `adk_helpers.write_memory_event(event_type="finalize_manual_review",
 	payload={"status": "skipped"})` so `/status` and artifacts history call out the
 	exception.
 
@@ -998,10 +1018,11 @@ pause/resume/stop long productions without leaving the notebook.
 		   display(Video(filename=entry["local_path"], embed=True, width=width))
 	   ```
 
-	5. **QA badges & warnings**: every preview widget should read the manifest’s
-	   `qa_summary` when available and add a banner (e.g., `widgets.HTML`) indicating
-	   whether QA passed, failed, or was skipped. This matches the dashboard’s
-	   requirement to badge skip paths even when media renders successfully.
+	5. **Finalize status banner**: every preview widget should read the manifest’s
+	   finalize metadata (e.g., `finalize_summary` or the stage-level `manual_review`
+	   flags) and add a banner when the clip still needs manual validation. Keep the
+	   banner even when the media renders successfully so operators remember to log a
+	   `finalize_manual_review` result before sharing assets.
 
 	These helpers live in regular notebook cells (or a lightweight
 	`notebooks/preview_helpers.py` module) so the control panel outputs can call
@@ -1011,12 +1032,12 @@ pause/resume/stop long productions without leaving the notebook.
 
 	#### Final deliverable preview & download
 
-	- The `qa_publish` stage must emit an `/artifacts` manifest entry with
+	- The `finalize` stage must emit an `/artifacts` manifest entry with
 		`artifact_type: "video_final"`, `artifact_uri`, `local_path` (if production_agent
 		downloaded the file into the Colab runtime), and `download_url` (signed ADK URL
-		when the asset only lives in ArtifactService). The dashboard surfaces this
-		entry in a dedicated “Final Video” tab so users immediately see whether QA
-		approved the deliverable and where it lives.
+		when the asset only lives in ArtifactService). The dashboard surfaces this entry
+		in a dedicated “Final Video” tab so operators immediately see the latest
+		deliverable and whether manual review is outstanding.
 	- Provide a convenience notebook cell that fetches the manifest, previews the
 		video inline, and offers a download button. Example:
 
@@ -1033,20 +1054,20 @@ pause/resume/stop long productions without leaving the notebook.
 		def fetch_final_entry(run_id: str) -> dict:
 		    resp = requests.get(
 		        f"{PROD_BASE}/artifacts",
-		        params={"run_id": run_id, "stage": "qa_publish"},
+		        params={"run_id": run_id, "stage": "finalize"},
 		        timeout=10,
 		    )
-			resp.raise_for_status()
-			payload = resp.json()
-			stage_section = payload["stages"][0]  # stage filter keeps this scoped to qa_publish
-			preview_video = stage_section["preview"]["video"]
-			media_summary = stage_section["media_summary"].get("video", {})
-			print(
-			    "qa_publish emitted"
-			    f" {stage_section['count']} artifact(s): {stage_section['artifact_types']} |"
-			    f" video preview ready={preview_video['playback_ready']}"
-			)
-			return next(item for item in stage_section["artifacts"] if item.get("artifact_type") == "video_final")
+		    resp.raise_for_status()
+		    payload = resp.json()
+		    stage_section = payload["stages"][0]  # stage filter keeps this scoped to finalize
+		    preview_video = stage_section["preview"]["video"]
+		    media_summary = stage_section["media_summary"].get("video", {})
+		    print(
+		        "finalize emitted"
+		        f" {stage_section['count']} artifact(s): {stage_section['artifact_types']} |"
+		        f" video preview ready={preview_video['playback_ready']}"
+		    )
+		    return next(item for item in stage_section["artifacts"] if item.get("artifact_type") == "video_final")
 
 		final_entry = fetch_final_entry(RUN_ID)
 		local_path = Path(final_entry.get("local_path", "/tmp/video_final.mp4"))
@@ -1059,15 +1080,15 @@ pause/resume/stop long productions without leaving the notebook.
 		files.download(str(local_path))
 		```
 
-	- When QA is skipped, the helper still renders the video but also surfaces the
-		`qa_skipped` flag so the UI can warn users that the deliverable requires manual
-		validation before sharing.
-	- If `/artifacts` ever returns without a `video_final` entry (e.g., qa_publish
-		failed or was never executed), treat it as a blocking error: raise a toast/
-		banner explaining that QA publish has not produced a deliverable yet and offer
-		a button that re-invokes production_agent with `resume_from="qa_publish"` so
-		users can retry the stage immediately. This mirrors THE_PLAN’s requirement
-		that clients treat missing `video_final` manifests as terminal.
+	- When manual review is still pending, the helper should render the video
+		inline **and** show the finalize banner (see step #5) so users know to log their
+		`finalize_manual_review` decision before distributing the file.
+	- If `/artifacts` ever returns without a `video_final` entry (e.g., finalize
+		failed or was never executed), treat it as a blocking error: raise a
+		toast/banner explaining that finalize has not produced a deliverable yet and
+		offer a button that re-invokes production_agent with `resume_from="finalize"`
+		so users can retry the stage immediately. This mirrors THE_PLAN’s guidance to
+		treat missing `video_final` manifests as terminal.
 	- Because Colab downloads rely on `google.colab.files.download`, keep the final
 		video under the default Drive mount or `/content` so the helper can expose it
 		without extra filesystem plumbing.

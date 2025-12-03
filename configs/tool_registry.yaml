@@ -5,6 +5,10 @@
 # This file lists deployment endpoints and metadata per tool.
 # The `local-colab` section provides explicit endpoints for the local-colab profile
 # where tools are run in-process inside a Colab or notebook session (no Docker).
+#
+# QA automation (`qa_qwen2vl`) remains disabled. Notebook + CLI flows latch this
+# via `QA_AUTOMATION_REMOVED=1`, so manual review happens after the `finalize`
+# stage until we reintroduce a QA tool.
 
 version: 1
 tools:

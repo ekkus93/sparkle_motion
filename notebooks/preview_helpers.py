@@ -58,13 +58,18 @@ def render_stage_summary(stage_manifest: Dict[str, Any]) -> str:
     count = stage_manifest.get("count", 0)
     media_types = ", ".join(stage_manifest.get("media_types", [])) or "unknown media"
     artifact_types = ", ".join(stage_manifest.get("artifact_types", [])) or "unknown artifacts"
-    qa_summary = stage_manifest.get("qa_summary") or {}
-    qa_note = ""
-    if qa_summary:
-        status = qa_summary.get("status") or qa_summary.get("state")
-        if status:
-            qa_note = f" | QA: {status}"
-    return f"{count} artifact(s) [{artifact_types}] ({media_types}){qa_note}"
+    stage_status = stage_manifest.get("status") or stage_manifest.get("state")
+    status_note = f" | status: {stage_status}" if stage_status else ""
+    review_note = ""
+    stage_name = stage_manifest.get("stage") or stage_manifest.get("name")
+    if (stage_name or "").lower() == "finalize":
+        metadata = stage_manifest.get("metadata") or {}
+        manual_state = metadata.get("manual_review_state") or metadata.get("manual_review")
+        if manual_state:
+            review_note = f" | manual review: {manual_state}"
+        else:
+            review_note = " | manual review required before release"
+    return f"{count} artifact(s) [{artifact_types}] ({media_types}){status_note}{review_note}"
 
 
 def _require_local_path(entry: Dict[str, Any]) -> Path:

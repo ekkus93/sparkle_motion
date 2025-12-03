@@ -137,10 +137,10 @@ Notes:
        `/control/stop` (body `{ "run_id": "..." }`) that gate the stage runner
        via an asyncio Event so users can pause/resume/stop runs without tearing
        down artifacts.
-    - Surface pause/stop transitions inside the status feed so the UI confirms
-       when a control request is honored. QA badges were removed with the
-       Stage 3 sunset, so the status payload now focuses on stage progress and
-       delivery readiness.
+      - Surface pause/stop transitions inside the status feed so the UI confirms
+         when a control request is honored. With finalize now acting as the
+         terminal delivery stage, the status payload highlights stage progress and
+         delivery readiness instead of any retired QA indicators.
 
 4. Implement `gpu_utils.model_context` (minimal, robust pattern)
    - Context manager for guarded model load/unload, device_map presets,
@@ -578,8 +578,16 @@ Clients should treat any missing `video_final` row as a terminal error and displ
 
 ### Human governance hooks (QA paused)
 - Script review and any manual approval flows continue to use ADK’s review queue (`request_human_input`). With QA automation disabled, the same plumbing now tracks pause/resume acknowledgements and operator annotations so we can reintroduce QA without new infrastructure.
-- Operators log the current manual decision by writing `qa_manual_review` / `qa_automation` memory events (via `adk_helpers.write_memory_event`) after reviewing the `video_final` artifact. This keeps dashboards aware of the latest sign-off without blocking runs on missing automation.
+- Operators log the current manual decision by writing `finalize_manual_review` events (via `adk_helpers.write_memory_event`) after reviewing the `video_final` artifact. This keeps dashboards aware of the latest sign-off even while automation is paused.
 - New stages still plug into the WorkflowAgent graph and inherit the same governance wiring; when QA returns it will live alongside `finalize` rather than reviving the removed FunctionTool.
+
+#### QA automation status & known limitations
+- Notebook + CLI surfaces now gate themselves on the `QA_AUTOMATION_REMOVED` env var. We export `QA_AUTOMATION_REMOVED=1` by default so operators see the manual-review banner, production payloads set `qa_mode="disabled"`, and manifests carry `manual_review_required` metadata.
+- When QA eventually returns, flip the flag to `0` (or unset it) before starting agents. Doing so removes the banner and allows new QA FunctionTools to participate without editing notebooks.
+- Known limitations while the flag remains `1`:
+   1. No automated pass/fail signals exist; the `finalize` stage only emits delivery artifacts. Operators must document approvals through `finalize_manual_review` memory events.
+   2. Dashboards and `/status` timelines no longer show per-shot QA entries, so resume decisions depend on StepExecutionRecords plus manual notes.
+   3. Downstream automation that previously consumed `QAReport` artifacts must rely on reviewer notes and MemoryService data until QA tooling is reintroduced.
 
 ### Operational summary
 - Single-user Colab runtime hosts WorkflowAgent definitions, tool catalog, and artifact buckets under the `local-colab` profile.

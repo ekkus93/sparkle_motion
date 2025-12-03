@@ -16,11 +16,11 @@ The resulting object exposes the underlying ipywidgets container via the
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 from collections import deque
 from dataclasses import dataclass
-import importlib
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -63,6 +63,14 @@ DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")
 DEFAULT_LOG_DIR = Path(_LOG_DIR_ENV).expanduser() if _LOG_DIR_ENV else Path(__file__).resolve().parents[1] / "artifacts" / "logs"
 DEFAULT_FS_BASE_URL = os.environ.get("ARTIFACTS_FS_BASE_URL", "http://127.0.0.1:7077")
+_FALSEY_STRINGS = {"", "0", "false", "no", "off"}
+
+
+def _qa_automation_removed() -> bool:
+    flag = os.environ.get("QA_AUTOMATION_REMOVED")
+    if flag is None:
+        return True
+    return flag.strip().lower() not in _FALSEY_STRINGS
 
 
 def _resolve_artifact_backend() -> str:
@@ -177,6 +185,12 @@ class ControlPanel:
             print(f"[control_panel] Logging events to {self.logger.path}")
         self.artifact_backend = _resolve_artifact_backend()
         self.fs_base_url = os.environ.get("ARTIFACTS_FS_BASE_URL", DEFAULT_FS_BASE_URL)
+        self.qa_automation_removed = _qa_automation_removed()
+        self.manual_review_banner = (
+            widgets.HTML(value=_manual_review_banner_html(os.environ.get("QA_AUTOMATION_REMOVED")))
+            if self.qa_automation_removed
+            else None
+        )
 
         # Inputs
         self.title_input = widgets.Text(description="Title", placeholder="Short film title")
@@ -184,9 +198,12 @@ class ControlPanel:
         self.plan_uri_input = widgets.Text(description="Plan URI", placeholder="file:///.../plan.json", layout=widgets.Layout(width="100%"))
         self.load_plan_button = widgets.Button(description="Load Plan JSON", tooltip="Parse plan_uri artifact")
         self.mode_input = widgets.Dropdown(options=[("Dry-Run", "dry"), ("Run", "run")], description="Mode", value="dry")
-        self.qa_mode_input = widgets.Dropdown(options=[("Full QA", "full"), ("Skip QA", "skip")], description="QA Mode", value="full")
         self.run_id_input = widgets.Text(description="Run ID", placeholder="Autofilled after production run")
-        self.stage_input = widgets.Text(description="Stage", placeholder="qa_publish (optional)")
+        self.stage_input = widgets.Text(
+            description="Finalize Stage",
+            placeholder="finalize (manual review)",
+            tooltip="Override only when inspecting a non-finalize stage",
+        )
         self.inline_plan_checkbox = widgets.Checkbox(value=False, description="Send plan inline", tooltip="Embed plan JSON in production request")
 
         # Buttons
@@ -240,7 +257,6 @@ class ControlPanel:
         ])
         run_mode_controls = widgets.HBox([
             self.mode_input,
-            self.qa_mode_input,
             self.inline_plan_checkbox,
         ])
         status_controls = widgets.HBox([
@@ -259,13 +275,16 @@ class ControlPanel:
             widgets.HBox([self.backend_label, self.fs_health_button]),
             self.fs_backend_output,
         ])
-        inputs = widgets.VBox([
+        inputs_children = [
             self.title_input,
             self.prompt_input,
             plan_controls,
             run_mode_controls,
             self.run_id_input,
-        ])
+        ]
+        if self.manual_review_banner is not None:
+            inputs_children.insert(0, self.manual_review_banner)
+        inputs = widgets.VBox(inputs_children)
         outputs = widgets.VBox([
             backend_controls,
             widgets.HTML("<b>Script Agent</b>"),
@@ -341,7 +360,7 @@ class ControlPanel:
     def _handle_run_production(self, _: Any) -> None:
         plan_uri = _coalesce_plan_uri(self.plan_uri_input.value, self.state.plan_uri)
         plan_payload = self.state.plan_payload
-        payload: Dict[str, Any] = {"mode": self.mode_input.value, "qa_mode": self.qa_mode_input.value}
+        payload: Dict[str, Any] = {"mode": self.mode_input.value}
 
         send_inline_plan = self.inline_plan_checkbox.value
         if send_inline_plan and not plan_payload:
@@ -371,7 +390,6 @@ class ControlPanel:
             {
                 "endpoint": self.endpoints.production_invoke,
                 "mode": payload.get("mode"),
-                "qa_mode": payload.get("qa_mode"),
                 "plan_inline": "plan" in payload,
                 "plan_uri": payload.get("plan_uri"),
             },
@@ -797,60 +815,55 @@ async def _http_get_json_async(
 
 def _format_status_snapshot(ready: Dict[str, Any], status: Dict[str, Any]) -> str:
     blocks = ["/ready:", _format_json(ready), "\n/status:", _format_json(status)]
-    qa_summary = _summarize_qa_timeline(status)
-    if qa_summary:
-        blocks.extend(["\nQA timeline:", qa_summary])
+    finalize_summary = _summarize_finalize_timeline(status)
+    if finalize_summary:
+        blocks.extend(["\nFinalize:", finalize_summary])
     control_summary = _summarize_control_state(status)
     if control_summary:
         blocks.extend(["\nControl:", control_summary])
     return "\n".join(blocks)
 
-
-def _summarize_qa_timeline(status_payload: Dict[str, Any]) -> Optional[str]:
+def _summarize_finalize_timeline(status_payload: Dict[str, Any]) -> Optional[str]:
     timeline = status_payload.get("timeline")
     if not isinstance(timeline, list):
         return None
-    summaries: List[str] = []
-    attempt_tracker: Dict[tuple[str, str], int] = {}
+    finalize_entries: List[Dict[str, Any]] = []
     for entry in timeline:
         if not isinstance(entry, dict):
             continue
-        stage = entry.get("stage")
-        if stage not in {"qa_base_images", "qa_video"}:
-            continue
         meta = entry.get("meta") or {}
-        shot_id = meta.get("shot_id") or (entry.get("step_id") or "").split(":")[0]
-        shot_label = shot_id or "unknown"
-        key = (shot_label, stage)
-        attempt_tracker[key] = attempt_tracker.get(key, 0) + 1
-        qa_passed = meta.get("qa_passed")
-        decision = meta.get("qa_decision")
-        if decision:
-            decision_label = decision
-        elif qa_passed is True:
-            decision_label = "pass"
-        elif qa_passed is False:
-            decision_label = "fail"
-        else:
-            decision_label = entry.get("status") or "unknown"
-        issue_count = meta.get("issue_count")
-        human_task_id = meta.get("human_task_id")
-        details = [f"{shot_label}:{stage}", f"qa_attempt={attempt_tracker[key]}", f"decision={decision_label}"]
-        if issue_count:
-            details.append(f"issues={issue_count}")
-        retry_hint = meta.get("retry")
-        if retry_hint:
-            details.append(f"clip_retry={retry_hint}")
-        attempts = entry.get("attempts")
-        if attempts:
-            details.append(f"step_attempts={attempts}")
-        if human_task_id:
-            details.append(f"human_task={human_task_id}")
-        summaries.append(" | ".join(details))
-    if not summaries:
+        stage = (entry.get("stage") or meta.get("stage") or "").lower()
+        step_id = (entry.get("step_id") or "").lower()
+        if stage == "finalize" or step_id.startswith("finalize"):
+            finalize_entries.append(entry)
+    if not finalize_entries:
         return None
-    # Show the last few QA events to keep the status stream readable.
-    return "\n".join(summaries[-3:])
+    latest = finalize_entries[-1]
+    summary_parts: List[str] = []
+    status_value = latest.get("status") or latest.get("state")
+    if status_value:
+        summary_parts.append(f"status={status_value}")
+    meta = latest.get("meta") or {}
+    note = _manual_review_note(meta, status_payload)
+    if note:
+        summary_parts.append(note)
+    artifact_uri = meta.get("artifact_uri")
+    if artifact_uri:
+        summary_parts.append(f"artifact_uri={artifact_uri}")
+    return " | ".join(summary_parts) if summary_parts else None
+
+
+def _manual_review_note(meta: Dict[str, Any], status_payload: Dict[str, Any]) -> Optional[str]:
+    manual_message = meta.get("manual_review_message") or status_payload.get("manual_review_message")
+    if manual_message:
+        return f"note={manual_message}"
+    state = meta.get("manual_review_state") or status_payload.get("manual_review_state")
+    if state:
+        return f"manual_review_state={state}"
+    required = meta.get("manual_review_required") or status_payload.get("manual_review_required")
+    if required:
+        return "manual_review_required=True"
+    return None
 
 
 def _summarize_control_state(status_payload: Dict[str, Any]) -> Optional[str]:
@@ -900,6 +913,17 @@ def _format_status_probe_label(available: bool) -> str:
     color = "#3c763d" if available else "#d9534f"
     text = "Status endpoint ready" if available else "Status endpoint unavailable"
     return f"<span style='color:{color}; font-size:0.85em;'>{text}</span>"
+
+
+def _manual_review_banner_html(env_value: Optional[str]) -> str:
+    value = (env_value or "<unset>").strip() or "<unset>"
+    return (
+        "<div style='background:#fff6e6;border:1px solid #f0a500;padding:8px;margin-bottom:8px;'>"
+        "<strong>Manual review only.</strong> QA automation is disabled (QA_AUTOMATION_REMOVED="
+        f"{value}). Inspect finalize artifacts manually and record finalize_manual_review events before sharing deliverables. "
+        "Set QA_AUTOMATION_REMOVED=0 once QA tooling is restored."
+        "</div>"
+    )
 
 
 def _json_fallback(value: Any) -> Any:

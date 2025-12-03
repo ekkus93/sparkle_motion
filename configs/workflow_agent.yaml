@@ -9,6 +9,8 @@ description: >-
   Canonical WorkflowAgent encoding the stage graph for the Sparkle Motion
   movie pipeline. Use `scripts/register_workflow.py --dry-run` to validate
   locally against `configs/tool_registry.yaml` and `configs/schema_artifacts.yaml`.
+  QA automation remains disabled while `QA_AUTOMATION_REMOVED=1`, so manual
+  review occurs once the `production_stage` emits the `finalize` artifact.
 
 stages:
   - id: script_stage

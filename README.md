@@ -35,20 +35,20 @@ This repository is meant to run from a single environment: **Google Colab with a
 | 6. Requirements install | Installs `requirements-ml.txt` (ipywidgets, diffusers, torch) inside Colab. | Safe to rerun; idempotent.
 | 7–8. Drive helper + smoke | Runs `scripts/colab_drive_setup.py` to create workspace dirs and optionally download models. | Produces `outputs/colab_smoke.json` for verification.
 | 9. Server controls | ipywidgets to start/stop `script_agent` (port 8101) and `production_agent` (port 8200) via uvicorn inside Colab. | Keep them running for the remaining cells.
-| 10–12. Control panel | Launches the production control panel (plan loader, QA mode, run controls) and syncs run IDs. | Use this UI to run plans end-to-end.
+| 10–12. Control panel | Launches the production control panel (plan loader, run controls, status polling) and syncs run IDs. | Use this UI to run plans end-to-end.
 | 13. Production helper | Makes a Test_Film request directly via HTTP for reference and updates the control panel with the new run ID. | Useful sanity check before custom plans.
-| 14. Final deliverable helper | Fetches the `qa_publish` manifest, renders QA badges, shows the MP4 inline, and offers a Colab download. | Requires a completed run.
+| 14. Final deliverable helper | Reads the `finalize` stage manifest, previews the `video_final` artifact inline, and offers a Colab download. | Requires a completed run.
 | 15–18. Artifacts viewer | Polls `/artifacts` for any run/stage, renders per-stage summaries, and previews images/audio/video inline. | Handy for troubleshooting.
 | Remaining cells | Preview helpers, manual artifacts refresh, optional pure-Python runner. | Use only if instructed; otherwise stop after downloading artifacts.
 
 ## Running a Production Plan
 
 1. Start both agents with the server-control widgets (Cell group 9). Wait for the status indicator to show **running**.
-2. In the control panel (Cell group 10), choose **Dry-Run** to validate the workflow, or **Run** for the real pipeline. Leave QA mode at **Full** unless you have a reason to skip.
+2. In the control panel (Cell group 10), choose **Dry-Run** to validate the workflow, or **Run** for the real pipeline. QA automation is disabled, so every run follows the same finalize-first path regardless of earlier toggle settings.
 3. Click **Generate Plan** (or load an existing plan JSON) and inspect the summary widget.
 4. Click **Execute Production**. The panel streams `/status` updates automatically; you can also enable auto-polling to keep the log fresh.
-5. Once the run reaches `qa_publish`, use the **Final Deliverable Helper** (Cell 14) to preview and download the MP4.
-6. Use the **Artifacts Viewer** to inspect intermediate manifests if QA fails or you need stage-by-stage evidence.
+5. Once the run reaches the `finalize` stage, use the **Final Deliverable Helper** (Cell 14) to preview and download the MP4, then capture any manual review notes outside the notebook.
+6. Use the **Artifacts Viewer** to inspect intermediate manifests if finalize reveals a gap or you need stage-by-stage evidence for manual review.
 
 ## Shutting Down the Session
 

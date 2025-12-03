@@ -811,13 +811,22 @@ drive the immediate workstream and the TODO list.
 	- Context: the Stage 3 sunset removed the automated QA FunctionTool.
 		Operators now review the assembled outputs (base images through
 		`video_final`) using the notebook preview helpers and log their decision via
-		`adk_helpers.write_memory_event(event_type="qa_manual_review", ...)` so the
+		`adk_helpers.write_memory_event(event_type="finalize_manual_review", ...)` so the
 		run history still shows a clear approval trail.
+	- Flag: export `QA_AUTOMATION_REMOVED=1` while QA tooling is offline. The
+		control panel and CLI read this flag to display manual-review warnings and to
+		force production payloads to label `qa_mode="disabled"` with
+		`manual_review_required=True`.
 	- Integration: notebook control panels highlight manual-review steps,
 		encourage entering reviewer notes, and expose `request_human_input` for any
 		runs that require escalation. Downstream automation that previously consumed
 		`QAReport` artifacts now relies on these memory events and reviewer note
 		attachments until a new FunctionTool is introduced.
+	- Known limitations: (1) no automated pass/fail gating, so reviewers must
+		rely on StageEvent timelines plus artifact previews; (2) `/status`
+		timelines omit the retired QA entries, making manual notes mandatory for
+		resume decisions; (3) legacy QA dashboards should be treated as read-only
+		until the replacement FunctionTool ships.
 	- Future work: when QA automation returns it will be layered on top of the
 		`finalize` stage instead of reviving the old FunctionTool. Env vars and
 		SMOKE flags will be reintroduced as part of that rollout.
