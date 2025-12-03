@@ -24,7 +24,6 @@ class ManifestScenario:
     payload: bytes
     filename_hint: str
     metadata: dict[str, Any]
-    qa: dict[str, Any] | None
     tags: dict[str, Any] | None
     local_path_hint: str
     critical_paths: tuple[str, ...]
@@ -48,7 +47,6 @@ _SCENARIOS = (
                 "sha256": "3afaac217bfd89eff3f4623dbce7d6434b4a11eb93a6c5550e0bc9eb64f67475",
             },
         },
-        qa=None,
         tags=None,
         local_path_hint="/tmp/original_tts_timeline.wav",
         critical_paths=(
@@ -75,7 +73,6 @@ _SCENARIOS = (
             "frame_rate": 24.0,
             "resolution_px": "1280x720",
         },
-        qa=None,
         tags=None,
         local_path_hint="/tmp/final_video.mp4",
         critical_paths=(
@@ -134,7 +131,6 @@ def manifest_pair(
         artifact_type=scenario.artifact_type,
         mime_type=scenario.mime_type,
         metadata=json.loads(json.dumps(scenario.metadata)),
-        qa=json.loads(json.dumps(scenario.qa)) if scenario.qa is not None else None,
         tags=json.loads(json.dumps(scenario.tags)) if scenario.tags is not None else None,
         local_path_hint=scenario.local_path_hint,
     )

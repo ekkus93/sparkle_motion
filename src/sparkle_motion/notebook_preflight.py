@@ -30,7 +30,6 @@ DEFAULT_ENV_VARS: Sequence[str] = (
     "SPARKLE_DB_PATH",
     "ARTIFACTS_DIR",
     "GOOGLE_ADK_PROFILE",
-    "QA_POLICY_PATH",
 )
 
 

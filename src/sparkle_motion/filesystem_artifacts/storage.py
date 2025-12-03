@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS artifacts (
   size_bytes INTEGER NOT NULL,
   checksum_sha256 TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  qa_decision TEXT,
   metadata TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_artifacts_run_stage ON artifacts(run_id, stage);
@@ -103,8 +102,6 @@ class FilesystemArtifactStore:
             "created_at": created_at,
         }
 
-        if manifest.qa is not None:
-            manifest_doc["qa"] = manifest.qa
         if manifest.tags is not None:
             manifest_doc["tags"] = manifest.tags
 
@@ -120,8 +117,8 @@ class FilesystemArtifactStore:
                 INSERT INTO artifacts (
                     artifact_id, run_id, stage, artifact_type, mime_type,
                     relative_path, manifest_json, size_bytes, checksum_sha256,
-                    created_at, qa_decision, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -134,7 +131,6 @@ class FilesystemArtifactStore:
                     size_bytes,
                     checksum,
                     created_at,
-                    (manifest.qa or {}).get("decision") if manifest.qa else None,
                     metadata_json,
                 ),
             )
@@ -152,7 +148,6 @@ class FilesystemArtifactStore:
                 "size_bytes": size_bytes,
                 "checksum_sha256": checksum,
                 "created_at": created_at,
-                "qa_decision": (manifest.qa or {}).get("decision") if manifest.qa else None,
                 "metadata": metadata_json,
             }
         )
@@ -236,7 +231,6 @@ class FilesystemArtifactStore:
             artifact_type=row["artifact_type"],
             mime_type=row["mime_type"],
             metadata=metadata,
-            qa=manifest.get("qa"),
             tags=manifest.get("tags"),
             created_at=row["created_at"],
             manifest=manifest,

@@ -61,7 +61,6 @@ def test_run_preflight_checks_success(monkeypatch: pytest.MonkeyPatch, tmp_path:
     monkeypatch.setenv("SPARKLE_DB_PATH", "db")
     monkeypatch.setenv("ARTIFACTS_DIR", "artifacts")
     monkeypatch.setenv("GOOGLE_ADK_PROFILE", "local-colab")
-    monkeypatch.setenv("QA_POLICY_PATH", "qa")
     monkeypatch.setattr(np.subprocess, "run", fake_run)
     monkeypatch.setattr(np.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
     monkeypatch.setattr(np, "_running_in_colab", lambda: False)

@@ -16,7 +16,6 @@ SchemaMap = Dict[str, Tuple[Type[BaseModel], str]]
 SCHEMA_TARGETS: SchemaMap = {
     "MoviePlan": (sm_schemas.MoviePlan, "MoviePlan contract for ScriptAgent"),
     "AssetRefs": (sm_schemas.AssetRefs, "Asset references produced by stages"),
-    "QAReport": (sm_schemas.QAReport, "Automated QA output"),
     "StageEvent": (sm_schemas.StageEvent, "Run manifest StageEvent entries"),
     "Checkpoint": (sm_schemas.Checkpoint, "Per-stage checkpoint payload"),
     "RunContext": (sm_schemas.RunContext, "Materialized production context for ProductionAgent"),

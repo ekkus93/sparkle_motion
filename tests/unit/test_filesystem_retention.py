@@ -65,7 +65,7 @@ def test_plan_retention_applies_age_size_and_free_constraints(
     now = 1_700_000_000
     _save_artifact(store, run_id="run-old", stage="plan", artifact_type="movie_plan", size=10, timestamp=now - 20 * 86400, monkeypatch=monkeypatch)
     _save_artifact(store, run_id="run-mid", stage="dialogue", artifact_type="tts", size=40, timestamp=now - 2 * 86400, monkeypatch=monkeypatch)
-    _save_artifact(store, run_id="run-new", stage="qa", artifact_type="qa_report", size=50, timestamp=now - 1 * 86400, monkeypatch=monkeypatch)
+    _save_artifact(store, run_id="run-new", stage="finalize", artifact_type="video_final", size=50, timestamp=now - 1 * 86400, monkeypatch=monkeypatch)
 
     artifacts = load_artifacts(fs_config)
     options = RetentionOptions(

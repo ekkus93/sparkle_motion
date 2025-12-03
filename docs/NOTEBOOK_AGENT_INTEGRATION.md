@@ -82,7 +82,7 @@ Key guidelines:
 	- Run `gcloud auth application-default login` (or your preferred ADC flow) so ADK helpers can reach ArtifactService.
 	- Export the notebook’s run metadata early: `export RUN_ID=$(python - <<'PY' ... )` if you script the bootstrap.
 2. **Set runtime env vars**
-	- Minimum required: `SPARKLE_DB_PATH`, `ARTIFACTS_DIR`, `GOOGLE_ADK_PROFILE`, and `QA_POLICY_PATH`.
+	- Minimum required: `SPARKLE_DB_PATH`, `ARTIFACTS_DIR`, and `GOOGLE_ADK_PROFILE`.
 	- Keep them in a dedicated cell so restarts do not lose the configuration.
 3. **Install Python + system deps**
 	- `pip install -r requirements-ml.txt` plus any gated extras (Wan torch wheels, diffusers patches).

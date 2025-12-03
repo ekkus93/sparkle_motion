@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-"""Central registry for Sparkle Motion schema and policy artifacts.
+"""Central registry for Sparkle Motion schema artifacts.
 
 The canonical artifact/catalog table lives in ``docs/SCHEMA_ARTIFACTS.md``. When
-adding a new schema or QA bundle, update that document first, then ensure the
-corresponding entry exists in ``configs/schema_artifacts.yaml`` so this module
-can surface the URI + local fallback consistently for agents and FunctionTools.
+adding a new schema, update that document first, then ensure the corresponding
+entry exists in ``configs/schema_artifacts.yaml`` so this module can surface the
+URI + local fallback consistently for agents and FunctionTools.
 """
 
 import warnings
@@ -29,18 +29,9 @@ class SchemaArtifact:
     uri: str
     local_path: Path | None
     prefer_local: bool | None = None
-
-
-@dataclass(frozen=True)
-class QAPolicyBundle:
-    uri: str
-    bundle_path: Path
-    manifest_path: Path
-
-
 @dataclass(frozen=True)
 class SchemaCatalog:
-    """Loaded view of all schemas/policies declared in schema_artifacts.yaml.
+    """Loaded view of all schemas declared in schema_artifacts.yaml.
 
     Consumers should not construct this class directly; call ``load_catalog``
     instead so updates remain synchronized with ``docs/SCHEMA_ARTIFACTS.md``.
@@ -48,7 +39,6 @@ class SchemaCatalog:
 
     version: str
     schemas: Dict[str, SchemaArtifact]
-    qa_policy: QAPolicyBundle
 
     def list_schema_names(self) -> Iterable[str]:
         return self.schemas.keys()
@@ -113,14 +103,7 @@ def load_catalog(config_path: Path | None = None) -> SchemaCatalog:
             prefer_local=entry.get("prefer_local"),
         )
 
-    qa_policy_entry = data["qa_policy"]
-    qa_policy = QAPolicyBundle(
-        uri=qa_policy_entry["uri"],
-        bundle_path=_resolve_path(qa_policy_entry["bundle_path"]),
-        manifest_path=_resolve_path(qa_policy_entry["manifest_path"]),
-    )
-
-    return SchemaCatalog(version=str(data["version"]), schemas=schemas, qa_policy=qa_policy)
+    return SchemaCatalog(version=str(data["version"]), schemas=schemas)
 
 
 def get_schema_uri(name: str) -> str:
@@ -159,34 +142,12 @@ def list_schema_names() -> Iterable[str]:
     return load_catalog().list_schema_names()
 
 
-def get_qa_policy_bundle() -> QAPolicyBundle:
-    return load_catalog().qa_policy
-
-
-def resolve_qa_policy_bundle(*, prefer_local: Optional[bool] = None) -> Tuple[str, str]:
-    bundle = get_qa_policy_bundle()
-    resolved_bundle, _ = _resolve_reference(
-        name="qa_policy.bundle", uri=bundle.uri, local_path=bundle.bundle_path, prefer_local=prefer_local
-    )
-    resolved_manifest, _ = _resolve_reference(
-        name="qa_policy.manifest",
-        uri=bundle.uri,
-        local_path=bundle.manifest_path,
-        prefer_local=prefer_local,
-    )
-    return resolved_bundle, resolved_manifest
-
-
 def movie_plan_schema() -> SchemaArtifact:
     return load_catalog().get_schema("movie_plan")
 
 
 def asset_refs_schema() -> SchemaArtifact:
     return load_catalog().get_schema("asset_refs")
-
-
-def qa_report_schema() -> SchemaArtifact:
-    return load_catalog().get_schema("qa_report")
 
 
 def stage_event_schema() -> SchemaArtifact:

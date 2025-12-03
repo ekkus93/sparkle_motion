@@ -6,9 +6,6 @@ schemas:
   asset_refs:
     uri: artifact://sparkle-motion/schemas/asset_refs/v1
     local_path: artifacts/schemas/AssetRefs.schema.json
-  qa_report:
-    uri: artifact://sparkle-motion/schemas/qa_report/v1
-    local_path: artifacts/schemas/QAReport.schema.json
   stage_event:
     uri: artifact://sparkle-motion/schemas/stage_event/v1
     local_path: artifacts/schemas/StageEvent.schema.json
@@ -21,21 +18,3 @@ schemas:
   stage_manifest:
     uri: artifact://sparkle-motion/schemas/stage_manifest/v1
     local_path: artifacts/schemas/StageManifest.schema.json
-  AssetRefs:
-    uri: artifact://sparkle-motion/schemas/AssetRefs/v6
-  Checkpoint:
-    uri: artifact://sparkle-motion/schemas/Checkpoint/v6
-  MoviePlan:
-    uri: artifact://sparkle-motion/schemas/MoviePlan/v6
-  QAReport:
-    uri: artifact://sparkle-motion/schemas/QAReport/v6
-  RunContext:
-    uri: artifact://sparkle-motion/schemas/RunContext/v2
-  StageEvent:
-    uri: artifact://sparkle-motion/schemas/StageEvent/v6
-  StageManifest:
-    uri: artifact://sparkle-motion/schemas/StageManifest/v2
-qa_policy:
-  uri: artifact://sparkle-motion/qa_policy/v1
-  bundle_path: artifacts/qa_policy/qa_policy_v1.tar.gz
-  manifest_path: artifacts/qa_policy/v1/manifest.json

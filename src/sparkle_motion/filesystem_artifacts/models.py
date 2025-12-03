@@ -20,7 +20,6 @@ class ArtifactManifest(BaseModel):
     artifact_type: str = Field(min_length=1)
     mime_type: str = Field(min_length=1)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    qa: Optional[Dict[str, Any]] = None
     tags: Optional[Dict[str, Any]] = None
     local_path_hint: Optional[str] = None
 
@@ -52,7 +51,6 @@ class ArtifactRecord(BaseModel):
     artifact_type: str
     mime_type: str
     metadata: Dict[str, Any]
-    qa: Optional[Dict[str, Any]] = None
     tags: Optional[Dict[str, Any]] = None
     created_at: int
     manifest: Dict[str, Any]
