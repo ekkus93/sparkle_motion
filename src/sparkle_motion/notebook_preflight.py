@@ -46,7 +46,6 @@ def run_preflight_checks(
     skip_gpu_checks: bool = False,
 ) -> List[CheckResult]:
     results: List[CheckResult] = []
-    results.append(_check_adc())
     results.append(_check_env_vars(required_env))
     results.append(_handle_requirements(requirements_path, pip_mode))
     results.append(_check_drive_mount(mount_point, workspace_dir, require_drive))
@@ -64,21 +63,6 @@ def format_report(results: Sequence[CheckResult]) -> str:
     for result in results:
         lines.append(f"[{result.status.upper():7}] {result.name}: {result.detail}")
     return "\n".join(lines)
-
-
-def _check_adc() -> CheckResult:
-    if shutil.which("gcloud") is None:
-        return CheckResult("gcloud", "warning", "gcloud not found; ADC login must be run manually.")
-    try:
-        subprocess.run(
-            ["gcloud", "auth", "application-default", "print-access-token"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        return CheckResult("gcloud", "error", f"ADC check failed: {exc.stderr.strip() if exc.stderr else exc}" )
-    return CheckResult("gcloud", "ok", "Application Default Credentials available.")
 
 
 def _check_env_vars(required_env: Sequence[str]) -> CheckResult:
