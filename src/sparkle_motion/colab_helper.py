@@ -7,6 +7,28 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from huggingface_hub import snapshot_download
+from tqdm.auto import tqdm
+
+_DIFFUSERS_ALLOW_PATTERNS: tuple[str, ...] = (
+    "**/*.safetensors",
+    "**/*.bin",
+    "**/*.pt",
+    "**/*.json",
+    "**/*.yaml",
+    "**/*.txt",
+    "**/*.py",
+    "**/*.ckpt",
+    "**/*.onnx",
+    "**/*.model",
+)
+
+_REPO_ALLOW_PATTERNS: dict[str, tuple[str, ...]] = {
+    "stabilityai/stable-diffusion-xl-base-1.0": _DIFFUSERS_ALLOW_PATTERNS,
+    "stabilityai/stable-diffusion-xl-refiner-1.0": _DIFFUSERS_ALLOW_PATTERNS,
+    "Wan-AI/Wan2.1-I2V-14B-720P": _DIFFUSERS_ALLOW_PATTERNS,
+    "Wan-AI/Wan2.1-FLF2V-14B-720P-diffusers": _DIFFUSERS_ALLOW_PATTERNS,
+    "ResembleAI/chatterbox": _DIFFUSERS_ALLOW_PATTERNS,
+}
 
 
 @dataclass(frozen=True)
@@ -43,13 +65,24 @@ def download_model(
     """Download (or update) a Hugging Face repo into ``target_dir``."""
 
     target_dir.mkdir(parents=True, exist_ok=True)
+    class _RepoTqdm(tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("desc", repo_id)
+            super().__init__(*args, **kwargs)
+
+    if allow_patterns is not None:
+        effective_allow_patterns = allow_patterns
+    else:
+        effective_allow_patterns = _REPO_ALLOW_PATTERNS.get(repo_id)
+
     snapshot_download(
         repo_id=repo_id,
         local_dir=str(target_dir),
         local_dir_use_symlinks=False,
         revision=revision,
-        allow_patterns=list(allow_patterns) if allow_patterns else None,
+        allow_patterns=list(effective_allow_patterns) if effective_allow_patterns else None,
         ignore_patterns=list(ignore_patterns) if ignore_patterns else None,
+        tqdm_class=_RepoTqdm,
     )
     return target_dir
 

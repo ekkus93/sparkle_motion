@@ -11,17 +11,17 @@ from sparkle_motion.colab_helper import download_model, ensure_workspace, run_sm
 
 
 def _resolve_drive_root(mount_point: str, local_root: Optional[str]) -> Path:
+    if local_root:
+        path = Path(local_root).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        print(f"[local] Using {path} as workspace root (Drive mount skipped)")
+        return path
+
     if importlib.util.find_spec("google.colab") is not None:
         from google.colab import drive  # type: ignore
 
         drive.mount(mount_point, force_remount=False)
         return Path(mount_point)
-
-    if local_root:
-        path = Path(local_root).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        print(f"[local] google.colab not detected; using {path} as workspace root")
-        return path
 
     raise RuntimeError(
         "google.colab is only available inside Colab. Specify --local-root to use a local filesystem path.",
@@ -30,7 +30,11 @@ def _resolve_drive_root(mount_point: str, local_root: Optional[str]) -> Path:
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Prepare Google Drive workspace for Sparkle Motion runs")
-    parser.add_argument("workspace", help="Name of the folder to create under MyDrive", default="SparkleMotion")
+    parser.add_argument(
+        "workspace",
+        help="Name of the folder to create under MyDrive (or absolute path when you want to skip Drive)",
+        default="SparkleMotion",
+    )
     parser.add_argument(
         "--mount-point",
         default="/content/drive",
@@ -38,7 +42,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument(
         "--local-root",
-        help="Local filesystem path to use when google.colab is unavailable",
+        help="Local filesystem path to use (takes precedence even inside Colab)",
     )
     parser.add_argument(
         "--repo-id",
@@ -93,8 +97,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             seen.add(repo_id)
             models.append(repo_id)
 
-    drive_root = _resolve_drive_root(args.mount_point, args.local_root)
-    workspace_root = drive_root / "MyDrive" / args.workspace
+    workspace_arg = Path(args.workspace)
+    if workspace_arg.is_absolute():
+        workspace_root = workspace_arg
+    else:
+        drive_root = _resolve_drive_root(args.mount_point, args.local_root)
+        workspace_root = (drive_root / "MyDrive" / args.workspace).resolve()
     layout = ensure_workspace(workspace_root)
 
     print(f"[colab] Workspace ready under {layout.root}")

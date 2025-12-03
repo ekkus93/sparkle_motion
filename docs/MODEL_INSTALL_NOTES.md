@@ -55,6 +55,11 @@ repo_id = "Wan-AI/Wan2.1-I2V-14B-720P"
 path = hf_hub_download(repo_id=repo_id, filename="model.safetensors")
 print(path)
 ```
+- Selective downloads (default in `colab_helper.download_model`): to avoid exhausting the Colab VM disk, the helper now
+  calls `snapshot_download(..., allow_patterns=...)` with a curated pattern list for Wan2.1, SDXL base/refiner, and
+  ResembleAI chatterbox. Only tensors/config/tokenizer files (e.g., `*.safetensors`, `*.json`, `*.txt`, `*.bin`,
+  `*.pt`, `*.onnx`) are pulled, skipping large auxiliary assets. Set `allow_patterns=None` when calling
+  `download_model` if you need the full repo contents.
 - Or load directly with `diffusers` (example):
 ```python
 import torch
