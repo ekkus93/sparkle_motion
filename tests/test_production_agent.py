@@ -440,6 +440,64 @@ def test_shot_and_assemble_stage_manifests_recorded(
     registry.discard_run(run_id)
 
 
+def test_pipeline_stage_statuses_and_manifests(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_plan: MoviePlan,
+    tmp_path: Path,
+) -> None:
+    _enable_full_execution(monkeypatch, tmp_path)
+    run_id = "run-stage-coverage"
+    plan_id = sample_plan.metadata.get("plan_id", "plan-stage-coverage")
+    registry = get_run_registry()
+    registry.discard_run(run_id)
+    registry.start_run(run_id=run_id, plan_id=plan_id, plan_title=sample_plan.title, mode="run")
+
+    result = execute_plan(sample_plan, mode="run", run_id=run_id)
+
+    def _assert_step(step_type: str, *, predicate: Optional[Callable[[StepExecutionRecord], bool]] = None) -> StepExecutionRecord:
+        record = next(
+            (
+                record
+                for record in result.steps
+                if record.step_type == step_type and (predicate(record) if predicate else True)
+            ),
+            None,
+        )
+        assert record is not None, f"expected StepExecutionRecord for {step_type}"
+        assert record.status == "succeeded", f"expected {step_type} to succeed"
+        return record
+
+    _assert_step("plan_intake")
+    _assert_step("dialogue_audio")
+    first_shot = sample_plan.shots[0].id
+    _assert_step("lipsync", predicate=lambda record: record.step_id.startswith(f"{first_shot}:"))
+    _assert_step("assemble")
+    _assert_step("finalize")
+
+    def _assert_stage(stage: str) -> List[Mapping[str, Any]]:
+        entries = registry.get_artifacts(run_id, stage=stage)
+        assert entries, f"expected manifest entries for {stage}"
+        return entries
+
+    plan_entries = _assert_stage("plan_intake")
+    assert any(entry["artifact_type"] == "movie_plan" for entry in plan_entries)
+
+    dialogue_entries = _assert_stage("dialogue_audio")
+    assert any(entry["artifact_type"] == "dialogue_timeline_audio" for entry in dialogue_entries)
+
+    lipsync_stage = f"{first_shot}:lipsync"
+    lipsync_entries = _assert_stage(lipsync_stage)
+    assert any(entry["artifact_type"] == "shot_lipsync_video" for entry in lipsync_entries)
+
+    assemble_entries = _assert_stage("assemble")
+    assert any(entry["artifact_type"] == "assembly_plan" for entry in assemble_entries)
+
+    finalize_entries = _assert_stage("finalize")
+    assert any(entry["artifact_type"] == "video_final" for entry in finalize_entries)
+
+    registry.discard_run(run_id)
+
+
 @pytest.mark.parametrize(
     "flags",
     [

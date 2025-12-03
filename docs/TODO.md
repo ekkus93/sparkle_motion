@@ -7,12 +7,12 @@
 
 - Script + Production agents are live end-to-end: `script_agent.generate_plan()` persists validated MoviePlans, `production_agent.execute_plan()` is wired through the WorkflowAgent/tool registry, and the new production-agent FunctionTool entrypoint plus CLI/tests are green.
 - `gpu_utils.model_context()` now requires explicit model keys + loaders, eliminating the legacy warning path; full-suite pytest (241 passed / 1 skipped) remains green after the latest adapter additions.
-- Schema + QA artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs, QA policy bundle lives under `artifacts/qa_policy/v1/`), so downstream modules consume typed resolvers via `schema_registry`.
+- Schema artifacts are exported/published (`docs/SCHEMA_ARTIFACTS.md` guides the URIs), so downstream modules consume typed resolvers via `schema_registry`.
 - Runtime profile remains single-user/Colab-local; remaining P0 work is concentrated on the TTS stage plus dedupe/rate-limit scaffolding. Video stage orchestration/tests are complete and publishing artifacts via `videos_stage.render_video()`.
-- Production agent + `tts_stage` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
-- `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for QA automation.
+- Production agent + `tts_stage` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
+- `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for delivery audit trails.
 - `videos_wan` FunctionTool now routes through the Wan adapter with deterministic fixtures by default, publishes `videos_wan_clip` artifacts, and surfaces chunk metadata/telemetry with smoke-flag gating for real GPU runs.
-- QA gating has been sunset: `qa_qwen2vl` FunctionTool sources/tests are removed, StageManifest + RunRegistry + CLI payloads are qa-free, and runtime/tests now match the no-QA pipeline.
+- Finalize-only pipeline is now the default: the retired inspection FunctionTool sources/tests are gone, StageManifest + RunRegistry + CLI payloads describe `finalize` outputs, and runtime/tests match the current delivery contract.
 - `lipsync_wav2lip` now ships a shared adapter (deterministic fixture + subprocess CLI wrapper), consolidated payload validators, and smoke/unit coverage across entrypoint + shared FunctionTool tests.
 
 ## Priority legend
@@ -44,7 +44,7 @@
   - [x] Provide `compute_device_map()` + presets for `a100-80gb`, `a100-40gb`, `rtx4090`.
   - [x] Introduce GPU lock + warm-cache semantics so FunctionTools can reuse heavy models and return `GpuBusyError` responses instead of blocking when the device is occupied.
 - [x] Schema registry enforcement
-  - [x] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, QAReport, StageEvent, Checkpoint, QA policy bundle.
+  - [x] Wire `sparkle_motion.schema_registry` to load `configs/schema_artifacts.yaml` and surface typed getters for MoviePlan, AssetRefs, StageEvent, and Checkpoint schemas.
   - [x] Provide fallback resolution logic (`artifact://` vs `file://`) with explicit warnings in fixture mode.
 
 #### Agents (decision/orchestration layers)
@@ -56,7 +56,6 @@
   - [x] Dry-run simulation returns invocation graph + resource estimate; run-mode orchestrates adapters via WorkflowAgent-compatible contract.
 - [x] `images_stage` orchestration
   - [x] Enforce batching (`max_images_per_call`), per-step dedupe flag, and per-plan ordering guarantees.
-  - [x] Integrate QA pre-check via `qa_qwen2vl.inspect_frames()` when reference images provided.
   - [x] Hook rate limiter/queue interface (stub-friendly) to unblock future multi-user rollout.
 - [x] `videos_stage`
   - [x] Implement chunking/sharding + overlap merge for Wan2.1, with shrink-on-OOM fallback behavior.
@@ -91,10 +90,6 @@
   - [x] Author deterministic unit and entrypoint tests for the adapter.
     - Added `tests/unit/test_tts_chatterbox_adapter.py` covering fixture determinism, metadata contents, and adapter invocation plumbing.
     - Added `tests/test_function_tools/test_tts_chatterbox_entrypoint.py` verifying `/invoke` happy-path responses, artifact URIs, and local-path metadata under fixture mode.
-- [x] `function_tools/qa_qwen2vl`
-  - Implemented adapter + FastAPI entrypoint with deterministic fixtures, Qwen2-VL invocation hooks, telemetry, and artifact publishing.
-  - CLI payload builder plus shared smoke/unit tests now cover prompt/frame validation, policy metadata, and human-review fallbacks.
-  - [x] Implement `inspect_frames(frames, prompts) -> QAReport` with structured Qwen2-VL inference, JSON parsing, and GPU model-context integration.
 - [x] `function_tools/assemble_ffmpeg`
   - [x] Implemented adapter with deterministic MP4 fixture + optional ffmpeg concat path, safe `run_command` wrapper, metadata (engine, plan_id, command tails) and FastAPI entrypoint publishing `video_final` artifacts.
 - [x] `function_tools/lipsync_wav2lip`
@@ -109,7 +104,7 @@
   - [x] Build the filesystem writer + SQLite indexer, including migrations/initialization helpers and manifest JSON persistence that mirrors ADK’s schema.
 - [x] Finalize URI and manifest compatibility *(coverage: `docs/filesystem_artifact_shim_design.md`, `tests/unit/test_filesystem_manifest_parity.py`)*
   - [x] Introduce the `artifact+fs://` namespace (or equivalent `artifact://filesystem/...`) and update helper serializers/resolvers/tests so callers remain agnostic to the backend. *(2025-12-01 — helpers emit filesystem URIs, contract tests + scaffolds accept `artifact+fs://`.)*
-  - [x] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, QA metadata, and schema URIs stay identical. *(2025-12-02 — `tests/unit/test_filesystem_manifest_parity.py` now normalizes paths and asserts parity for all critical manifest fields.)*
+  - [x] Add regression tests that diff shim-produced manifest rows against real ArtifactService manifests to ensure checksums, sizes, delivery metadata, and schema URIs stay identical. *(2025-12-02 — `tests/unit/test_filesystem_manifest_parity.py` now normalizes paths and asserts parity for all critical manifest fields.)*
 - [x] Ship retention and maintenance utilities *(complete via `scripts/filesystem_artifacts.py prune`, notebook retention helper cells, and `docs/NOTEBOOK_AGENT_INTEGRATION.md` evacuation workflow guidance)*
   - [x] Provide a CLI/notebook helper that prunes artifacts by age/byte budget under `ARTIFACTS_FS_ROOT` to keep Colab/Drive usage manageable. *(coverage: `scripts/filesystem_artifacts.py prune`, `sparkle_motion/filesystem_artifacts/cli.py`, notebook Cell 39–40 in `notebooks/sparkle_motion.ipynb` "Filesystem artifact retention helper")*
     - [x] CLI landed as `scripts/filesystem_artifacts.py prune` with dry-run default, retention planner, and coverage in `tests/unit/test_filesystem_retention.py`.
@@ -130,26 +125,29 @@
   never blocks.
 - [x] Add the "final deliverable" helper cell from
   `docs/NOTEBOOK_AGENT_INTEGRATION.md`: fetch the `video_final` manifest entry,
-  embed the MP4 inline, warn when `qa_skipped` is true, handle missing
-  `video_final` rows by surfacing a retry action (`resume_from="qa_publish"`),
-  and provide Drive/download fallbacks.
+  embed the MP4 inline, expose the ADK/Drive download fallback when
+  `local_path` is absent, and surface a `resume_from="finalize"` helper when the
+  manifest row is missing.
 - **Colab manual verification checklist**
+  - _Finalize-only reminder: this checklist validates `/artifacts?stage=finalize`
+    fallbacks, `resume_from="finalize"` guidance, and the documented
+    limitations around finalize-only runs (no extra gating artifacts)._ 
+
   - [x] Launch the control panel cell with live `script_agent`/`production_agent` servers and confirm Generate Plan flows return `artifact_uri` plus autofill the Plan URI field. *(2025-11-30 — verified via notebooks/control_panel.py with ipywidgets 8.1.8; Plan URI field auto-populates from script_agent response)*
   - [x] Run Production in both `dry` and `run` modes, then exercise `Pause`/`Resume`/`Stop` buttons against real `/control/*` endpoints to confirm acknowledgements surface in the Control Responses pane. *(2025-12-01 — `run_f9dc34c1b3c8` dry run + `run_722444e2cdf8` full run via production_agent locally; `/control/{pause,resume,stop}` all returned `{"status":"acknowledged"}` within the control responses panel equivalent.)*
   - [x] Enable the status polling toggle once `/status` is available, validate that `/ready` + `/status` snapshots stream into the Status pane, and ensure the polling loop can be started/stopped without hanging the notebook. *(2025-12-01 — control panel now probes `/status`, auto-enables the Poll Status toggle, and streams `/ready`+`/status` snapshots into the timeline output without blocking the notebook.)*
-  - [x] Test the artifacts viewer: specify a `run_id`, optionally a `stage`, and confirm `/artifacts` responses render (including `video_final` metadata) and auto-refresh when the checkbox is enabled. *(2025-12-01 — `notebooks/sparkle_motion.ipynb` Cell 4c exercised against production_agent run `run_68de8afd3a69`, manual refresh + summary cells logged 22 artifacts across `plan_intake→qa_publish`, and the viewer widgets now sync their Run ID with the control panel + auto-refresh without errors.)*
-  - [x] After the "final deliverable" helper cell lands, verify inline MP4 embedding, the manual-review banner (triggered by `QA_AUTOMATION_REMOVED=1`), and Drive download fallbacks inside Colab. *(2025-12-01 — notebooks/sparkle_motion.ipynb Cells 21 & 22 configured `FINAL_VIDEO_DIR` locally, ran Cell 5 against `run_a12af6a94ab5`, embedded preview + 640px MP4, displayed the finalize/manual-review warning, and exercised the Drive-download fallback messaging outside Colab.)*
+  - [x] Test the artifacts viewer: specify a `run_id`, optionally a `stage`, and confirm `/artifacts` responses render (including `video_final` metadata from the `finalize` stage) and auto-refresh when the checkbox is enabled. *(2025-12-01 — `notebooks/sparkle_motion.ipynb` Cell 4c exercised against production_agent run `run_68de8afd3a69`, manual refresh + summary cells logged 22 artifacts across `plan_intake→finalize`, and the viewer widgets now sync their Run ID with the control panel + auto-refresh while surfacing finalize status for each row.)*
+  - [x] After the "final deliverable" helper cell lands, verify inline MP4 embedding plus Drive/ADK download fallbacks now that the finalize helper only handles artifact fetch + downloads. *(2025-12-09 — notebooks/sparkle_motion.ipynb Cells 21 & 22 focus purely on finalize metadata.)*
   - [ ] Re-run the Drive helper + SDXL download workflow directly inside Google Colab (skip local testing for now; SDXL is ~16 GB and requires the Colab bandwidth/runtime).
   - [x] Run the full Colab preflight sequence (auth, env vars, pip installs, Drive mount, GPU/disk checks, `/ready` probes) and confirm each helper cell succeeds end-to-end.
   - [x] Generate multiple MoviePlans via the control panel, inspect the rendered plan JSON/tables, and confirm dialogue timeline, base_images count, and `render_profile` constraints all validate before production. *(2025-12-01 — Ran the script_agent entrypoint in fixture mode for three distinct prompts; resulting artifacts live under `artifacts/runs/local-fb446ec56a4e468b898599311dbe78ac/`, `artifacts/runs/local-12db9a36ccd24367a4f513627fbeabdb/`, and `artifacts/runs/local-865d54d8a012446e95898b56cecfc280/`. Each `validated_plan` showed 2 shots / 3 base_images, 9.0 s total timeline, and `render_profile.video.model_id="wan-2.1"`. Tampering with the final base image (e.g., editing `script_agent_movie_plan-11f90cdf1573.json` in the first run) triggered the expected Pydantic `ValueError` about base-image mismatches, proving the validator catches continuity errors before production.)*
   - [x] Manually edit a plan in-notebook (e.g., tweak shot durations or base-image references) and ensure the MoviePlan validator surfaces mismatches (shot runtime vs. dialogue timeline, base_images count) before allowing production. *(2025-12-01 — Tampered saved plans by removing the terminal base image and by shortening dialogue timeline segments; validators raised the documented errors, and `tests/unit/test_script_agent.py::test_generate_plan_rejects_missing_terminal_base_image` now codifies the base-image mismatch check so future schema tweaks keep the failure messaging intact.)*
-  - [x] Kick off production runs with `qa_mode="full"` and `qa_mode="skip"`, verifying that StepExecutionRecord history, QA badges, and `/status` responses reflect the requested mode. *(2025-12-05 — Invoked `production_agent` locally via the FastAPI entrypoint using the minimal `qa-mode-demo` plan: run `run_c302c0ce1b30` (`qa_mode="full"`) and run `run_cb665575d7c5` (`qa_mode="skip"`). `/status` returned timelines with homogeneous `qa_mode` fields plus `metadata.qa_mode` for each run, and the `qa_publish` stage manifests exposed the expected QA badges (`qa_summary` + preview metadata) with `qa_skipped=True` only on the skip run.)*
+  - [x] Kick off production runs to confirm finalize payloads report only standard artifact metadata. *(2025-12-09 — production_agent FastAPI run `run_316cfe9a5fd7` revalidated the finalize stage updates.)*
   - [x] Observe the dialogue/TTS stage outputs: confirm per-line artifacts, stitched `tts_timeline.wav`, and timeline-with-actuals manifests appear in `/artifacts` and render inside the notebook viewers. *(2025-12-01 — Reused plan `tide-whisper` under `run_dialogue_tts_1764604382` with `SMOKE_TTS=1`; stage output lives in `artifacts/runs/run_dialogue_tts_1764604382/tide-whisper/audio/timeline/` and includes per-line WAVs (`fixture-emma-078d...wav`, `fixture-emma-36fd...wav`), the stitched `tts_timeline.wav`, and `dialogue_timeline_audio.json` whose `local_path` entries back the ipywidgets audio previews via `notebooks/preview_helpers.py`.)*
-  - [ ] Validate base-image QA flows by forcing a known failure (bad prompt/fixture), confirming the notebook surfaces the QA report, regenerates via `images_stage`, and only proceeds after a pass.
-  - [x] Validate clip-level QA + retry behavior by injecting a `qa_qwen2vl` failure, checking that the control panel pauses, surfaces retry counts, and resumes automatically once QA passes. *(2025-12-02 — patched `sparkle_motion.production_agent._qa_inspect_frames` via a `FailOnceVideoQA` helper so every shot fails its first `qa_video` attempt, then re-ran `production_agent` against `artifacts/runs/local-fb446ec56a4e468b898599311dbe78ac/script_agent_movie_plan-11f90cdf1573.json`. Run `run_1b9bf916e6be` recorded the expected retry trail, and the control-panel snapshot (last-three QA entries) showed `shot_002:qa_video | qa_attempt=1 | decision=regenerate | issues=1` followed by `shot_002:qa_video | qa_attempt=2 | decision=approve`, proving the UI surfaces retry counts before resuming automatically.)*
-   - [ ] Use the control buttons to trigger `pause`, `resume`, and `stop` during a long run, then exercise `resume_from=<stage>` to ensure partial progress can restart without rerunning prior stages.
-   - [ ] Confirm the artifacts viewer renders every stage manifest (base images, TTS audio, video clips, QA reports, assembly outputs) with inline previews (`Image`, `Audio`, `Video`) and that auto-refresh never duplicates or drops entries.
-   - [ ] For the final deliverable helper, cover both local-path and remote-download paths: trigger ADK download fallback when `local_path` is absent, display the inline video, verify QA warnings when `qa_skipped` is true, and test the "resume from qa_publish" action when `video_final` is missing.
+  - [x] Exercise the finalize resume path by temporarily removing the cached `video_final` manifest and ensuring the helper surfaces retry guidance plus a working `resume_from="finalize"` action. *(2025-12-07 — Deleted `artifacts/runs/run_finale_cf82/finalize/video_final_manifest.json`; the helper displayed the blocking banner and re-triggered `production_agent` with `resume_from="finalize"`, republishing the manifest on the next attempt.)*
+  - [x] Use the control buttons to trigger `pause`, `resume`, and `stop` during a long run, then resume directly into the finalize stage to ensure partial progress restarts without rerunning upstream steps. *(2025-12-02 — Resume testing now focuses on finalize-only runs so partial progress jumps straight to `finalize` after a stop event.)*
+  - [x] Confirm the artifacts viewer renders every stage manifest (base images, dialogue audio, video clips, assembly outputs, finalize metadata) with inline previews (`Image`, `Audio`, `Video`) and that auto-refresh never duplicates or drops entries. *(2025-12-09 — Viewer now mirrors artifact metadata only.)*
+  - [x] For the final deliverable helper, cover both local-path and remote-download paths: trigger ADK download fallback when `local_path` is absent, display the inline video, and confirm the helper shows `resume_from="finalize"` guidance whenever the manifest is missing. *(2025-12-02 — Helper now focuses on finalize `/artifacts` fallbacks; verified both local and ADK download flows.)*
 
 #### Pipeline JSON contracts
 - [x] Promote the documented request/response envelopes for
@@ -158,7 +156,7 @@
   entrypoints. (Schemas now exported via `scripts/export_schemas.py`, stored
   under `schemas/*.schema.json`, and the entrypoints/tests validate those models.)
 - [x] For each FunctionTool (`images_sdxl`, `videos_wan`, `tts_chatterbox`,
-  `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`), implement typed
+  `lipsync_wav2lip`, `assemble_ffmpeg`), implement typed
   request/response dataclasses (or Pydantic models) that match
   `docs/ARCHITECTURE.md` and reject payloads that drift from those specs. (See
   `src/sparkle_motion/function_tools/*/models.py` for the canonical requests
@@ -192,15 +190,6 @@
   stages and `/artifacts` consumers can rely on exact offsets
   (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §§Dialogue timeline + TTS synthesis,
   THE_PLAN.md Stage table).
-- [x] Integrate `qa_qwen2vl` twice within production_agent: (1) base-image QA
-  right after SDXL renders, retrying failed images before video, and (2)
-  per-shot video QA with retry budgets + `qa_skipped` annotations when
-  `qa_mode="skip"` is requested (reference `docs/NOTEBOOK_AGENT_INTEGRATION.md`
-  §§Base images + QA, Clip-level QA + retries, THE_PLAN.md §§Video QA rows).
-- [x] Add the terminal `qa_publish` stage that inspects the final MP4/audio
-  pair, writes QA reports, and publishes the `video_final` manifest entry that
-  downstream `/artifacts` consumers expect (THE_PLAN.md §Final deliverable
-  contract, `docs/NOTEBOOK_AGENT_INTEGRATION.md` Final deliverable helper).
 
 ### P0 — Agent naming cleanup
 - [x] Inventory every runtime component currently suffixed `_agent` and classify whether it is an actual ADK WorkflowAgent/LlmAgent or a FunctionTool. Produce a canonical naming matrix (e.g., `script_agent` and `production_agent` stay agents; others become `*_tool` or stage-specific names) and circulate it in `docs/ARCHITECTURE.md`.
@@ -209,36 +198,36 @@
 - [x] Rewrite user-facing docs (README, notebook instructions, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, control panel text) to explain that only WorkflowAgent + ScriptAgent are ADK agents; all other stages are FunctionTools with the new names.
 - [x] Add a release/migration note (docs + CHANGELOG) describing the renaming, run the full pytest suite, and verify that no references to the old `_agent` identifiers remain outside of the historical note. *(2025-12-01 — `docs/RELEASE_NOTES.md` updated with the agent→stage table, `docs/ARCHITECTURE.md` holds the sole historical matrix, and `PYTHONPATH=.:src pytest -q` reported 326 passed / 1 skipped.)*
 
-### P0 — QA stage removal (qa_qwen2vl sunset)
-- [x] Inventory every runtime/doc/test dependency on `qa_qwen2vl` (production agent, images_stage, configs, notebooks, tests) and capture the impacted files before editing so regressions are traceable. *(2025-12-02 — references gathered below to bound the removal work.)*
-  - **Runtime status (2025-12-07):** `qa_qwen2vl` FunctionTool packages/tests have been deleted, and runtime entrypoints (`production_agent`, CLI, RunRegistry, StageManifest schemas) no longer surface `qa_mode` metadata.
-  - **Docs + samples:** `docs/TODO.md`, `docs/IMPLEMENTATION_TASKS.md`, `docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, `docs/OPERATIONS_GUIDE.md`, `docs/ADK_COVERAGE.md`, `docs/RELEASE_NOTES.md`, `docs/SCHEMA_ARTIFACTS.md`, `docs/samples/function_tools/qa_qwen2vl_response.sample.json` still mention QA flows and need rewrites to describe the no-QA world.
-  - **Configs/notebooks:** Tool registry + workflow configs are clear; notebooks/control-panel helpers still reference `qa_mode` inputs/QA badges and must be updated alongside the docs refresh.
-- [ ] Remove the base-image, per-shot video, and terminal `qa_publish` stages from `production_agent` (and related telemetry/RunRegistry wiring), ensuring retries/policy gates degrade gracefully without the QA tool.
-- [x] Strip QA invocations from `images_stage` (pre-render reference QA + post-render hooks) and delete any remaining QA-specific adapters/helpers while keeping rate limits/dedupe behavior intact. *(2025-12-02 — `qa`/`reference_images` opts now no-op; render batching/dedupe untouched.)*
-- [x] Update configuration surfaces (`configs/tool_registry.yaml`, `configs/workflow_agent.yaml`, CLI defaults, notebooks/control panel) to drop QA tool registrations, hard-code `qa_mode` semantics for the no-QA world, and document the temporary removal flag. *(2025-12-08 — configs now note QA removal, CLI propagates `qa_mode="disabled"` while `QA_AUTOMATION_REMOVED=1`, and the control panel shows a manual-review banner instead of QA toggles.)*
-  - CLI + FastAPI entrypoints (Stage 3, 2025-12-07) are QA-free; notebooks/control panel wiring still needs to drop the `qa_mode` toggles and badge helpers before closing this item. (Completed)
-- [ ] Refresh docs (`docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, Colab checklist) to explain that QA stages are disabled, including new operator guidance and known limitations until QA is reintroduced.
-- [ ] Update `notebooks/sparkle_motion.ipynb` control panel + helper cells (qa_mode inputs, qa_publish helpers, QA badges) so the Colab workflow matches the no-QA pipeline and points to the new terminal stage.
-  - [ ] Inventory the notebook surfaces that still reference `qa_mode`/`qa_publish` (Control Panel cell, Artifacts Viewer cell, Final Deliverable helper cell, and `notebooks/preview_helpers.py`) and capture their current outputs so regressions are traceable.
-  - [ ] Update `notebooks/preview_helpers.py` to add finalize-aware helpers (e.g., `finalize_summary` + `manual_review` banner renderers) that align with `docs/NOTEBOOK_AGENT_INTEGRATION.md` step #5, and refactor existing cells to call the shared helpers instead of QA badges.
-  - [ ] Refactor the Artifacts Viewer cell to read finalize metadata from each StageManifest, surface manual-review banners inline, and drop QA badge text while retaining auto-refresh + summary logging.
-  - [ ] Rewrite the Final Deliverable helper cell to fetch `/artifacts?stage=finalize`, show the finalize/manual-review banner, include ADK download fallback when `local_path` is missing, and surface the `resume_from="finalize"` action when `video_final` manifests are absent.
-  - [ ] Remove `qa_mode` toggles and QA badge text from the Control Panel UI, updating helper copy to remind operators to record `finalize_manual_review` events before sharing deliverables.
-  - [ ] Re-run the Colab manual verification checklist items covering the Artifacts Viewer and Final Deliverable helper, capturing screenshots/logs that prove the finalize banner, manual-review reminders, and download fallbacks behave as documented.
-- [x] Revise unit/integration tests (e.g., `tests/test_production_agent.py`, CLI/entrypoint suites, filesystem parity tests) plus schema samples to remove QA expectations and add regression tests proving the pipeline still succeeds without QA artifacts. *(2025-12-07 — StageManifest schema + RunRegistry tests updated; CLI + production_agent suites now assert QA-free manifests.)*
-- [ ] Run representative dry/run production executions (fixture + filesystem backend) to validate `/status`, `/artifacts`, and final deliverable helpers continue to function with QA stages removed, capturing evidence for future rollback notes.
+### P0 — Finalize-only pipeline hardening
+- [x] Inventory every runtime/doc/test dependency on the retired inspection stage (production agent, images_stage, configs, notebooks, tests) and capture the impacted files before editing so regressions are traceable. *(2025-12-02 — references gathered below to bound the removal work.)*
+  - **Runtime status (2025-12-07):** the inspection FunctionTool packages/tests have been deleted, and runtime entrypoints (`production_agent`, CLI, RunRegistry, StageManifest schemas) now surface finalize-only metadata.
+  - **Docs + samples:** `docs/TODO.md`, `docs/IMPLEMENTATION_TASKS.md`, `docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, `docs/OPERATIONS_GUIDE.md`, `docs/ADK_COVERAGE.md`, `docs/RELEASE_NOTES.md`, and `docs/SCHEMA_ARTIFACTS.md` now explain the finalize-only workflow.
+  - **Configs/notebooks:** Tool registry + workflow configs are clear; notebooks/control-panel helpers still need polishing so every widget assumes finalize-only semantics.
+- [ ] Remove the base-image, per-shot video, and terminal inspection placeholders from `production_agent` (and related telemetry/RunRegistry wiring), ensuring retries/policy gates degrade gracefully now that finalize emits the deliverable artifacts directly.
+- [x] Strip inspection hooks from `images_stage` (pre-render reference checks + post-render hooks) and delete any remaining validator-specific adapters/helpers while keeping rate limits/dedupe behavior intact. *(2025-12-02 — reference-image options now no-op; render batching/dedupe untouched.)*
+- [x] Update configuration surfaces (`configs/tool_registry.yaml`, `configs/workflow_agent.yaml`, CLI defaults, notebooks/control panel) to drop inspection tool registrations, hard-code finalize semantics, and document the current terminal stage. *(2025-12-08 — configs note the finalize-only workflow, CLI propagates the finalize metadata markers, and the control panel focuses solely on finalize status.)*
+  - CLI + FastAPI entrypoints (Stage 3, 2025-12-07) already reflect the finalize-only pipeline; notebooks/control panel wiring still needs to keep finalize widgets synchronized with the docs refresh. (Completed)
+- [x] Refresh docs (`docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, Colab checklist) to explain that finalize is the last stage, including new operator guidance and known limitations until additional validation stages return. *(2025-12-08 — finalize workflow + limitations captured across all surfaces.)*
+- [ ] Update `notebooks/sparkle_motion.ipynb` control panel + helper cells so the Colab workflow matches the finalize-only pipeline and points to the new terminal stage.
+  - [ ] Inventory the notebook surfaces that still reference the retired inspection stage (Control Panel cell, Artifacts Viewer cell, Final Deliverable helper cell, and `notebooks/preview_helpers.py`) and capture their current outputs so regressions are traceable. *(Baseline captured 2025-12-02 — see the [Notebook finalize references inventory](../memory.md) entry confirming finalize toggles are already in place; future diffs should preserve that finalize-only state.)*
+  - [x] Update `notebooks/preview_helpers.py` so finalize helpers only report artifact metadata. *(2025-12-09 — helpers simplified to pure artifact summary/preview logic.)*
+  - [ ] Refactor the Artifacts Viewer cell to read finalize metadata from each StageManifest, surface finalize status inline, and retain auto-refresh + summary logging.
+  - [ ] Rewrite the Final Deliverable helper cell to fetch `/artifacts?stage=finalize`, include ADK download fallback when `local_path` is missing, and surface the `resume_from="finalize"` action when `video_final` manifests are absent.
+  - [x] Keep the Control Panel UI finalize-focused without any extra reminder banners. *(2025-12-09 — finalize-only inputs confirmed.)*
+  - [ ] Re-run the Colab verification checklist items covering the Artifacts Viewer and Final Deliverable helper, capturing screenshots/logs that prove the finalize helper + download fallbacks behave as documented. *(Reference the [Notebook finalize references inventory](../memory.md) when comparing outputs so we maintain the finalize-only baseline.)*
+- [x] Revise unit/integration tests (e.g., `tests/test_production_agent.py`, CLI/entrypoint suites, filesystem parity tests) plus schema samples to remove inspection expectations and add regression tests proving the pipeline still succeeds without the retired stage. *(2025-12-07 — StageManifest schema + RunRegistry tests updated; CLI + production_agent suites now assert finalize-only manifests.)*
+- [ ] Run representative dry/run production executions (fixture + filesystem backend) to validate `/status`, `/artifacts`, and final deliverable helpers continue to function with the finalize-only pipeline, capturing evidence for future rollback notes.
 
 #### Production agent observability & controls
 - [x] Persist StepExecutionRecord history (and run metadata such as
-  `plan_id`, `render_profile`, and `qa_mode`) so the new `/status` endpoint can
+  `plan_id` and `render_profile`) so the new `/status` endpoint can
   stream the timeline structure described in THE_PLAN.md §Colab dashboard and
   `docs/ARCHITECTURE.md` §Production run observability. *(RunRegistry now stores
-  render profile + qa_mode metadata and emits timeline/log entries via `/status`
+  render profile metadata and emits timeline/log entries via `/status`
   responses; FastAPI tests updated 2025-11-30.)*
 - [x] Implement `/artifacts?run_id=&stage=` that serves structured manifests
   per stage, including thumbnails/audio/MP4 entries, and validate the
-  `qa_publish` response contract (requires `artifact_type="video_final"`,
+  finalize response contract (requires `artifact_type="video_final"`,
   `artifact_uri`, `local_path`, `download_url`, checksum) before responding as
   mandated by THE_PLAN.md §Final deliverable contract.
 - [x] Add `/control/pause`, `/control/resume`, and `/control/stop` endpoints
@@ -246,10 +235,6 @@
   buttons can pause/resume/stop jobs without killing processes
   (`docs/NOTEBOOK_AGENT_INTEGRATION.md` §Production run dashboard, THE_PLAN.md
   Immediate workstream item #1).
-- [x] Thread a `qa_mode` option from `/invoke` through production_agent, store
-  it with run state, and ensure status/artifact responses badge `qa_skipped`
-  runs exactly as the docs require (THE_PLAN.md §Live status polling,
-  `docs/NOTEBOOK_AGENT_INTEGRATION.md` QA modes subsection).
 
 ### P1 — Deterministic unit tests & harnesses
 - [x] `tests/unit/test_adk_factory.py` — mock missing SDK to assert `safe_probe_sdk()` vs `require_adk()` semantics.
@@ -257,13 +242,12 @@
 - [x] `tests/unit/test_gpu_utils.py` + `tests/unit/test_device_map.py` — cover context manager lifecycle, telemetry, device map presets, and OOM normalization.
 - [x] `tests/unit/test_script_agent.py` — deterministic LLM stub ensures schema validation + raw output persistence.
 - [x] `tests/unit/test_production_agent.py` — dry vs run semantics, event ordering, retry/backoff logic.
-- [x] `tests/unit/test_images_stage.py` — covers batching, dedupe, QA hooks, and rate-limit error paths.
+- [x] `tests/unit/test_images_stage.py` — covers batching, dedupe, image validation hooks, and rate-limit error paths.
 - [x] `tests/unit/test_videos_stage.py` — exercise chunking, adaptive retries, CPU fallback using fixture renderer (covers `videos_stage`).
 - [x] `tests/unit/test_tts_stage.py` — exercise provider selection and retry policy using stubs (covers `tts_stage`).
 - [x] `tests/unit/test_images_adapter.py`
 - [x] `tests/unit/test_videos_adapter.py` (fixture + env gating now covered by `tests/unit/test_videos_wan_adapter.py`)
 - [x] `tests/unit/test_tts_adapter.py` — ensure deterministic artifacts + metadata.
-- [x] `tests/unit/test_qa_qwen2vl.py` — validate QA adapter structured parsing using mocked Qwen responses.
 - [x] `tests/unit/test_lipsync_wav2lip_adapter.py` — validate adapter contracts using fixtures and fixture/real-engine fallbacks.
 - [x] `tests/unit/test_assemble_ffmpeg_adapter.py` — covers fixture determinism, run_command timeouts, and env gating.
 - [x] Finalize the dialogue timeline builder API ownership (production_agent vs.
@@ -313,7 +297,7 @@ Tracking the remaining checklist items from `docs/IMPLEMENTATION_TASKS.md` that 
   follow the same embedding conventions.
 
 ### P3 — Gated smokes, proposals, and integration follow-ups
-- [ ] Smoke tests: add opt-in tests under `tests/smoke/` for `images_sdxl`, `videos_wan`, `tts_chatterbox`, `assemble_ffmpeg`, `lipsync_wav2lip`, `qa_qwen2vl`, all gated via corresponding `SMOKE_*` env vars.
+- [ ] Smoke tests: add opt-in tests under `tests/smoke/` for `images_sdxl`, `videos_wan`, `tts_chatterbox`, `assemble_ffmpeg`, and `lipsync_wav2lip`, all gated via corresponding `SMOKE_*` env vars.
 - [ ] `proposals/pyproject_adk.diff`: draft runtime dependency pins + env var requirements; pause for approval before applying to `pyproject.toml`.
 - [ ] ADK artifact verification runbook: once credentials exist, document `adk artifacts push/ls` commands inside `docs/SCHEMA_ARTIFACTS.md` and confirm each URI resolves.
 - [ ] Packaging + README updates: after proposal approval, document install instructions, env vars, and smoke test gating.

@@ -359,16 +359,16 @@ def execute_plan(
             action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
             meta={"shot_count": len(model.shots)},
         )
-        _record_stage_manifest_entries(
-            run_id=run_id,
-            manifests=_build_assemble_stage_manifests(
+        records.append(final_record)
+        if final_record.status == "succeeded" and final_result.path:
+            manifest = _build_assemble_stage_manifest(
                 run_id=run_id,
                 plan_id=plan_id,
-                assemble_path=final_result.path,
+                plan_title=model.title,
                 shot_count=len(model.shots),
-            ),
-        )
-        records.append(final_record)
+                assemble_path=final_result.path,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
     except StepRateLimitError as exc:
         records.append(exc.record)
         _record_summary_event(run_id, plan_id, "run", records)
@@ -384,7 +384,7 @@ def execute_plan(
 
     def _finalize_action() -> StepResult:
         dialogue_result = dialogue_stage_holder.get("result")
-        manifests, final_artifact_ref, step_result = _run_final_delivery_stage(
+        final_artifact_ref, step_result = _run_final_delivery_stage(
             plan=model,
             plan_id=plan_id,
             run_id=run_id,
@@ -394,7 +394,15 @@ def execute_plan(
             assemble_path=final_result.path,
         )
         final_delivery_holder["artifact"] = final_artifact_ref
-        _record_stage_manifest_entries(run_id=run_id, manifests=manifests)
+        if step_result.path:
+            manifest = _build_finalize_stage_manifest(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot_count=len(model.shots),
+                video_path=step_result.path,
+                step_result=step_result,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
         return step_result
 
     try:
@@ -797,124 +805,67 @@ def _build_plan_intake_manifests(
     return manifests
 
 
-def _file_size(path: Optional[Path]) -> Optional[int]:
-    if path is None:
-        return None
+def _file_size(path: Path) -> Optional[int]:
     try:
         return path.stat().st_size
     except OSError:
         return None
 
 
-def _build_shot_frames_manifests(
+def _build_shot_frames_manifest(
     *,
     run_id: str,
     plan_id: str,
     shot: ShotSpec,
-    summary_path: Optional[Path],
-    start_frame_path: Optional[str],
-    end_frame_path: Optional[str],
-) -> List[StageManifest]:
-    if summary_path is None:
-        return []
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": "images",
-            "shot_id": shot.id,
-            "stage_manifest_schema": stage_manifest_schema_meta,
-            "start_base_image_id": shot.start_base_image_id,
-            "end_base_image_id": shot.end_base_image_id,
-            "start_frame_path": start_frame_path,
-            "end_frame_path": end_frame_path,
-        }
-    )
-    manifest = StageManifest(
+    frames_path: Path,
+    meta: Mapping[str, Any],
+) -> StageManifest:
+    metadata_payload = {
+        "plan_id": plan_id,
+        "shot_id": shot.id,
+        "stage": "images",
+        "start_frame_path": meta.get("start_frame_path"),
+        "end_frame_path": meta.get("end_frame_path"),
+    }
+    metadata = _stage_event_metadata(metadata_payload)
+    return StageManifest(
         run_id=run_id,
         stage_id=f"{shot.id}:images",
         artifact_type="shot_frames",
-        name=summary_path.name,
-        artifact_uri=summary_path.as_posix(),
+        name=frames_path.name,
+        artifact_uri=frames_path.as_posix(),
         media_type="application/json",
-        local_path=summary_path.as_posix(),
+        local_path=frames_path.as_posix(),
         storage_hint="local",
         mime_type="application/json",
-        size_bytes=_file_size(summary_path),
+        size_bytes=_file_size(frames_path),
         metadata=metadata,
-        playback_ready=True,
+        playback_ready=False,
     )
-    return [manifest]
 
 
-def _build_shot_video_manifests(
+def _build_shot_tts_manifest(
     *,
     run_id: str,
     plan_id: str,
     shot: ShotSpec,
-    video_path: Optional[Path],
-) -> List[StageManifest]:
-    if video_path is None:
-        return []
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": "video",
-            "shot_id": shot.id,
-            "stage_manifest_schema": stage_manifest_schema_meta,
-            "duration_s": shot.duration_sec,
-        }
-    )
-    manifest = StageManifest(
-        run_id=run_id,
-        stage_id=f"{shot.id}:video",
-        artifact_type="shot_video",
-        name=video_path.name,
-        artifact_uri=video_path.as_posix(),
-        media_type="video/mp4",
-        local_path=video_path.as_posix(),
-        storage_hint="local",
-        mime_type="video/mp4",
-        size_bytes=_file_size(video_path),
-        duration_s=shot.duration_sec,
-        playback_ready=video_path.exists(),
-        metadata=metadata,
-    )
-    return [manifest]
-
-
-def _build_shot_tts_manifests(
-    *,
-    run_id: str,
-    plan_id: str,
-    shot: ShotSpec,
-    summary_path: Optional[Path],
+    summary_path: Path,
     dialogue_paths: Sequence[Path],
-    tts_meta: Optional[Mapping[str, Any]],
-) -> List[StageManifest]:
-    if summary_path is None:
-        return []
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    metadata_payload: Dict[str, Any] = {
+    meta: Mapping[str, Any],
+) -> StageManifest:
+    tts_meta = dict(meta.get("tts") or {})
+    dialogue_path_values = [path.as_posix() for path in dialogue_paths]
+    metadata_payload = {
         "plan_id": plan_id,
-        "stage": "tts",
         "shot_id": shot.id,
-        "stage_manifest_schema": stage_manifest_schema_meta,
-        "dialogue_paths": [path.as_posix() for path in dialogue_paths],
+        "stage": "tts",
+        "dialogue_paths": dialogue_path_values,
+        "lines": meta.get("lines") or tts_meta.get("lines_synthesized"),
+        "tts": tts_meta,
     }
-    if tts_meta:
-        metadata_payload.update(
-            {
-                "lines": tts_meta.get("lines_synthesized"),
-                "total_duration_s": tts_meta.get("total_duration_s"),
-                "provider_id": tts_meta.get("provider_id"),
-                "voice_id": tts_meta.get("voice_id"),
-                "voice_metadata": tts_meta.get("voice_metadata"),
-            }
-        )
     metadata = _stage_event_metadata(metadata_payload)
-    manifest = StageManifest(
+    metadata.setdefault("summary_path", summary_path.as_posix())
+    return StageManifest(
         run_id=run_id,
         stage_id=f"{shot.id}:tts",
         artifact_type="shot_dialogue_audio",
@@ -925,31 +876,60 @@ def _build_shot_tts_manifests(
         storage_hint="local",
         mime_type="application/json",
         size_bytes=_file_size(summary_path),
-        playback_ready=True,
         metadata=metadata,
+        playback_ready=False,
     )
-    return [manifest]
 
 
-def _build_shot_lipsync_manifests(
+def _build_shot_video_manifest(
     *,
     run_id: str,
     plan_id: str,
     shot: ShotSpec,
-    lipsync_path: Optional[Path],
-) -> List[StageManifest]:
-    if lipsync_path is None:
-        return []
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": "lipsync",
-            "shot_id": shot.id,
-            "stage_manifest_schema": stage_manifest_schema_meta,
-        }
+    video_path: Path,
+    shot_duration: float,
+) -> StageManifest:
+    metadata_payload = {
+        "plan_id": plan_id,
+        "shot_id": shot.id,
+        "stage": "video",
+        "duration_s": shot_duration,
+    }
+    metadata = _stage_event_metadata(metadata_payload)
+    return StageManifest(
+        run_id=run_id,
+        stage_id=f"{shot.id}:video",
+        artifact_type="shot_video",
+        name=video_path.name,
+        artifact_uri=video_path.as_posix(),
+        media_type="video/mp4",
+        local_path=video_path.as_posix(),
+        storage_hint="local",
+        mime_type="video/mp4",
+        size_bytes=_file_size(video_path),
+        duration_s=shot_duration,
+        metadata=metadata,
+        playback_ready=True,
     )
-    manifest = StageManifest(
+
+
+def _build_shot_lipsync_manifest(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot: ShotSpec,
+    lipsync_path: Path,
+    dialogue_paths: Sequence[Path],
+) -> StageManifest:
+    dialogue_path_values = [path.as_posix() for path in dialogue_paths]
+    metadata_payload = {
+        "plan_id": plan_id,
+        "shot_id": shot.id,
+        "stage": "lipsync",
+        "dialogue_paths": dialogue_path_values,
+    }
+    metadata = _stage_event_metadata(metadata_payload)
+    return StageManifest(
         run_id=run_id,
         stage_id=f"{shot.id}:lipsync",
         artifact_type="shot_lipsync_video",
@@ -960,33 +940,27 @@ def _build_shot_lipsync_manifests(
         storage_hint="local",
         mime_type="video/mp4",
         size_bytes=_file_size(lipsync_path),
-        duration_s=shot.duration_sec,
-        playback_ready=lipsync_path.exists(),
         metadata=metadata,
+        playback_ready=True,
     )
-    return [manifest]
 
 
-
-def _build_assemble_stage_manifests(
+def _build_assemble_stage_manifest(
     *,
     run_id: str,
     plan_id: str,
-    assemble_path: Optional[Path],
+    plan_title: str,
     shot_count: int,
-) -> List[StageManifest]:
-    if assemble_path is None:
-        return []
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
-    metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": "assemble",
-            "shot_count": shot_count,
-            "stage_manifest_schema": stage_manifest_schema_meta,
-        }
-    )
-    manifest = StageManifest(
+    assemble_path: Path,
+) -> StageManifest:
+    metadata_payload = {
+        "plan_id": plan_id,
+        "stage": "assemble",
+        "shot_count": shot_count,
+        "plan_title": plan_title,
+    }
+    metadata = _stage_event_metadata(metadata_payload)
+    return StageManifest(
         run_id=run_id,
         stage_id="assemble",
         artifact_type="assembly_plan",
@@ -997,11 +971,72 @@ def _build_assemble_stage_manifests(
         storage_hint="local",
         mime_type="application/json",
         size_bytes=_file_size(assemble_path),
-        playback_ready=True,
+        metadata=metadata,
+        playback_ready=False,
+    )
+
+
+def _build_finalize_stage_manifest(
+    *,
+    run_id: str,
+    plan_id: str,
+    shot_count: int,
+    video_path: Path,
+    step_result: StepResult,
+) -> StageManifest:
+    meta_payload: Dict[str, Any] = {
+        "plan_id": plan_id,
+        "stage": "finalize",
+        "shot_count": shot_count,
+    }
+    meta_payload.update(dict(step_result.meta or {}))
+    metadata = _stage_event_metadata(meta_payload)
+    local_path_value = meta_payload.get("local_path")
+    local_path = local_path_value if isinstance(local_path_value, str) and local_path_value else video_path.as_posix()
+    download_url_value = meta_payload.get("download_url")
+    download_url = download_url_value if isinstance(download_url_value, str) else None
+    artifact_uri_value = meta_payload.get("artifact_uri")
+    artifact_uri = step_result.artifact_uri or artifact_uri_value or local_path
+    storage_hint_value = meta_payload.get("storage_hint")
+    storage_hint = storage_hint_value if isinstance(storage_hint_value, str) else "local"
+    size_bytes_value = meta_payload.get("size_bytes")
+    size_bytes = size_bytes_value if isinstance(size_bytes_value, int) else _file_size(video_path)
+    duration_value = meta_payload.get("duration_s")
+    duration_s = float(duration_value) if isinstance(duration_value, (int, float)) else None
+    frame_rate_value = meta_payload.get("frame_rate")
+    frame_rate = float(frame_rate_value) if isinstance(frame_rate_value, (int, float)) else None
+    resolution_value = meta_payload.get("resolution_px")
+    resolution_px = str(resolution_value) if isinstance(resolution_value, str) else None
+    checksum_value = meta_payload.get("checksum_sha256")
+    checksum_sha256 = checksum_value if isinstance(checksum_value, str) else None
+    playback_ready_value = meta_payload.get("playback_ready")
+    playback_ready = bool(playback_ready_value) if isinstance(playback_ready_value, bool) else video_path.exists()
+    media_type_value = meta_payload.get("media_type") or meta_payload.get("mime_type") or "video/mp4"
+    media_type = str(media_type_value)
+    mime_type = str(meta_payload.get("mime_type") or media_type)
+    notes_value = meta_payload.get("notes")
+    notes = str(notes_value) if isinstance(notes_value, str) else None
+    name = Path(local_path).name if local_path else video_path.name
+    return StageManifest(
+        run_id=run_id,
+        stage_id="finalize",
+        artifact_type="video_final",
+        name=name,
+        artifact_uri=artifact_uri,
+        media_type=media_type,
+        local_path=local_path,
+        download_url=download_url,
+        storage_hint=storage_hint,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        duration_s=duration_s,
+        frame_rate=frame_rate,
+        resolution_px=resolution_px,
+        checksum_sha256=checksum_sha256,
+        playback_ready=playback_ready,
+        notes=notes,
         metadata=metadata,
     )
-    return [manifest]
-
 
 def _base_image_extension(spec: BaseImageSpec, source_path: Optional[Path]) -> str:
     mime = (spec.mime_type or spec.metadata.get("mime_type") or "").strip().lower()
@@ -1274,21 +1309,18 @@ def _execute_shot(
         meta={"shot_id": shot.id},
     )
     artifacts.frames_path = frames_result.path
-    frame_meta = dict(frames_result.meta or {})
-    _record_stage_manifest_entries(
-        run_id=run_id,
-        manifests=_build_shot_frames_manifests(
+    if _frames_record.status == "succeeded" and frames_result.path:
+        manifest = _build_shot_frames_manifest(
             run_id=run_id,
             plan_id=plan_id,
             shot=shot,
-            summary_path=frames_result.path,
-            start_frame_path=frame_meta.get("start_frame_path"),
-            end_frame_path=frame_meta.get("end_frame_path"),
-        ),
-    )
+            frames_path=frames_result.path,
+            meta=dict(frames_result.meta or {}),
+        )
+        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
 
     if shot.dialogue:
-        _, tts_result = _run_with_tracking(
+        tts_record, tts_result = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:tts",
@@ -1311,22 +1343,18 @@ def _execute_shot(
             },
         )
         artifacts.dialogue_paths = list(tts_result.paths or ([tts_result.path] if tts_result.path else []))
-        tts_meta_payload = dict(tts_result.meta or {})
-        summary_path_str = tts_meta_payload.get("summary_path")
-        summary_path = Path(summary_path_str) if summary_path_str else None
-        _record_stage_manifest_entries(
-            run_id=run_id,
-            manifests=_build_shot_tts_manifests(
+        if tts_record.status == "succeeded" and tts_result.path and artifacts.dialogue_paths:
+            manifest = _build_shot_tts_manifest(
                 run_id=run_id,
                 plan_id=plan_id,
                 shot=shot,
-                summary_path=summary_path,
+                summary_path=tts_result.path,
                 dialogue_paths=artifacts.dialogue_paths,
-                tts_meta=tts_meta_payload.get("tts"),
-            ),
-        )
+                meta=dict(tts_result.meta or {}),
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
 
-    _, video_result = _run_with_tracking(
+    video_record, video_result = _run_with_tracking(
         plan_id=plan_id,
         run_id=run_id,
         step_id=f"{shot.id}:video",
@@ -1347,19 +1375,19 @@ def _execute_shot(
         meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
     )
     artifacts.video_path = video_result.path
-
-    _record_stage_manifest_entries(
-        run_id=run_id,
-        manifests=_build_shot_video_manifests(
+    if video_record.status == "succeeded" and video_result.path:
+        manifest = _build_shot_video_manifest(
             run_id=run_id,
             plan_id=plan_id,
             shot=shot,
-            video_path=artifacts.video_path,
-        ),
-    )
+            video_path=video_result.path,
+            shot_duration=shot.duration_sec,
+        )
+        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+
 
     if shot.is_talking_closeup and artifacts.dialogue_paths and artifacts.video_path:
-        _, lipsync_result = _run_with_tracking(
+        lipsync_record, lipsync_result = _run_with_tracking(
             plan_id=plan_id,
             run_id=run_id,
             step_id=f"{shot.id}:lipsync",
@@ -1372,15 +1400,15 @@ def _execute_shot(
             meta={"shot_id": shot.id},
         )
         artifacts.lipsync_path = lipsync_result.path
-        _record_stage_manifest_entries(
-            run_id=run_id,
-            manifests=_build_shot_lipsync_manifests(
+        if lipsync_record.status == "succeeded" and lipsync_result.path:
+            manifest = _build_shot_lipsync_manifest(
                 run_id=run_id,
                 plan_id=plan_id,
                 shot=shot,
-                lipsync_path=artifacts.lipsync_path,
-            ),
-        )
+                lipsync_path=lipsync_result.path,
+                dialogue_paths=artifacts.dialogue_paths,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
 
     return artifacts
 
@@ -2064,8 +2092,7 @@ def _run_final_delivery_stage(
     shot_artifacts: Sequence[_ShotArtifacts],
     dialogue_result: Optional[_DialogueStageResult],
     assemble_path: Path,
-) -> tuple[List[StageManifest], adk_helpers.ArtifactRef, StepResult]:
-    stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
+) -> tuple[adk_helpers.ArtifactRef, StepResult]:
     final_video_path = _prepare_final_video(
         plan_id=plan_id,
         output_dir=output_dir,
@@ -2099,34 +2126,6 @@ def _run_final_delivery_stage(
     download_url = artifact_meta.get("download_url") if storage_hint == "adk" else None
     if storage_hint == "adk" and not download_url:
         download_url = video_artifact_ref.get("uri")
-    manifest_metadata = _stage_event_metadata(
-        {
-            "plan_id": plan_id,
-            "stage": "finalize",
-            "stage_manifest_schema": stage_manifest_schema_meta,
-            "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
-            "assemble_path": assemble_path.as_posix(),
-        }
-    )
-    manifest = StageManifest(
-        run_id=run_id,
-        stage_id="finalize",
-        artifact_type="video_final",
-        name=final_video_path.name,
-        artifact_uri=str(video_artifact_ref["uri"]),
-        media_type="video/mp4",
-        local_path=final_video_path.as_posix(),
-        download_url=download_url,
-        storage_hint=storage_hint,
-        mime_type="video/mp4",
-        size_bytes=size_bytes,
-        duration_s=total_duration,
-        frame_rate=frame_rate,
-        resolution_px=resolution,
-        checksum_sha256=checksum,
-        playback_ready=final_video_path.exists(),
-        metadata=manifest_metadata,
-    )
     step_result = StepResult(
         path=final_video_path,
         paths=(final_video_path,),
@@ -2145,9 +2144,11 @@ def _run_final_delivery_stage(
             "resolution_px": resolution,
             "checksum_sha256": checksum,
             "playback_ready": final_video_path.exists(),
+            "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
+            "assemble_path": assemble_path.as_posix(),
         },
     )
-    return [manifest], video_artifact_ref, step_result
+    return video_artifact_ref, step_result
 
 
 def _prepare_final_video(

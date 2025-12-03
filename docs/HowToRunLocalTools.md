@@ -4,7 +4,7 @@ This document explains how to run FunctionTool ASGI entrypoints locally (in-proc
 
 Note: the repository uses a conda environment named `sparkle_motion` for development. Follow the steps below inside that environment.
 
-## Schema & QA artifact reference
+## Schema artifact reference
 
 Before wiring a new FunctionTool or prompt to a schema, review `docs/SCHEMA_ARTIFACTS.md`.
 That table is the single source of truth for every `artifact://` URI plus the

@@ -10,17 +10,6 @@ from urllib.parse import urlparse
 import yaml
 
 
-_FALSEY_STRINGS = {"", "0", "false", "no", "off"}
-
-
-def _qa_automation_removed() -> bool:
-    raw = os.environ.get("QA_AUTOMATION_REMOVED")
-    if raw is None:
-        return True
-    value = raw.strip().lower()
-    return value not in _FALSEY_STRINGS
-
-
 def load_yaml(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -53,24 +42,11 @@ def run_workflow(path: Path, outdir: Path, *, dry_run: bool = True) -> int:
     # run in-process: sequential simple runner for local development
     os.environ.setdefault("ADK_USE_FIXTURE", "1")
     os.environ.setdefault("DETERMINISTIC", "1")
-    qa_removed = _qa_automation_removed()
-    if qa_removed:
-        os.environ.setdefault("QA_AUTOMATION_REMOVED", "1")
-        print("QA automation disabled (QA_AUTOMATION_REMOVED=1); finalize requires manual review.")
-    else:
-        print("QA_AUTOMATION_REMOVED=0 — ensure QA tooling is healthy before trusting automation.")
-
     outdir.mkdir(parents=True, exist_ok=True)
     manifest: Dict[str, Any] = {
         "workflow": str(path),
         "stages": [],
-        "qa_automation_removed": qa_removed,
     }
-    if qa_removed:
-        manifest["manual_review"] = {
-            "required": True,
-            "message": "QA automation disabled; record finalize_manual_review events before sharing output.",
-        }
     stage_outputs: Dict[str, Dict[str, Any]] = {}
 
     for idx, stage in enumerate(wf.get("stages", [])):
@@ -92,7 +68,7 @@ def run_workflow(path: Path, outdir: Path, *, dry_run: bool = True) -> int:
             from fastapi.testclient import TestClient
 
             client = TestClient(app)
-            payload = _build_stage_payload(stage, stage_outputs, sid_slug, qa_removed)
+            payload = _build_stage_payload(stage, stage_outputs, sid_slug)
             r = client.post("/invoke", json=payload)
             if r.status_code != 200:
                 print(f"Stage {sid_slug} failed: {r.status_code} {r.text}")
@@ -176,7 +152,7 @@ def _safe_stage_id(stage_id: Optional[str], idx: int) -> str:
 
 
 def _build_stage_payload(
-    stage: Dict[str, Any], stage_outputs: Dict[str, Dict[str, Any]], sid_slug: str, qa_removed: bool
+    stage: Dict[str, Any], stage_outputs: Dict[str, Dict[str, Any]], sid_slug: str
 ) -> Dict[str, Any]:
     tool_id = stage.get("tool_id") or ""
     if _is_production_stage(stage, tool_id):
@@ -185,11 +161,7 @@ def _build_stage_payload(
             plan_payload = _fallback_movie_plan()
             print(f"Warning: No MoviePlan detected from previous stages; using fallback plan for stage {sid_slug}")
         mode = stage.get("mode") or "run"
-        payload: Dict[str, Any] = {"plan": plan_payload, "mode": mode}
-        payload["qa_mode"] = "disabled" if qa_removed else "auto"
-        if qa_removed:
-            payload["manual_review_required"] = True
-        return payload
+        return {"plan": plan_payload, "mode": mode}
     return {"prompt": f"operator-run:{sid_slug}"}
 
 

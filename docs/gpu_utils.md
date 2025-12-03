@@ -105,7 +105,7 @@ Guidance:
 
 1. Treat preset keys as case-insensitive. `compute_device_map("A100-80GB")` works.
 2. Use `overrides` to pin individual submodules to different devices or to add CPU offload entries. Overrides win over preset defaults.
-3. Log the final device map in adapter metadata so QA can correlate VRAM usage with placement decisions.
+3. Log the final device map in adapter metadata so operators can correlate VRAM usage with placement decisions.
 
 ## Telemetry lifecycle
 

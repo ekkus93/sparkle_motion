@@ -63,14 +63,7 @@ DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")
 DEFAULT_LOG_DIR = Path(_LOG_DIR_ENV).expanduser() if _LOG_DIR_ENV else Path(__file__).resolve().parents[1] / "artifacts" / "logs"
 DEFAULT_FS_BASE_URL = os.environ.get("ARTIFACTS_FS_BASE_URL", "http://127.0.0.1:7077")
-_FALSEY_STRINGS = {"", "0", "false", "no", "off"}
 
-
-def _qa_automation_removed() -> bool:
-    flag = os.environ.get("QA_AUTOMATION_REMOVED")
-    if flag is None:
-        return True
-    return flag.strip().lower() not in _FALSEY_STRINGS
 
 
 def _resolve_artifact_backend() -> str:
@@ -185,13 +178,6 @@ class ControlPanel:
             print(f"[control_panel] Logging events to {self.logger.path}")
         self.artifact_backend = _resolve_artifact_backend()
         self.fs_base_url = os.environ.get("ARTIFACTS_FS_BASE_URL", DEFAULT_FS_BASE_URL)
-        self.qa_automation_removed = _qa_automation_removed()
-        self.manual_review_banner = (
-            widgets.HTML(value=_manual_review_banner_html(os.environ.get("QA_AUTOMATION_REMOVED")))
-            if self.qa_automation_removed
-            else None
-        )
-
         # Inputs
         self.title_input = widgets.Text(description="Title", placeholder="Short film title")
         self.prompt_input = widgets.Textarea(description="Prompt", placeholder="Describe the story, tone, beats…", layout=widgets.Layout(width="100%", height="120px"))
@@ -201,7 +187,7 @@ class ControlPanel:
         self.run_id_input = widgets.Text(description="Run ID", placeholder="Autofilled after production run")
         self.stage_input = widgets.Text(
             description="Finalize Stage",
-            placeholder="finalize (manual review)",
+            placeholder="finalize",
             tooltip="Override only when inspecting a non-finalize stage",
         )
         self.inline_plan_checkbox = widgets.Checkbox(value=False, description="Send plan inline", tooltip="Embed plan JSON in production request")
@@ -275,16 +261,13 @@ class ControlPanel:
             widgets.HBox([self.backend_label, self.fs_health_button]),
             self.fs_backend_output,
         ])
-        inputs_children = [
+        inputs = widgets.VBox([
             self.title_input,
             self.prompt_input,
             plan_controls,
             run_mode_controls,
             self.run_id_input,
-        ]
-        if self.manual_review_banner is not None:
-            inputs_children.insert(0, self.manual_review_banner)
-        inputs = widgets.VBox(inputs_children)
+        ])
         outputs = widgets.VBox([
             backend_controls,
             widgets.HTML("<b>Script Agent</b>"),
@@ -844,26 +827,10 @@ def _summarize_finalize_timeline(status_payload: Dict[str, Any]) -> Optional[str
     if status_value:
         summary_parts.append(f"status={status_value}")
     meta = latest.get("meta") or {}
-    note = _manual_review_note(meta, status_payload)
-    if note:
-        summary_parts.append(note)
     artifact_uri = meta.get("artifact_uri")
     if artifact_uri:
         summary_parts.append(f"artifact_uri={artifact_uri}")
     return " | ".join(summary_parts) if summary_parts else None
-
-
-def _manual_review_note(meta: Dict[str, Any], status_payload: Dict[str, Any]) -> Optional[str]:
-    manual_message = meta.get("manual_review_message") or status_payload.get("manual_review_message")
-    if manual_message:
-        return f"note={manual_message}"
-    state = meta.get("manual_review_state") or status_payload.get("manual_review_state")
-    if state:
-        return f"manual_review_state={state}"
-    required = meta.get("manual_review_required") or status_payload.get("manual_review_required")
-    if required:
-        return "manual_review_required=True"
-    return None
 
 
 def _summarize_control_state(status_payload: Dict[str, Any]) -> Optional[str]:
@@ -913,17 +880,6 @@ def _format_status_probe_label(available: bool) -> str:
     color = "#3c763d" if available else "#d9534f"
     text = "Status endpoint ready" if available else "Status endpoint unavailable"
     return f"<span style='color:{color}; font-size:0.85em;'>{text}</span>"
-
-
-def _manual_review_banner_html(env_value: Optional[str]) -> str:
-    value = (env_value or "<unset>").strip() or "<unset>"
-    return (
-        "<div style='background:#fff6e6;border:1px solid #f0a500;padding:8px;margin-bottom:8px;'>"
-        "<strong>Manual review only.</strong> QA automation is disabled (QA_AUTOMATION_REMOVED="
-        f"{value}). Inspect finalize artifacts manually and record finalize_manual_review events before sharing deliverables. "
-        "Set QA_AUTOMATION_REMOVED=0 once QA tooling is restored."
-        "</div>"
-    )
 
 
 def _json_fallback(value: Any) -> Any:

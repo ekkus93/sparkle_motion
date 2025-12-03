@@ -26,7 +26,6 @@ Guidelines:
   - `tts_chatterbox` — Chatterbox TTS FunctionTool (synthesis, wav export).
   - `videos_wan` (WanAdapter) — heavy video inference pipeline.
   - `lipsync_wav2lip` — wav2lip lipsync adapter.
-  - `qa_qwen2vl` — frame QA / inspection adapter.
   - `assemble_ffmpeg` — deterministic ffmpeg assembly helper.
 
 Note: the document intentionally separates Agents (policy & orchestration) from FunctionTools (heavy compute). Agents may call one or more FunctionTools; FunctionTools should be plain and testable (stubs) in dev, and can later be wrapped into ADK-aware adapters when ready to publish.
@@ -36,10 +35,10 @@ Note: the document intentionally separates Agents (policy & orchestration) from 
   Below are the canonical 1-to-many relationships showing which FunctionTools each Agent may invoke. This is a guide for implementers — agents enforce policy, orchestration and retries, while FunctionTools perform heavy compute. An Agent may call FunctionTools/stages (for example, `production_agent` invoking `images_stage`) and may therefore be indirectly connected to additional adapters.
 
   - **`script_agent`**: produces a `MoviePlan` only — public API `generate_plan(prompt) -> MoviePlan`. It is intentionally pure (planning, prompts, and schema validation) and should not perform heavy orchestration or FunctionTool calls.
-  - **`production_agent`**: `images_stage`, `tts_stage`, `videos_stage`, `assemble_ffmpeg`, `qa_qwen2vl` — responsible for executing a `MoviePlan`, orchestrating per-media FunctionTools, enforcing policy and gating (e.g., `SMOKE_ADK`), and publishing final artifacts. This keeps planning separate from heavy compute and resource management.
+  - **`production_agent`**: `images_stage`, `tts_stage`, `videos_stage`, `assemble_ffmpeg` — responsible for executing a `MoviePlan`, orchestrating per-media FunctionTools, enforcing policy and gating (e.g., `SMOKE_ADK`), and publishing final artifacts. This keeps planning separate from heavy compute and resource management.
   - **`tts_stage`**: `tts_chatterbox` (primary), local/fixture TTS stubs (dev) — chooses provider, enforces policy, and calls TTS FunctionTools for synthesis and WAV artifact publishing.
-  - **`images_stage`**: `images_sdxl`, `qa_qwen2vl`, `assemble_ffmpeg` (helper) — performs content checks, batching and calls the `DiffusersAdapter`/`images_sdxl` renderer; may call QA or assembly helpers as needed.
-  - **`videos_stage`**: `videos_wan`, `lipsync_wav2lip`, `images_sdxl` (keyframes), `qa_qwen2vl`, `assemble_ffmpeg` — orchestrates chunked video rendering, optional lipsync, frame-level image generation, QA, and final assembly.
+  - **`images_stage`**: `images_sdxl`, `assemble_ffmpeg` (helper) — performs content checks, batching and calls the `DiffusersAdapter`/`images_sdxl` renderer; may call assembly helpers as needed.
+  - **`videos_stage`**: `videos_wan`, `lipsync_wav2lip`, `images_sdxl` (keyframes), `assemble_ffmpeg` — orchestrates chunked video rendering, optional lipsync, frame-level image generation, and final assembly.
 
   Notes:
   - Relationship type: 1 Agent → many FunctionTools (and sometimes other Agents).
@@ -202,7 +201,7 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
   - `tts_chatterbox` (FunctionTool adapter): compute-bound adapter that performs heavy TTS work (model load, synthesis, wav export). Implement as an ADK FunctionTool so the agent can call it; keep model lifecycle inside a guarded context manager to ensure safe load/unload.
   - Fallbacks: prefer ADK-managed TTS providers when available; fall back to local Coqui TTS for developer workflows. Entrypoints that instantiate agents must call `adk_helpers.require_adk()` or use `adk_helpers.probe_sdk(non_fatal=True)` where appropriate.
   - Metadata: publish duration, sample_rate, voice_id, format, seed (if applicable), and runtime info (model id, inference device, synth time). Publish WAV artifacts via `adk_helpers.publish_artifact()`.
-  - Per-line synthesis: `production_agent` calls `tts_stage.synthesize()` once per dialogue line and records each WAV in `line_artifacts` alongside metadata (voice_id, provider voice id, duration_s, watermarked flag) so lipsync, QA, and assemble stages can trace every clip. Fixture mode (when `SMOKE_TTS`/`SMOKE_ADAPTERS` are unset) must still emit deterministic per-line artifacts.
+  - Per-line synthesis: `production_agent` calls `tts_stage.synthesize()` once per dialogue line and records each WAV in `line_artifacts` alongside metadata (voice_id, provider voice id, duration_s, watermarked flag) so lipsync and assemble stages can trace every clip. Fixture mode (when `SMOKE_TTS`/`SMOKE_ADAPTERS` are unset) must still emit deterministic per-line artifacts.
   - Tests: unit tests for decision logic and metadata/format validation; integration smoke tests gated by `SMOKE_TTS=1` that exercise a small real or fixture TTS provider.
   - Estimate: 2–4 days
   - Notes: runtime dependency or manifest changes must follow the `proposals/pyproject_adk.diff` process and require explicit approval before editing `pyproject.toml` or pushing runtime changes.
@@ -425,25 +424,15 @@ Recommendation: Use the upstream GitHub repo (`https://github.com/resemble-ai/ch
 - Canonical policy checks (concretized)
   - Textual prompt checks (fast, pre-render): run a lightweight text-moderation pass (policy LLM or regex-based classifier) on `prompt`/`negative_prompt`/`text` fields.
     - If `disallowed` → raise `PlanPolicyViolation` and do not render.
-    - If `ambiguous` → mark for QA or apply stricter generation constraints.
-  - Post-render image checks (recommended): always run `qa_qwen2vl.inspect_frames()` on outputs in `run` mode before publishing.
-    - Post-render thresholds (example defaults):
-      - `nsfw_confidence >= 0.70` → `reject` (delete artifact, mark step failed)
-      - `nsfw_confidence >= 0.40 and < 0.70` → `escalate` (request human review via `request_human_input()` and mark artifact `quarantined`)
-      - `< 0.40` → `approve`
-    - The `qa_qwen2vl` call should pass a prompt like: `"Does this image contain sexual content, minors, graphic violence, or other policy-prohibited material? Provide a confidence score for each category."` and the agent should parse the structured `QAReport` to decide.
+    - If `ambiguous` → apply stricter generation constraints (e.g., lower guidance scale, swap prompts, or downgrade to fixture renders) before continuing.
   - Duplicate detection / hashing:
     - Use perceptual hashing (pHash or `imagehash`) to detect duplicates and near-duplicates against a recent-artifacts index (sliding window, e.g., last 1000 artifacts).
     - Consider duplicates within a plan as `dedupe` (skip publishing duplicates) if `dedupe=True` in `opts`.
     - pHash threshold: Hamming distance <= 6 → treat as duplicate; values tuned per data.
 
-- Pre-render QA via `qa_qwen2vl` (how/when)
-  - For prompts that contain image references (URLs/base64) or where the user included reference images, call `qa_qwen2vl.inspect_frames()` on the referenced images with textual prompts (e.g., `"Is this reference image safe to base synthetic output on?"`). If QA flags issues, abort rendering the step and surface `PlanPolicyViolation`.
-  - For text-only prompts, prefer a text moderation model first. If textual output is borderline and `SMOKE_QA=1`, optionally run a small sample render (sandbox) of 1 image with low-cost settings and run `qa_qwen2vl` on that sample before committing to full `count` renders.
-
 - Fallback & remediation flows
   - On `reject`: surface failure to caller with `PlanPolicyViolation` and no publish.
-  - On `escalate`: persist outputs to a quarantine area and call `request_human_input()` with a link to the artifact and the `QAReport`.
+  - On `escalate`: persist outputs to a quarantine area and call `request_human_input()` with a link to the artifact plus relevant policy metadata.
   - On duplicate detection: if `dedupe=True`, replace duplicate artifact URIs with the canonical artifact and mark the step as `succeeded (deduped)`.
 
 **Example `opts` schema for `images_stage` → `images_sdxl`**
@@ -493,13 +482,6 @@ def render_images(prompt: str, count: int, seed: Optional[int], opts: dict) -> L
 
 ```
 
-- QA stub: `function_tools/qa_qwen2vl/entrypoint.py`:
-
-```py
-def inspect_frames(frames: List[bytes], prompts: List[str]) -> dict:
-  return {'ok': True, 'reason': None, 'report': {}}
-
-```
 
 - DB helper: `src/sparkle_motion/db/sqlite.py` (small API):
 
@@ -527,7 +509,7 @@ def ensure_schema(conn: sqlite3.Connection, ddl: str) -> None:
 
 #### Tests to add (exact file names)
 
-- `tests/unit/test_images_stage.py` — batching, ordering, within-plan dedupe, global dedupe (SQLite), QA rejection.
+- `tests/unit/test_images_stage.py` — batching, ordering, within-plan dedupe, global dedupe (SQLite).
 - `tests/unit/test_recent_index_sqlite.py` — get/add/prune behavior.
 - `tests/unit/test_rate_limiter.py` — token bucket semantics.
 - `tests/unit/test_adk_helpers.py` — `publish_local()` deterministic URIs in fixture mode.
@@ -549,13 +531,13 @@ def deterministic_bytes(prompt: str, seed: int, index: int) -> bytes:
   1. `test_batch_split_and_ordering`: request `num_images=20` with `max_images_per_call=8` and assert that the agent makes 3 adapter calls, preserves ordering, and returns 20 artifacts with proper `batch_index` and `item_index` metadata.
   2. `test_rate_limit_queueing`: configure token-bucket with 2 tokens and request 4 images in quick succession with `queue_allowed=True`; assert two are executed immediately and two are queued and eventually executed within TTL.
   3. `test_policy_text_rejects_prompt`: mock text-moderation to mark prompt disallowed; assert `PlanPolicyViolation` and no adapter calls.
-  4. `test_post_render_nsfw_rejects`: use stub pipeline to emit an output with a pHash known to correspond to `nsfw_confidence=0.9` (inject via QA stub) and assert the artifact is rejected and not published.
+  4. `test_post_render_nsfw_rejects`: use stub pipeline to emit an output with a pHash known to correspond to `nsfw_confidence=0.9` and assert the artifact is rejected and not published.
   5. `test_deduplicate_within_plan`: produce two identical deterministic stub images and assert a single published artifact when `dedupe=True` and returned artifact list references canonical URI twice.
 
 **Implementation notes**
   - Keep `images_stage` logic separate from adapter invocation: build a small orchestration layer that prepares batches, enforces rate-limits, runs policy checks, and calls `DiffusersAdapter.render_images()`.
   - Persist `pHash` and recent-artifact index in a lightweight key-value store (e.g., Redis) or an in-process LRU for dev; expose TTL and size limit in config.
-  - Surface policy decisions via `adk_helpers.write_memory_event()` with the `QAReport` attached for auditing.
+  - Surface policy decisions via `adk_helpers.write_memory_event()` with the structured policy payload attached for auditing.
 
 
 ### videos_stage
@@ -1051,13 +1033,6 @@ python inference.py --checkpoint_path <ckpt> --face <video.mp4> --audio <audio.w
 
 If you want me to produce the adapter skeleton and tests locally, choose A/B/C (you can pick multiple). I will not edit manifests or push changes without your explicit approval phrase.
 
-### qa_qwen2vl
-- Task: Implement `inspect_frames(frames, prompts) -> QAReport`
-  - Adapter to Qwen-2-VL or ADK multimodal agent; produce structured `QAReport` artifact.
-  - Integrate `request_human_input` on policy escalation and write memory timeline events.
-  - Tests: unit tests for report shape; gated integration sampling for visual checks.
-  - Estimate: 2–4 days
-
 ### assemble_ffmpeg
 - Task: Implement deterministic assembly pipeline using `ffmpeg`
   - Provide helper `assemble_clips(movie_plan, clips, audio, out_path, opts)` that performs concat, overlay, transitions, and audio mixing with reproducible options.
@@ -1235,7 +1210,6 @@ def execute_plan(plan, mode="dry"):
   - `SMOKE_ADK=1`: enables ADK-backed FunctionTools and real artifact publishing. When not set, the `production_agent` must only call local stubs or simulate artifact creation.
   - `SMOKE_LIPSYNC=1`: allows `lipsync_wav2lip` to run real inference; when unset, lipsync steps should be simulated or fail fast with a clear message.
   - `SMOKE_TTS=1`: allows `tts_chatterbox` real calls; otherwise use a fixture TTS stub.
-  - `SMOKE_QA=1`: enables real `qa_qwen2vl` checks; when unset, run a lightweight heuristic QA or mark QA steps as `simulated`
   - `SMOKE_ADAPTERS=1`: general flag the team can use to gate any heavy adapter outside the specific flags above (optional override)
 
 - Default concurrency & chunking strategy
@@ -1322,98 +1296,6 @@ Emit these records to logger/metrics sink and include them in any artifact metad
 - Observability: integrate `StepExecutionRecord` emission with existing telemetry/logging (e.g., `adk_helpers.write_memory_event()` or metrics export) so CI and operator dashboards can aggregate run results.
 - Backwards compatibility: if older plans lack `assemble_opts` or `step.id`, the agent should normalize them (generate `id` if missing) and record a warning rather than failing a `dry` run.
 
-
-### qa_qwen2vl (expanded)
-
-- **Purpose**: frame-level QA and inspection adapter. Run multimodal QA using Qwen2‑VL (or another ADK multimodal provider) over frames or image+text prompts and produce a structured `QAReport` artifact used by agents and human reviewers.
-
-- **Model & resources**:
-  - Canonical model id: `Qwen/Qwen2-VL-7B-Instruct` (Hugging Face).
-  - Upstream recommends using `Qwen2VLForConditionalGeneration`, `AutoProcessor`, and the `qwen_vl_utils` helper toolkit for vision pre-processing and packaging multi-image/video inputs.
-  - Note: building `transformers` from source is recommended in some environments to avoid `KeyError: 'qwen2_vl'` (e.g., `pip install git+https://github.com/huggingface/transformers`).
-
-- **Public API**: `inspect_frames(frames: Iterable[Path|str], prompts: list[str], *, opts: dict = None) -> QAReport`
-  - `QAReport` fields (recommended): `per_frame: list[{frame_index, scores, flags, annotations}]`, `global_flags`, `top_responses`, `confidence_summary`, `artifact_uri`, `logs_uri`, `opts_snapshot`.
-
-- **Quickstart / Usage (canonical snippet)**
-
-```python
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
-import torch
-
-# Load model (device_map + dtype recommended for your infra)
-model = Qwen2VLForConditionalGeneration.from_pretrained(
-    "Qwen/Qwen2-VL-7B-Instruct",
-    torch_dtype="auto",
-    device_map="auto",
-)
-
-# Processor: handles chat template and input packaging (images/videos)
-processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
-
-# Example messages: interleaved image + text content per the model chat template
-messages = [
-    {
-        "role": "user",
-        "content": [
-            {"type": "image", "image": "file:///path/to/frame1.jpg"},
-            {"type": "text", "text": "Any safety issues in this frame?"},
-        ],
-    }
-]
-
-# Prepare text and vision inputs
-text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-image_inputs, video_inputs = process_vision_info(messages)
-inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
-inputs = inputs.to("cuda")
-
-# Generate
-generated_ids = model.generate(**inputs, max_new_tokens=128)
-
-# Trim prompt tokens and decode
-generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-print(output_text)
-```
-
-- **Input formats supported**
-  - Images: local file paths (`file:///`), HTTP/HTTPS URLs, and base64 strings.
-  - Videos: local file paths only (video inference currently accepts local files).
-
-- **Performance & inference tips (from upstream)**
-  - Use `min_pixels` / `max_pixels` in `AutoProcessor.from_pretrained(..., min_pixels=..., max_pixels=...)` to control the dynamic visual tokenization range and balance memory vs. fidelity (example tokens range: 256–1280 tokens mapped to pixels via 28*28 factor).
-  - Alternatively set `resized_height` and `resized_width` for exact control (values are rounded to multiples of 28).
-  - Enable accelerated attention implementations when available (e.g., `attn_implementation="flash_attention_2"`) and prefer `torch_dtype=torch.bfloat16` / `torch_dtype="auto"` for BF16-capable hardware.
-  - Use `device_map="auto"` for multi‑GPU hosts and `torch_dtype="auto"` to let HF pick BF16/FP16 where supported.
-  - Upstream provides `qwen-vl-utils` (`pip install qwen-vl-utils`) for `process_vision_info` helpers that convert messages into `images`/`videos` tensors accepted by the processor.
-
-- **Recommended behavior for the adapter**
-  - Provide a small wrapper that accepts a list of frames and a list of QA prompts and maps them to the `messages` structure used by the processor.
-  - Batch frames into as few model calls as possible, respecting input token/visual token limits.
-  - Expose `opts` for `min_pixels`, `max_pixels`, `resized_height`, `resized_width`, `max_new_tokens`, `attn_implementation`, `torch_dtype`, and `device_map` so callers can tune resource vs. quality.
-  - Provide fallbacks: a lightweight stub for unit tests (no heavy deps) and a gated real-call path controlled by `SMOKE_ADK=1` (or similar).
-
-- **Policy & escalation**
-  - Run automated policy checks (NSFW, copyright, identity) by templating prompts for model-based detectors (e.g., "Does this image contain adult content?") and mapping response confidences to actions.
-  - If confidence is below the configured threshold, call `request_human_input()` and attach the `QAReport` artifact to the memory timeline using `adk_helpers.write_memory_event()`.
-
-- **Tests**
-  - Unit tests: stub `Qwen2VLForConditionalGeneration` / processor and assert `inspect_frames` returns correct `QAReport` shape and threshold logic. Use deterministic stubs for generated responses.
-  - Command/packaging tests: ensure `process_vision_info` and `processor.apply_chat_template` are called with expected messages when given frames+prompts.
-  - Integration/gated: run a small sample through the real model with `SMOKE_ADK=1` (requires `qwen-vl-utils`, `torch` with BF16 support or CPU fallback, and local `ffmpeg` if doing video input handling).
-
-- **Limitations & notes (from upstream)**
-  - Qwen2‑VL does not process audio embedded in videos — only visual frames and associated text.
-  - Data is current up to the model's training cutoff; validate factual claims accordingly.
-  - Some complex spatial reasoning, accurate counting, or person/IP identification may be limited — configure QA thresholds and human review conservatively.
-
-- **Manifest & dependency proposal guidance**
-  - Suggested runtime deps for proposals: `transformers` (recommend build-from-source in some CI images), `qwen-vl-utils`, `torch` (BF16/FP16 support per infra), `safetensors` (if using safetensors weights), and `accelerate` if using offload/device_map strategies.
-  - Do NOT modify `pyproject.toml` directly — prepare `proposals/pyproject_adk.diff` and wait for explicit approval before adding heavy packages.
-
-- **Estimate**: 2–4 days to implement adapter + unit tests and gated integration smoke tests.
 
 ## Cross-cutting tasks
 - `gpu_utils.model_context` — implement consistent context manager for model load/unload and CUDA cleanup (must be used by all heavy tools).

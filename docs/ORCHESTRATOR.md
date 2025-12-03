@@ -4,12 +4,10 @@ Per-stage contract — Sparkle Motion orchestrator
 This document summarizes the per-stage contract the orchestrator expects and
 the checkpoint format used to support resume and retry semantics.
 
-> **QA automation status (2025-12-07):** The automated QA stages and
-> `qa_qwen2vl` FunctionTool have been fully removed from the runtime. The
-> orchestrator currently ends with the `assemble` stage, produces final media
-> artifacts, and relies on human review or downstream systems for any QA needs.
-> This document now describes the QA-free pipeline. When QA is reintroduced we
-> will restore the retired sections and call out the new gating behavior.
+> **Finalize-only note (2025-12-07):** The orchestrator currently ends with the
+> `assemble` stage, produces final media artifacts, and does not invoke any
+> additional validation tools. This document reflects that configuration and
+> will be updated if extra gating stages return.
 
 1) Stage callable signature
 ---------------------------
@@ -56,9 +54,9 @@ Stages run in the order defined above. Each stage is responsible for:
 
 ### Service wiring & tool catalog
 
-- **SessionService** (`src/sparkle_motion/services.py`) issues the `run_id`, prepares `runs/<run_id>/` (artifacts, checkpoints, human-review folders), and hands the runner a `SessionContext`. Plugging in the official ADK service later is a matter of passing a different implementation into `Runner(session_service=...)`.
+- **SessionService** (`src/sparkle_motion/services.py`) issues the `run_id`, prepares `runs/<run_id>/` (artifacts, checkpoints, operator note folders), and hands the runner a `SessionContext`. Plugging in the official ADK service later is a matter of passing a different implementation into `Runner(session_service=...)`.
 - **ArtifactService** records every persisted output in `runs/<run_id>/artifacts.json` so humans/agents have a canonical lookup for Drive paths or URIs. Stage adapters call `artifact_service.register(name, path)` after writing files.
-- **MemoryService** appends structured events (stage begin/success/fail plus human-review notes) to `runs/<run_id>/memory_log.json`. This is the long-lived log ADK agents or dashboards can consume.
+- **MemoryService** appends structured events (stage begin/success/fail plus operator notes) to `runs/<run_id>/memory_log.json`. This is the long-lived log ADK agents or dashboards can consume.
 - **ToolRegistry** mirrors ADK’s FunctionTool catalog. Each stage registers its callable/metadata with the registry, and the runner resolves stages via registry lookups, which allows hot-swapping adapters (local vs. remote) without editing orchestrator logic.
 
 These abstractions keep the runner faithful to ADK patterns while remaining lightweight for the current Colab workflow.
@@ -305,33 +303,22 @@ payload suitable for `adk llm-prompts push`. Both paths look up
 `artifact://sparkle-motion/schemas/movie_plan/v1` via the registry so the
 WorkflowAgent and ScriptAgent stay in sync regardless of runtime.
 
-5) Manual QA + signoff placeholder
------------------------------------
+5) Finalize deliverable expectations
+------------------------------------
 
-Automated QA is currently disabled, so the orchestrator publishes its final
-artifacts immediately after the `assemble` stage. Operators must perform any
-content, safety, or continuity review outside of the pipeline. Recommended
-stopgaps until the `qa_qwen2vl` stack returns:
+Finalize currently runs immediately after the `assemble` stage and publishes
+the canonical `video_final` manifest entries. Treat these guidelines as the
+contract for the terminal stage:
 
-1. **Human review checkpoints.** Continue using the existing
-   `runs/<run_id>/human_review/*.json` markers described later in this document.
-   They pause the pipeline after major stages so editors can inspect artifacts
-   before spending additional GPU time.
-2. **Notebook/UI badges.** Notebook helpers should display a prominent "QA
-   automation disabled" warning near final artifact previews so downstream users
-   know deliverables have not been machine-validated.
-3. **Run metadata.** Production runs should call
-   `adk_helpers.write_memory_event(event_type="qa_automation", payload={"status": "disabled"})`
-   once per run. This makes the gap obvious in `/status` output, logs, and any
-   downstream dashboards that relied on QA verdicts.
-4. **Manual checklists.** Teams that previously depended on `qa_publish`
-   outcomes should track the equivalent checks in their own docs (e.g., finger
-   counts, safety scans, audio continuity) so the gap is covered until automation
-   returns.
-
-The old QA policy files (`configs/qa_policy.yaml`, schema, packaging script) and
-schema catalog entries have been removed; recreating them will be part of the
-future reintroduction plan.
+1. **Stage manifests.** Ensure `production_agent` records a `finalize` entry in
+  the RunRegistry/StageManifest log so `/artifacts` requests return the
+  metadata required by notebook helpers and downstream tools.
+2. **Notebook helpers.** Colab and local UIs should retrieve
+  `/artifacts?stage=finalize` to render the download buttons, status badges,
+  and resume hints for `resume_from="finalize"` flows.
+3. **Resume hooks.** When operators rerun a job specifically for delivery, call
+  the orchestrator with `resume_from="finalize"` so only the terminal step
+  replays instead of the entire pipeline.
 
 5) Error handling and retries
 ------------------------------
@@ -377,7 +364,7 @@ future reintroduction plan.
   assets referenced by a single stage.
 - Both helpers validate the stage name and internally delegate to
   `Runner.run()` with the appropriate `resume/start_stage/only_stage` values, so
-  service wiring, manifest updates, and human-review hooks continue to work
+  service wiring, manifest updates, and operator hooks continue to work
   identically to a full run.
 
 9) Example minimal stage
@@ -396,15 +383,6 @@ def stage_images(movie_plan, asset_refs, run_dir):
 This document is a short contract; implementations should keep checkpoints
 small and resilient to partial writes (the runner uses atomic manifest writes
 and the checkpoint files are small JSON objects).
-
-10) Human review checkpoints
------------------------------
-
-- **Script review**: if `runs/<run_id>/human_review/script.json` exists with `{"decision": "revise"}`, the runner halts after writing `movie_plan.json`, logs the decision via MemoryService, and waits for the reviewer to clear/update the file before resuming.
-- **Images/clip review**: `human_review/images.json` blocks after the `images` stage so humans can inspect keyframes before paying for Wan or later stages. Decisions (`approve`, `revise`, optional notes) are mirrored into `memory_log.json` for auditability.
-- **Usage pattern**: reviewers edit the JSON via Colab/Drive, the runner polls between stages, and ArtifactService ensures referenced assets are easy to find.
-
-These checkpoints keep the prototype human-in-the-loop friendly while aligning with ADK’s expectation that Session/Artifact/Memory services provide a consistent audit trail.
 
 For additional context, see:
 - `src/sparkle_motion/orchestrator.py` for the reference runner implementation and fallback behavior.

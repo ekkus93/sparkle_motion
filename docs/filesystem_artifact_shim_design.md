@@ -51,12 +51,11 @@ directories exist before the shim writes to disk.
   - `artifact_type`: string (`movie_plan`, `video_final`, etc.).
   - `mime_type`: string (IANA media type).
   - `metadata`: object with arbitrary JSON metadata; must include
-    `schema_uri`, `checksum.sha256`, `size_bytes`, and QA linkage when
+    `schema_uri`, `checksum.sha256`, and `size_bytes` when
     applicable.
 - **Optional fields**:
   - `local_path_hint`: path used by the caller before upload (recorded for
     traceability only).
-  - `qa`: structured QA payload (decision, report URIs, issues).
 - **Response** (`201 Created`):
   ```json
   {
@@ -126,7 +125,7 @@ always contain at least `artifact.bin` (opaque bytes) and `manifest.json`
 (ADK-compatible metadata). `artifact_id` is generated as
 `${run_id}/${stage}/${artifact_type}/${uuid4_hex}` to guarantee uniqueness while
 remaining debuggable. Stages map 1:1 with production_agent stages (e.g.,
-`plan_intake`, `dialogue_audio`, `shot_001`, `qa_publish`).
+`plan_intake`, `dialogue_audio`, `shot_001`, `finalize`).
 
 Rules:
 - Directory names must be URL-safe (`[a-zA-Z0-9._-]`).
@@ -160,7 +159,6 @@ CREATE TABLE IF NOT EXISTS artifacts (
   size_bytes INTEGER NOT NULL,
   checksum_sha256 TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  qa_decision TEXT,
   metadata TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_artifacts_run_stage ON artifacts(run_id, stage);
@@ -199,7 +197,7 @@ All error responses share the shape:
   the helper resolves URIs.
 - Manifest JSON mirrors ADK’s keys: `artifact_type`, `artifact_uri`,
   `local_path`, `download_url` (file:// path), `schema_uri`, `checksum`,
-  `size`, `qa` metadata, and `tags`.
+  `size`, and `tags`.
 - `/status` and `/artifacts` continue to read manifests via helper APIs; they
   should not know whether data lives in ADK or the filesystem.
 - Publish telemetry via `adk_helpers.write_memory_event()` whenever artifacts

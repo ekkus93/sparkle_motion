@@ -3,7 +3,7 @@
 This document collects the detailed operational notes that back the slimmed-down `README.md`. Refer to it whenever you need the full ADK setup steps, GPU smoke instructions, or notebook walkthroughs.
 
 ## Agents vs FunctionTools
-- **Agents (keep the `_agent` suffix):** `production_agent` is now the ADK root `LlmAgent` entry point. It calls the script stage (powered by `script_agent`) to draft a `MoviePlan`, then executes the downstream images/video/TTS/assemble stages. QA automation was removed during the Stage 3 sunset, so manual review is logged via memory events until a new FunctionTool lands. `script_agent` still runs as an ADK agent, but it is only invoked by the workflow's script stage—operators do not call it directly anymore.
+- **Agents (keep the `_agent` suffix):** `production_agent` is now the ADK root `LlmAgent` entry point. It calls the script stage (powered by `script_agent`) to draft a `MoviePlan`, then executes the downstream images/video/TTS/assemble stages. Finalize now emits the deliverable artifacts directly, so no additional gates run between assemble and delivery. `script_agent` still runs as an ADK agent, but it is only invoked by the workflow's script stage—operators do not call it directly anymore.
 - **Stages implemented as FunctionTools:** `images_sdxl`, `videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, and `assemble_ffmpeg` provide the heavy GPU/IO work. They no longer use the `_agent` suffix, and notebook/control-panel docs reference them strictly as FunctionTools.
 - **Stages vs adapters:** higher-level orchestration modules inside `src/` (e.g., `images_stage`, `tts_stage`) coordinate retries/policy checks and call the FunctionTools above. Only the two orchestration agents listed here surface ADK agent identifiers to users.
 
@@ -111,7 +111,6 @@ The repository defaults to fixture mode so local development does not make real 
    ```bash
    export ADK_PROJECT=sparkle-motion            # or another valid project
    export ADK_API_KEY=sk-live-...
-   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
    ```
 
    When running the ADK publish integration test, also set `ADK_PUBLISH_INTEGRATION=1` so pytest collects it.
@@ -223,7 +222,7 @@ Why adopt A2A later?
 
 High-level adoption plan
 1. Introduce an A2A server (or client) shim inside `production_agent` so plan steps map to A2A invocations instead of direct FunctionTool calls.
-2. Wrap the existing adapters (images, videos, TTS, assemble, lipsync, and any future QA replacement) with lightweight A2A endpoints that expose the same payload schema they already validate today.
+2. Wrap the existing adapters (images, videos, TTS, assemble, lipsync, and any future stages) with lightweight A2A endpoints that expose the same payload schema they already validate today.
 3. Extend the artifact/telemetry hooks to include A2A trace IDs so cross-agent debugging remains intact, and document the contract for external partners.
 
 ## Release notes
@@ -249,7 +248,7 @@ Follow these steps to run the full notebook workflow inside Google Colab with a 
    - Cell 11 demonstrates starting a production run via raw HTTP (`/invoke`) and polling `/status`, updating the control panel with the new run ID when finished.
 10. **Advanced control + artifacts tooling (Cells 12–19).**
     - The advanced control panel cell shows how to instantiate `ControlPanel` manually with custom profiles/timeouts.
-   - The final deliverable helper (Cells 13–14) fetches the `video_final` manifest, surfaces manual-review reminders/badges, downloads the final MP4, and optionally triggers a Colab download prompt.
+   - The final deliverable helper (Cells 13–14) fetches the `video_final` manifest, surfaces finalize status badges, downloads the final MP4, and optionally triggers a Colab download prompt.
     - The artifacts viewer (Cells 15–18) refreshes `/artifacts` responses for any run/stage, supports auto-refresh, and renders inline previews when local paths exist.
 11. **Optional smoke + notebook helpers (Cells 20+).**
     - Cell 19 runs `preview_helpers` to embed audio/video previews inline.
@@ -257,4 +256,4 @@ Follow these steps to run the full notebook workflow inside Google Colab with a 
     - Cell 21 runs the orchestrator `Runner` in pure Python (fixture) mode to ensure Drive folders are writable without touching Workflow Agent APIs.
 12. **Shut down servers.** When your session ends, use the server-control widgets to stop `script_agent` and `production_agent`, releasing the GPU. If you started them outside Colab, stop those processes in the original terminal instead.
 
-For more context on each helper cell, see `docs/NOTEBOOK_AGENT_INTEGRATION.md` (control panel behavior, manual-review workflows) and `docs/TODO.md` (live checklist + validation notes). If anything differs from these instructions, re-sync the repo and re-open the notebook to pick up the latest workflow helpers.
+For more context on each helper cell, see `docs/NOTEBOOK_AGENT_INTEGRATION.md` (control panel behavior, finalize-only workflows) and `docs/TODO.md` (live checklist + validation notes). If anything differs from these instructions, re-sync the repo and re-open the notebook to pick up the latest workflow helpers.
