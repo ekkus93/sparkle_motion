@@ -18,4 +18,5 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 ipywidgets>=8.1
 huggingface_hub
+syncsdk
 
