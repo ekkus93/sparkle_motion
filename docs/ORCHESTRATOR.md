@@ -4,6 +4,13 @@ Per-stage contract — Sparkle Motion orchestrator
 This document summarizes the per-stage contract the orchestrator expects and
 the checkpoint format used to support resume and retry semantics.
 
+> **QA automation status (2025-12-07):** The automated QA stages and
+> `qa_qwen2vl` FunctionTool have been fully removed from the runtime. The
+> orchestrator currently ends with the `assemble` stage, produces final media
+> artifacts, and relies on human review or downstream systems for any QA needs.
+> This document now describes the QA-free pipeline. When QA is reintroduced we
+> will restore the retired sections and call out the new gating behavior.
+
 1) Stage callable signature
 ---------------------------
 
@@ -38,7 +45,6 @@ Side-effects:
 | `tts` | Generate dialogue WAVs via TTS adapter (per-line synthesis). | `ShotSpec.dialogue` and `characters.voice_profile`. | Stores ordered per-line WAV paths in `dialogue_audio` and Step metadata for downstream tooling. | `{"lines_synthesized": <int>, "voice_model": "polyglot-v1", "line_artifacts": [...]}`. |
 | `lipsync` | Wav2Lip (or stub) to merge audio + raw video. | `raw_clip`, `dialogue_audio`. | Writes `final_video_clip` per shot. | `{"clips_synced": <int>, "adapter": "wav2lip"}`. |
 | `assemble` | Concatenate final clips, add BGM, output movie. | `final_video_clip` entries, `MoviePlan.metadata` (e.g., frame rate). | May record top-level extras such as `asset_refs.extras["final_movie"] = str(path)`. | `{"final_path": "movie_final.mp4", "duration": 12.4, "video_codec": "mpeg4", "audio_codec": "aac"}`. |
-| `qa` | Run automated QA, persist report, and evaluate policy gates. | `MoviePlan`, `AssetRefs`, QA policy. | Writes QA report to `run_dir/qa_report.json` and `qa_actions.json` (gating summary); `asset_refs` untouched. | `{"qa_report": "qa_report.json", "issues_found": <int>, "decision": "approve", "qa_policy_action": "approve"}`. |
 
 Stages run in the order defined above. Each stage is responsible for:
 1. Reading only the inputs listed in the table (other keys are considered implementation detail and should not be relied upon).
@@ -46,13 +52,13 @@ Stages run in the order defined above. Each stage is responsible for:
 3. Updating `asset_refs` atomically (mutate then persist `runs/<run_id>/asset_refs.json`).
 4. Emitting a checkpoint JSON payload that captures the stage status and enough metadata for operators to reason about retries.
 
-**Stub adapters for local runs.** Wan, TTS, Wav2Lip, assemble, and QA adapters now ship with deterministic fallbacks backed by `src/sparkle_motion/adapters/stub_adapter.py`. These helpers generate minimal-yet-valid PNG/MP4/WAV artifacts (leveraging `ffmpeg` when available) so that `tests/test_smoke.py` and Colab dry runs produce the same filesystem layout as production, minus the heavyweight models. Replacing them with real integrations only requires swapping the adapter implementation; the orchestrator contract remains unchanged.
+**Stub adapters for local runs.** Wan, TTS, Wav2Lip, and assemble adapters ship with deterministic fallbacks backed by `src/sparkle_motion/adapters/stub_adapter.py`. These helpers generate minimal-yet-valid PNG/MP4/WAV artifacts (leveraging `ffmpeg` when available) so that `tests/test_smoke.py` and Colab dry runs produce the same filesystem layout as production, minus the heavyweight models. Replacing them with real integrations only requires swapping the adapter implementation; the orchestrator contract remains unchanged.
 
 ### Service wiring & tool catalog
 
 - **SessionService** (`src/sparkle_motion/services.py`) issues the `run_id`, prepares `runs/<run_id>/` (artifacts, checkpoints, human-review folders), and hands the runner a `SessionContext`. Plugging in the official ADK service later is a matter of passing a different implementation into `Runner(session_service=...)`.
 - **ArtifactService** records every persisted output in `runs/<run_id>/artifacts.json` so humans/agents have a canonical lookup for Drive paths or URIs. Stage adapters call `artifact_service.register(name, path)` after writing files.
-- **MemoryService** appends structured events (stage begin/success/fail, QA verdicts, human-review notes) to `runs/<run_id>/memory_log.json`. This is the long-lived log ADK agents or dashboards can consume.
+- **MemoryService** appends structured events (stage begin/success/fail plus human-review notes) to `runs/<run_id>/memory_log.json`. This is the long-lived log ADK agents or dashboards can consume.
 - **ToolRegistry** mirrors ADK’s FunctionTool catalog. Each stage registers its callable/metadata with the registry, and the runner resolves stages via registry lookups, which allows hot-swapping adapters (local vs. remote) without editing orchestrator logic.
 
 These abstractions keep the runner faithful to ADK patterns while remaining lightweight for the current Colab workflow.
@@ -77,9 +83,9 @@ These abstractions keep the runner faithful to ADK patterns while remaining ligh
 
 - `tests/test_smoke.py` exercises the default stubbed adapters end-to-end using
   a tiny `MoviePlan`. It asserts the run directory contains `movie_plan.json`,
-  `asset_refs.json`, `qa_report.json`, generated media assets, and the merged
-  `run_events.json` timeline. This test runs quickly (<1s) and serves as a CI
-  gate before wiring heavier adapters or Colab workflows.
+  `asset_refs.json`, generated media assets, and the merged `run_events.json`
+  timeline. This test runs quickly (<1s) and serves as a CI gate before wiring
+  heavier adapters or Colab workflows.
 
 #### Operator playbook — inspecting `line_artifacts`
 
@@ -91,7 +97,7 @@ These abstractions keep the runner faithful to ADK patterns while remaining ligh
   `watermarked` flag.
 3. To trace a specific dialogue line, copy its `artifact_uri` into
   `adk artifacts download <uri>` (or open the local `runs/<run_id>/audio/...`
-  path) and compare against downstream lipsync/QA entries. Because we write one
+  path) and compare against downstream lipsync entries. Because we write one
   record per line, the ordering matches the original script text and stays
   deterministic even when runs are resumed mid-stage.
 
@@ -120,7 +126,7 @@ Below is the canonical contract for each stage. When multiple adapters exist (e.
 ##### `tts`
 - **Reads**: `ShotSpec.dialogue` text plus per-character `voice_profile`. The production agent resolves line-level `voice_config` using the plan’s `characters.voice_profile` map and passes it through to `tts_stage.synthesize()`.
 - **Writes**: WAV files per line under `run_dir/audio/<shot_id>/<line>.wav`, publishes each clip via `adk_helpers.publish_artifact(artifact_type="tts_audio")`, and stores the resulting list (ordered to match dialogue indexes) in `asset_refs.shots[shot_id].dialogue_audio`.
-- **Metadata**: `StepExecutionRecord.meta["tts"]` now records `line_artifacts` (line index, provider_id, voice_id, artifact_uri, duration, sample_rate, bit_depth, watermark flag) plus aggregate duration and `dialogue_paths`. Stages that depend on dialogue (lipsync, QA) should rely on those metadata entries instead of re-reading the filesystem.
+- **Metadata**: `StepExecutionRecord.meta["tts"]` now records `line_artifacts` (line index, provider_id, voice_id, artifact_uri, duration, sample_rate, bit_depth, watermark flag) plus aggregate duration and `dialogue_paths`. Stages that depend on dialogue downstream (lipsync, assemble) should rely on those metadata entries instead of re-reading the filesystem.
 - **Env gating**: Real adapters only execute when `SMOKE_TTS=1` (or `SMOKE_ADAPTERS=1`) is set; otherwise the fixture adapter produces deterministic WAV placeholders. This keeps Colab/CI runs inexpensive while still emitting artifact metadata that matches production structure.
 
 ##### `lipsync`
@@ -133,11 +139,6 @@ Below is the canonical contract for each stage. When multiple adapters exist (e.
 - **Writes**: final MP4 (and optional thumbnails) stored in `asset_refs.extras`.
 - **Metadata**: `final_path`, `duration_sec`, `video_codec`, `audio_codec`, `shots_used` (ordered list).
 
-##### `qa`
-- **Reads**: canonical QA policy, `MoviePlan`, `AssetRefs`.
-- **Writes**: `qa_report.json` under `run_dir`, checkpoint with decision, optional HTML summary.
-- **Metadata**: `qa_report`, `decision`, `issues_found`, `policy_version`.
-- **Human review bridge**: after QA (or earlier stages), the runner consults `runs/<run_id>/human_review/*.json` (see “Human review checkpoints”) and records reviewer decisions in `memory_log.json` so manual approvals integrate cleanly with automation.
 
 2) Checkpoint format
 ---------------------
@@ -283,16 +284,13 @@ Schema and policy artifacts are versioned once and consumed everywhere via
 `configs/schema_artifacts.yaml`. The helper module
 `sparkle_motion.schema_registry` reads that file and exposes utility methods:
 
-- `movie_plan_schema()` / `asset_refs_schema()` / `qa_report_schema()` /
-  `stage_event_schema()` / `checkpoint_schema()` — typed helpers returning the
+- `movie_plan_schema()` / `asset_refs_schema()` / `stage_event_schema()` /
+  `checkpoint_schema()` / `run_context_schema()` / `stage_manifest_schema()` — typed helpers returning the
   `SchemaArtifact` (with both `.uri` and `.local_path`) for the canonical
   artifacts.
 - `resolve_schema_uri(name, prefer_local=None)` — return either the artifact
   URI or local fallback (with warnings when fixture mode forces a local path).
-- `resolve_qa_policy_bundle()` / `get_qa_policy_bundle()` — surface the QA
-  policy bundle + manifest URIs and local fallbacks packaged by
-  `scripts/package_qa_policy.py`.
-- `list_schema_names()` — enumerate MoviePlan/AssetRefs/QAReport/StageEvent/Checkpoint.
+- `list_schema_names()` — enumerate MoviePlan/AssetRefs/StageEvent/Checkpoint/RunContext/StageManifest.
 
 ScriptAgent prompts should call `schema_registry.movie_plan_schema().uri` when
 populating the `json_schema` parameter in ADK PromptTemplates, while
@@ -307,97 +305,33 @@ payload suitable for `adk llm-prompts push`. Both paths look up
 `artifact://sparkle-motion/schemas/movie_plan/v1` via the registry so the
 WorkflowAgent and ScriptAgent stay in sync regardless of runtime.
 
-5) QA policy & thresholds
--------------------------
+5) Manual QA + signoff placeholder
+-----------------------------------
 
-The QA stage consumes a declarative policy to determine whether a run is
-approved, needs regeneration, or must be escalated. The canonical policy lives
-at `configs/qa_policy.yaml`, is mirrored into versioned bundles under
-`artifacts/qa_policy/<version>/`, and is uploaded to ADK as
-`artifact://sparkle-motion/qa_policy/<version>`. Run
-`PYTHONPATH=src python scripts/package_qa_policy.py --version v1` to refresh the
-bundle before publishing. The tarball produced by that script is what you pass
-to `adk artifacts upload`. A JSON Schema export
-(`configs/qa_policy.schema.json`, included in the bundle) documents the
-structure and can be used for validation in tooling.
+Automated QA is currently disabled, so the orchestrator publishes its final
+artifacts immediately after the `assemble` stage. Operators must perform any
+content, safety, or continuity review outside of the pipeline. Recommended
+stopgaps until the `qa_qwen2vl` stack returns:
 
-### Policy structure
+1. **Human review checkpoints.** Continue using the existing
+   `runs/<run_id>/human_review/*.json` markers described later in this document.
+   They pause the pipeline after major stages so editors can inspect artifacts
+   before spending additional GPU time.
+2. **Notebook/UI badges.** Notebook helpers should display a prominent "QA
+   automation disabled" warning near final artifact previews so downstream users
+   know deliverables have not been machine-validated.
+3. **Run metadata.** Production runs should call
+   `adk_helpers.write_memory_event(event_type="qa_automation", payload={"status": "disabled"})`
+   once per run. This makes the gap obvious in `/status` output, logs, and any
+   downstream dashboards that relied on QA verdicts.
+4. **Manual checklists.** Teams that previously depended on `qa_publish`
+   outcomes should track the equivalent checks in their own docs (e.g., finger
+   counts, safety scans, audio continuity) so the gap is covered until automation
+   returns.
 
-```yaml
-# configs/qa_policy.yaml
-version: 1
-thresholds:
-  prompt_match_min: 0.75          # cosine similarity between prompt and caption
-  max_finger_issue_ratio: 0.10    # fraction of frames allowed to flag fingers
-  allow_missing_audio: false
-  rerun_on_artifact_notes: true
-actions:
-  approve_if:
-    - prompt_match >= threshold(prompt_match_min)
-    - finger_issues <= threshold(max_finger_issue_ratio)
-    - artifact_notes == []
-  regenerate_if:
-    - prompt_match < threshold(prompt_match_min)
-    - finger_issues > threshold(max_finger_issue_ratio)
-  escalate_if:
-    - missing_audio_detected == true
-    - artifact_notes contains "policy_violation"
-```
-
-Key requirements:
-
-- `thresholds` defines numeric/boolean knobs the QA adapter can reuse across
-  shots.
-- `actions` lists mutually exclusive predicates. Evaluation order is
-  `approve_if`, then `regenerate_if`, then `escalate_if`; the first matching
-  block determines the outcome.
-
-### QA report payload
-
-The QA adapter must emit JSON conforming to `QAReport` in
-`src/sparkle_motion/schemas.py` (exported to `schemas/QAReport.schema.json`)
-and save it at `runs/<run_id>/qa_report.json`.
-Field overview:
-
-| Field | Notes |
-| --- | --- |
-| `movie_title` | Optional copy of `MoviePlan.title` for completeness. |
-| `per_shot` | List of entries: `shot_id`, numeric `prompt_match`, boolean `finger_issues`, `artifact_notes` (list of strings). Extra metadata is allowed if backward compatible. |
-| `summary` | Free-form text summarizing QA outcome. |
-| `decision` (optional extension) | `"approve" | "regenerate" | "escalate" | "pending"`; recommended for clarity. |
-| `missing_audio_detected` | Shot-level flag used by gating predicates. |
-| `safety_violation` | Shot-level flag used by gating predicates. |
-| `finger_issue_ratio` | Optional ratio (0-1) reported per shot; runner also derives run-level ratios. |
-
-Per-shot entries should also include any measurements referenced by the policy
-(e.g., `missing_audio_detected`, `hands_detected`).
-
-### Gating outcomes
-
-| Decision | Trigger | Runner response |
-| --- | --- | --- |
-| `approve` | All `approve_if` predicates satisfied. | Orchestrator marks run complete; outputs remain on disk. |
-| `regenerate` | Any `regenerate_if` predicate matches. | Runner may requeue specific stages (e.g., images/videos) when `auto_regenerate_on_qa_fail` / `--auto-qa-regenerate` is enabled, or leave a TODO for operators. |
-| `escalate` | Any `escalate_if` predicate matches. | Runner halts and notifies humans; no automatic retries. |
-
-### Integration contract
-
-1. `qa_adapter.run_qa(movie_plan, asset_refs, run_dir)` evaluates every shot,
-  and writes `qa_report.json` plus a checkpoint.
-2. The checkpoint metadata should include `{"qa_report": "qa_report.json", "decision": "approve"}`.
-3. After a successful QA stage the runner loads `configs/qa_policy.yaml`,
-  validates it against `configs/qa_policy.schema.json`, validates the QA
-  report against `schemas/QAReport.schema.json`, and evaluates policy
-  predicates to compute an action (approve/regenerate/escalate).
-4. The resulting gating plan is persisted to `qa_actions.json`, registered via
-  `ArtifactService`, and mirrored into `memory_log.json` as
-  `qa_gating_decision` events (plus `qa_regenerate_required` or
-  `qa_escalated` when relevant).
-5. Operators can either rely on the `--auto-qa-regenerate` CLI flag (or
-  `auto_regenerate_on_qa_fail=True` when instantiating `Runner`) to rehearse the
-  recommended stages automatically, or call
-  `Runner.resume_from_stage(..., stage=<first regenerate stage>)` manually to
-  apply the fix and review the recorded reasons.
+The old QA policy files (`configs/qa_policy.yaml`, schema, packaging script) and
+schema catalog entries have been removed; recreating them will be part of the
+future reintroduction plan.
 
 5) Error handling and retries
 ------------------------------
@@ -419,7 +353,7 @@ Per-shot entries should also include any measurements referenced by the policy
 7) Contracts / Types
 --------------------
 
-- `MoviePlan` / `ShotSpec` / `AssetRefs` / `QAReport` are defined in
+- `MoviePlan` / `ShotSpec` / `AssetRefs` are defined in
   `src/sparkle_motion/schemas.py` and should be used by stage implementations
   for input validation and serialization.
 
@@ -437,9 +371,9 @@ Per-shot entries should also include any measurements referenced by the policy
   specified stage and every subsequent stage while skipping earlier ones. When
   `movie_plan` is omitted the runner loads `runs/<run_id>/movie_plan.json`.
   Useful after manual edits to assets or when a stage failed mid-run.
-- `Runner.retry_stage(run_id=..., stage="qa", movie_plan=None)` — reruns only the
+- `Runner.retry_stage(run_id=..., stage="assemble", movie_plan=None)` — reruns only the
   provided stage (no other stages execute). This forces a new checkpoint even if
-  the previous run succeeded, which is helpful after fixing QA policies or
+  the previous run succeeded, which is helpful after fixing final-assembly
   assets referenced by a single stage.
 - Both helpers validate the stage name and internally delegate to
   `Runner.run()` with the appropriate `resume/start_stage/only_stage` values, so
@@ -474,5 +408,5 @@ These checkpoints keep the prototype human-in-the-loop friendly while aligning w
 
 For additional context, see:
 - `src/sparkle_motion/orchestrator.py` for the reference runner implementation and fallback behavior.
-- `src/sparkle_motion/schemas.py` for the canonical `MoviePlan`, `AssetRefs`, and QA models.
+- `src/sparkle_motion/schemas.py` for the canonical `MoviePlan`, `AssetRefs`, and related models.
 - `docs/ORCHESTRATOR.md` (this file) for the authoritative stage contract—update it before altering stage order or checkpoint semantics.

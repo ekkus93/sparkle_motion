@@ -578,6 +578,7 @@ Clients should treat any missing `video_final` row as a terminal error and displ
 
 ### Human governance hooks (QA paused)
 - Script review and any manual approval flows continue to use ADK’s review queue (`request_human_input`). With QA automation disabled, the same plumbing now tracks pause/resume acknowledgements and operator annotations so we can reintroduce QA without new infrastructure.
+- Operators log the current manual decision by writing `qa_manual_review` / `qa_automation` memory events (via `adk_helpers.write_memory_event`) after reviewing the `video_final` artifact. This keeps dashboards aware of the latest sign-off without blocking runs on missing automation.
 - New stages still plug into the WorkflowAgent graph and inherit the same governance wiring; when QA returns it will live alongside `finalize` rather than reviving the removed FunctionTool.
 
 ### Operational summary

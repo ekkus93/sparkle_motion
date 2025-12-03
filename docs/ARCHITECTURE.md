@@ -807,24 +807,20 @@ drive the immediate workstream and the TODO list.
 		`imageio-ffmpeg` for verification. Unit tests focus on command generation
 		and error handling; smoke tests (gated) assemble short synthetic clips.
 
-- **qa_qwen2vl**
-	- Model/Tool: `Qwen/Qwen2-VL-7B-Instruct` (HF) paired with `AutoProcessor`
-		and `qwen_vl_utils.process_vision_info` helpers. Supports mixed
-		image+text prompts formatted via the chat template.
-	- Integration: build `inspect_frames(frames, prompts, opts)` that packages
-		messages, sets processor pixel ranges (`min_pixels`, `max_pixels` or
-		`resized_height`/`width` multiples of 28), selects attention
-		implementations (flash2 when available), and runs inference under
-		`gpu_utils.model_context('qa/qwen2vl', device_map='auto', torch_dtype='auto')`.
-		Return structured `QAReport` artifacts with per-frame scores, flags,
-		confidence summaries, and attach them to memory events. When confidence is
-		indeterminate, call `request_human_input` with the report URI.
-	- Env vars: `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_PIXELS_MIN/MAX`,
-		`QA_QWEN2VL_DTYPE`, `SMOKE_QA`.
-	- Dependencies (proposal): `transformers` (recent main to avoid
-		`KeyError: 'qwen2_vl'`), `qwen-vl-utils`, `torch` with BF16/FP16 support,
-		`safetensors`, optional `accelerate`. Integration smokes stay gated behind
-		`SMOKE_ADK=1` / `SMOKE_QA=1`.
+- **Manual review placeholder**
+	- Context: the Stage 3 sunset removed the automated QA FunctionTool.
+		Operators now review the assembled outputs (base images through
+		`video_final`) using the notebook preview helpers and log their decision via
+		`adk_helpers.write_memory_event(event_type="qa_manual_review", ...)` so the
+		run history still shows a clear approval trail.
+	- Integration: notebook control panels highlight manual-review steps,
+		encourage entering reviewer notes, and expose `request_human_input` for any
+		runs that require escalation. Downstream automation that previously consumed
+		`QAReport` artifacts now relies on these memory events and reviewer note
+		attachments until a new FunctionTool is introduced.
+	- Future work: when QA automation returns it will be layered on top of the
+		`finalize` stage instead of reviving the old FunctionTool. Env vars and
+		SMOKE flags will be reintroduced as part of that rollout.
 
 ### Implementation notes & process
 

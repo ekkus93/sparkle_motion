@@ -4,6 +4,13 @@ This document captures how users interact with the Sparkle Motion agents from a
 Google Colab notebook. It is intentionally iterative; we will refine the flow as
 the UI and orchestration harden.
 
+> **QA automation status (2025-12-07):** Automated QA tooling (`qa_qwen2vl`,
+> QA badges, and `qa_mode` toggles) has been removed from the runtime. The
+> notebook now reflects a streamlined pipeline that ends with the `assemble`
+> stage and expects humans to perform any content or safety review outside of
+> the control panel. All instructions below have been updated to match this
+> QA-free state.
+
 ## Colab-first workflow snapshot
 
 1. User opens the shared Colab notebook (single-user profile).
@@ -13,8 +20,8 @@ the UI and orchestration harden.
 6. The user provides a story prompt/title via notebook UI, which calls the
 	 `script_agent` agent entrypoint to produce a `MoviePlan` artifact.
 4. Once the plan exists, the notebook can trigger `production_agent` to execute
-	 the pipeline (images → videos → TTS → lipsync → assemble → QA) and surface
-	 artifact URIs back to the user.
+	 the pipeline (images → videos → TTS → lipsync → assemble) and surface
+	 artifact URIs back to the user for manual review.
 
 ### Agent vs FunctionTool naming
 
@@ -22,86 +29,14 @@ the UI and orchestration harden.
 	 orchestrator) retain the `_agent` suffix because they are true ADK agents.
 - Every other runtime component is a FunctionTool hosted under
 	 `function_tools/<tool_id>` (e.g., `images_sdxl`, `videos_wan`,
-	 `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`).
-- Stage modules inside `src/sparkle_motion/*_stage.py` coordinate retries, QA,
-	 and policy enforcement before invoking the FunctionTool endpoints. When this
+	 `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`).
+- Stage modules inside `src/sparkle_motion/*_stage.py` coordinate retries and
+	 policy enforcement before invoking the FunctionTool endpoints. When this
 	 document references “stages,” it is describing those orchestration modules;
 	 when it references FunctionTools it is describing the FastAPI entrypoints
-	 listed in the port map below.
-
-## Interactive Python widget controls
-
-The control surface now lives entirely in Python via `ipywidgets` (and
-`google.colab.widgets` where useful). Button callbacks run inside the Colab
-kernel, so every network request originates from Python and easily reaches the
-local FastAPI endpoints without relying on browser JavaScript, which Colab now
-blocks.
-
-Example flow:
-
-1. A notebook cell instantiates widgets (e.g., `widgets.Text`, `widgets.Button`,
-	`widgets.Tab`) plus dedicated `widgets.Output` panes for logs/media.
-2. Button callbacks call helper functions that use `httpx`/`requests` to talk to
-	the `script_agent` and `production_agent` agent entrypoints (for example,
-	`http://localhost:8101/invoke` or `http://localhost:8200/...`). Responses are
-	stored in Python variables for follow-on cells.
-3. The callbacks stream progress into the `Output` areas (or update
-	`widgets.HTML`/`widgets.Textarea`) so users see plan metadata, per-stage status,
-	and artifact URIs without leaving the notebook.
-4. Background polling is implemented with `asyncio` tasks or `threading.Timer`
-	that periodically hit `/ready` or `/status` and then update widget state. All
-	updates happen server-side, so nothing depends on browser scripting.
-
-Key guidelines:
-
-- **Bind servers to `localhost`.** The FunctionTools should continue to listen
-	on `localhost:<port>` so Python clients inside the kernel reach them directly
-	with no need for public tunnels.
-- **Use widget events, not DOM listeners.** `ipywidgets.Button.on_click` and the
-	Colab panel helpers provide structured callbacks that stay in Python; avoid
-	agg wiring to `IPython.display.HTML`.
-- **Keep long-running work asynchronous.** `ipywidgets` outputs should spawn a
-	background task (e.g., `asyncio.create_task`) to avoid blocking the Colab UI
-	thread while polling `/status` or downloading artifacts.
-
-## Start/end frame continuity
-
-- Each `ShotSpec` references the shared `base_images` list for its opening and
-	closing frames. The workflow reuses the rendered end frame from shot *N* as the
-	start frame for shot *N+1* to keep visuals consistent across the full video.
-- When the notebook UI displays the generated plan, we’ll surface these
-	base-image thumbnails so users understand how continuity is enforced (and can
-	tweak them before running the production agent).
-- Production agent passes the previous clip’s final frame into the next
-	`videos_wan` invocation, so adapters and downstream stages always see
-	consistent frame references.
-
-## Notebook preflight checklist (per Colab session)
-
-1. **Authenticate once**
-	- Run `gcloud auth application-default login` (or your preferred ADC flow) so ADK helpers can reach ArtifactService.
-	- Export the notebook’s run metadata early: `export RUN_ID=$(python - <<'PY' ... )` if you script the bootstrap.
-2. **Set runtime env vars**
-	- Minimum required: `SPARKLE_DB_PATH`, `ARTIFACTS_DIR`, and `GOOGLE_ADK_PROFILE`.
-	- Keep them in a dedicated cell so restarts do not lose the configuration.
-3. **Install Python + system deps**
-	- `pip install -r requirements-ml.txt` plus any gated extras (Wan torch wheels, diffusers patches).
-	- Confirm `ffmpeg` exists with `ffmpeg -version`; if missing run `sudo apt-get update && sudo apt-get install -y ffmpeg`.
-4. **Mount Google Drive (recommended)**
-	- `from google.colab import drive; drive.mount('/content/drive')` keeps artifact and video output persistent across runtimes.
-	- Set `ARTIFACTS_DIR=/content/drive/MyDrive/sparkle_motion/artifacts` so helper cells automatically publish there.
-5. **Skip-Drive fallback (optional)**
-	- When Drive is not mounted, set `ARTIFACTS_DIR=/content/artifacts` and ensure `Path(ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)`.
-	- The final download helper must call `google.colab.files.download` immediately because files vanish when the VM stops.
-6. **GPU + quota sanity checks**
-	- `!nvidia-smi` to confirm you still have an A100 attached before launching tools.
-	- Verify free disk space (`!df -h /content`) so multi-GB videos fit in the selected artifact directory.
-7. **Tool health probes**
-	- Before exposing UI controls, run each FunctionTool’s `/ready` endpoint once to ensure env vars and models loaded successfully.
-
-Run `python -m sparkle_motion.notebook_preflight --requirements-path requirements-ml.txt --mount-point /content/drive --ready-endpoint http://localhost:8101/ready --ready-endpoint http://localhost:8200/ready --skip-gpu-checks` inside the Colab runtime after starting the agents to execute the checklist above in one shot. The helper prints a pass/warn/fail summary so you can confirm ADC, env vars, Drive mount, pip installs, and `/ready` probes before touching the control panel. The same helper backs the new “Colab preflight” notebook cell, so rerunning it later in the session is a single click.
-
-> Design note: Drive mounting remains optional for privacy-sensitive runs, but notebook helpers assume Drive when available so that final MP4 files survive VM restarts.
+	Each envelope is light enough to travel via HTTP/JSON, while the referenced
+	artifacts remain in storage. Resume requests simply point at the same
+	`asset_uri`s so downstream stages can pick up without recomputing.
 
 ### Artifact backend selection
 
@@ -242,15 +177,14 @@ run.
 2. **Tool startup cells**
 	- Each runtime gets a helper cell: start the two agents (`script_agent`,
 		 `production_agent`) first, then launch the FunctionTools (`images_sdxl`,
-		 `videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`,
-		 `qa_qwen2vl`) so they bind to `localhost:<port>` via `uvicorn.run` (or the
+		 `videos_wan`, `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`) so they bind to `localhost:<port>` via `uvicorn.run` (or the
 		 `scripts/run_function_tool.py` helper) inside the notebook session.
 	- Cells display readiness indicators by hitting `/ready` endpoints before
 		exposing UI controls.
 	**Control panel cell**
 	- Builds a widget layout (HBox/VBox/GridBox) with the prompt/title inputs plus
-		new helpers: a `Plan URI` field paired with a `Load Plan JSON` button, run
-		mode dropdowns (`Mode`, `QA Mode`), a `Send plan inline` checkbox, and
+		new helpers: a `Plan URI` field paired with a `Load Plan JSON` button, a run
+		mode dropdown (`Mode`), a `Send plan inline` checkbox, and
 		`Run ID`/`Stage` filters for the artifact viewer. All controls sit above the
 		same `Generate Plan`, `Run Production`, `Pause`, `Resume`, and `Stop`
 		buttons.
@@ -289,15 +223,13 @@ run.
 	user immediately. (Future work: expose “Refine with ScriptAgent” actions so
 	users can request targeted regenerations directly from the notebook UI.)
 
-#### Run + QA toggles
+#### Run modes
 
 - The `Mode` dropdown mirrors the production_agent `mode` flag (`dry` vs.
-	`run`). Dry-runs stop after validation/QA wiring so operators can iterate
-	quickly, while `run` drives the full clip rendering + lipsync path.
-- The `QA Mode` dropdown exposes the `qa_mode` argument without editing env vars.
-	`Full QA` is the default and should be used for deliverables; `Skip QA` matches
-	the `qa_mode="skip"` behavior described below and badges the run as
-	“non-validated.”
+	`run`). Dry-runs stop after validation so operators can iterate quickly, while
+	`run` drives the full clip rendering + lipsync path.
+- With QA removed, the control panel surfaces a static banner reminding users to
+	perform manual review of assembled artifacts before sharing them externally.
 
 #### Plan artifact loader vs. inline submission
 
@@ -319,7 +251,7 @@ run.
 	code.
 - Enabling `Auto-fetch artifacts` causes every poll iteration to call
 	`/artifacts` for the current Run ID, optionally filtered by the `Stage` text
-	box (e.g., `qa_publish`).
+	box (e.g., `assemble`).
 - The `Refresh Artifacts` button triggers an immediate fetch using the same
 	filters so operators can pause polling but still inspect new files on demand.
 - Separate `widgets.Output` panes display one-shot control responses, the live
@@ -366,8 +298,7 @@ ports when another process already occupies the default.
 | FunctionTool | `tts_chatterbox` | `5004` | `PYTHONPATH=src python scripts/run_function_tool.py --tool tts_chatterbox --port 5004` | `SMOKE_TTS=1` / `SMOKE_ADAPTERS=1` for real synthesis, `TTS_CHATTERBOX_MODEL`, `TTS_CHATTERBOX_DEVICE`, `TTS_CHATTERBOX_CACHE_TTL_S` tune the backend |
 | FunctionTool | `lipsync_wav2lip` | `5005` | `PYTHONPATH=src python scripts/run_function_tool.py --tool lipsync_wav2lip --port 5005` | `SMOKE_LIPSYNC=1` (or `SMOKE_ADAPTERS=1`) to invoke Wav2Lip, `LIPSYNC_WAV2LIP_FIXTURE_ONLY=1` to force fixtures, `WAV2LIP_REPO` / `WAV2LIP_CHECKPOINT` point at local assets |
 | FunctionTool | `assemble_ffmpeg` | `5006` | `PYTHONPATH=src python scripts/run_function_tool.py --tool assemble_ffmpeg --port 5006` | `SMOKE_ASSEMBLE=1` / `SMOKE_ADAPTERS=1` to run ffmpeg, `ASSEMBLE_FFMPEG_FIXTURE_ONLY=1` to clamp fixtures, `FFMPEG_PATH` selects the binary |
-| FunctionTool | `qa_qwen2vl` | `5007` | `PYTHONPATH=src python scripts/run_function_tool.py --tool qa_qwen2vl --port 5007` | `SMOKE_QA=1` to enable Qwen2-VL, `QA_QWEN2VL_FIXTURE_ONLY=1` to stay on fixtures, `QA_QWEN2VL_MODEL`, `QA_QWEN2VL_DTYPE`, `QA_QWEN2VL_ATTN` adjust inference |
-| Agent | `production_agent` | `5008` | `PYTHONPATH=src python scripts/run_function_tool.py --tool production_agent --port 5008` | Stage-level flags (`SMOKE_TTS`, `SMOKE_LIPSYNC`, `SMOKE_VIDEOS`, `SMOKE_IMAGES`, `SMOKE_ASSEMBLE`, `SMOKE_QA`, `SMOKE_ADAPTERS`) control which adapters run for real; `SPARKLE_DB_PATH` picks the SQLite store; `ADK_USE_FIXTURE=1` keeps every FunctionTool on fixtures |
+| Agent | `production_agent` | `5008` | `PYTHONPATH=src python scripts/run_function_tool.py --tool production_agent --port 5008` | Stage-level flags (`SMOKE_TTS`, `SMOKE_LIPSYNC`, `SMOKE_VIDEOS`, `SMOKE_IMAGES`, `SMOKE_ASSEMBLE`, `SMOKE_ADAPTERS`) control which adapters run for real; `SPARKLE_DB_PATH` picks the SQLite store; `ADK_USE_FIXTURE=1` keeps every FunctionTool on fixtures |
 
 All commands assume the `sparkle_motion` conda environment is active and that
 your notebook session exported `SPARKLE_DB_PATH`/`ARTIFACTS_DIR` before launching
@@ -406,10 +337,10 @@ points at the correct endpoints.
 	when rendering motion between the linked start/end frames. Once generated, the
 	base images are treated as immutable artifacts; video synthesis tools read
 	them but never mutate or overwrite the originals.
-- After each base image renders, the notebook can trigger a fast QA probe
-	(e.g., checking for correct finger counts). Any failure immediately requests a
-	re-generation from `images_stage` before we advance to expensive stages like
-	video or TTS; this keeps later steps fed with clean inputs.
+- After each base image renders, operators should manually inspect the cached
+	preview (finger counts, prompt adherence). If an image looks off, use the
+	`images` resume helper to regenerate before paying for video or TTS; this keeps
+	later steps fed with clean inputs even without automated QA.
 - When editors adjust shot durations they must also ensure the base image count
 	still equals `len(shots) + 1`; otherwise notebook validation will block the
 	run with a timeline/keyframe mismatch error.
@@ -591,9 +522,9 @@ points at the correct endpoints.
 ### 4. Video clip generation + continuity
 
 1. For each shot, `production_agent` calls `images_sdxl` once to render the
-	full immutable `base_images` list, running the per-image QA checks (finger
-	counts, etc.) and regenerating failed frames before moving on. Once the stack
-	passes QA, the relevant start/end assets go to `videos_wan` with shot-specific
+	full immutable `base_images` list. Operators should spot-check the resulting
+	frames (finger counts, prompt adherence) before continuing. Once the stack is
+	approved, the relevant start/end assets go to `videos_wan` with shot-specific
 	`num_frames`, `fps`, and continuity inputs:
 	- `start_frame`: `base_images[start_base_image_id]` (which also equals the
 		previous shot’s end frame) to seed continuity.
@@ -604,22 +535,19 @@ points at the correct endpoints.
 3. AssetRefs stores references so assemble/lipsync stages can read the correct
 	files.
 
-### 5. Clip-level QA + retries
+### 5. Manual clip review + retries
 
-1. As soon as a clip renders, `production_agent` streams a representative stack
-	of frames plus the associated prompts into `qa_qwen2vl` (the same FunctionTool
-	used at publish time) to catch finger-count mistakes, prompt mismatches, or
-	safety issues before expensive downstream work.
-2. QA executes per shot with a small retry budget (e.g., three attempts). When
-	it reports `clip_passed: false`, the agent requeues that shot with the same
-	`render_profile` + continuity inputs, logs the attempt to the Step log, and
-	blocks the workflow until QA passes.
-3. Every QA attempt writes a JSON report + thumbnails to artifacts so the
-	notebook can show why a clip failed and let a user trigger another retry or
-	abort gracefully.
-4. Dev environments can request `qa_mode="skip"` to bypass this stage for
-	faster iteration. The stage still emits `qa_skipped: true` so the notebook can
-	badge the run as “non-validated.”
+Automated clip-level QA no longer runs inside the notebook workflow. After each
+`videos_wan` invocation completes, operators should:
+
+1. Inspect the emitted MP4 plus thumbnails via the artifact viewer to confirm
+	prompt adherence, continuity, and safety requirements.
+2. Use `Resume from stage` helpers to rerun `images`/`videos` selectively when a
+	shot needs regeneration. The control panel logs these manual retries next to
+	the StepExecutionRecord snapshot so history stays auditable.
+3. Document any manual overrides (e.g., “shot_002 regenerations: 2”) in the run
+	notes field or via `adk_helpers.write_memory_event()` so `/status` reflects the
+	missing automation until QA returns.
 
 ### 6. Assembly + lipsync integration
 
@@ -646,24 +574,21 @@ the user prompt into concrete inputs/outputs:
 | --- | --- | --- | --- |
 | **Plan intake** | MoviePlan JSON (inline or fetched via `artifact_uri`), schema hash, policy gate config, environment paths (`ARTIFACTS_DIR`, etc.), `render_profile` block | Canonical `RunContext` (shot order, dialogue timeline, base-image map, selected render profiles), validation report, policy audit log | Fails fast if schema mismatch, missing base-image references, or render_profile absent/unsupported. |
 | **Dialogue & audio** | `dialogue_timeline`, character voice profiles, TTS model settings, optional pronunciation overrides | Per-line WAVs + metadata (durations, viseme hints), stitched `tts_timeline.wav`, `dialogue_timeline_audio.json` with measured offsets/duration deltas | Stitched file length must equal cumulative shot duration; offsets stored for assemble/lipsync. |
-| **Base images + early QA** | `base_images` array, SDXL config (prompt, seed, guidance), regeneration policy, QA probe settings | QA-approved PNG/WEBP URIs (one per base image), QA reports per frame, retry history | Any failed finger-count probe triggers regeneration before progressing to video. |
+| **Base images** | `base_images` array, SDXL config (prompt, seed, guidance), regeneration policy | PNG/WEBP URIs (one per base image), render metadata, optional reviewer notes | Operators manually inspect frames after rendering and re-run `images_sdxl` when continuity or safety issues appear. |
 | **Video clips** | Shot list (start/end base-image URIs, duration, motion prompt, fps, frame count), video `render_profile` entry (model_id, caps), continuity constraints | Per-shot MP4/PNG sequences, motion metadata (num frames, seed), continuity confirmation records | Uses shot *N* end frame as shot *N+1* start frame; stores asset refs for assembly; honoring the declared model is mandatory. |
-| **Video QA (per shot)** | Clip asset URIs, prompts/motion summaries, QA policy, retry budget, `qa_mode` flag | QA report per clip, `clip_passed` boolean, retry counters, `qa_skipped` marker | Failing clips are rerendered before progressing; `qa_mode="skip"` short-circuits the stage (dev-only). |
 | **Assembly & lipsync** | Ordered clip URIs, per-shot durations, stitched WAV, lipsync model config | `video_raw_concat.mp4`, lip-synced `video_final.mp4`, alignment map between audio and frames | Ensures total runtime parity between audio and video before invoking lipsync. |
-| **QA + artifacts** | Final video/audio artifacts, QA policy spec, telemetry sink (StepExecutionRecord schema) | QA reports (pass/fail per probe), published artifact manifests, telemetry emitted for notebook | Final stage skips redundant finger checks (already enforced per clip) and focuses on cross-shot safety/continuity/audio probes; failures halt the run and surface artifacts for review. |
+| **Manual review & publish** | Final video/audio artifacts, run metadata, reviewer checklist | Notebook/Drive notes, `video_final` artifact manifest, memory events documenting review outcome | Teams perform safety/continuity signoff here until automated QA returns; use `/artifacts` + inline previews to guide decisions. |
 
-##### QA modes (full vs. dev skip)
+##### Manual review expectations
 
-- `production_agent` accepts a `qa_mode` option (`"full"` by default). When
-	a notebook supplies `"skip"`—or sets `DISABLE_QA_AGENTS=1` in the environment
-	during local iteration—the clip-level QA stage and final `qa_publish` stage
-	emit `qa_skipped: true` without calling the heavy models. CI and production
-	deployments ignore the skip request.
-- Whenever QA is skipped, the run summary includes `qa_required: true` so the
- notebook can warn the user that the artifacts are not ready for distribution
- until QA is rerun, and the dashboard must render a persistent “QA skipped”
- badge or warning banner next to the final artifacts panel so users cannot
- miss that the deliverable still requires a full QA pass.
+- Because automated QA has been removed, every production run should include a
+	manual review note before sharing outputs. The control panel surfaces a
+	reminder banner near the final deliverable helper; update it with reviewer
+	initials and date when signoff is complete.
+- If a run bypasses manual review (e.g., fixture-only experimentation), log the
+	decision via `adk_helpers.write_memory_event(event_type="qa_manual_review",
+	payload={"status": "skipped"})` so `/status` and artifacts history call out the
+	exception.
 
 ##### Stage-to-stage payload examples
 
@@ -763,7 +688,7 @@ rerunning upstream work.
 }
 ```
 
-###### Base images + early QA
+###### Base images
 
 **Input envelope**
 
@@ -776,8 +701,7 @@ rerunning upstream work.
 			{"id": "frame_000", "prompt": "Night skyline...", "metadata": {"seed": 99123}},
 			{"id": "frame_001", "prompt": "Camera settles..."}
 		],
-		"sdxl_config": {"scheduler": "dpm++", "guidance": 7.5},
-		"qa_policy": {"finger_count": {"required": 5}}
+		"sdxl_config": {"scheduler": "dpm++", "guidance": 7.5}
 	}
 }
 ```
@@ -793,11 +717,8 @@ rerunning upstream work.
 			{"id": "frame_000", "asset_uri": "gs://.../base_images/frame_000.png", "mime_type": "image/png"},
 			{"id": "frame_001", "asset_uri": "gs://.../base_images/frame_001.png", "mime_type": "image/png"}
 		],
-		"qa_reports": [
-			{"asset_id": "frame_000", "status": "pass", "finger_count": 5}
-		]
 	},
-	"artifacts": ["gs://.../base_images/base_images_manifest.json", "gs://.../qa/base_image_qa.json"]
+	"artifacts": ["gs://.../base_images/base_images_manifest.json"]
 }
 ```
 
@@ -846,41 +767,6 @@ rerunning upstream work.
 }
 ```
 
-###### Video QA (per shot)
-
-**Input envelope**
-
-```json
-{
-	"stage": "video_clip_qa",
-	"run_id": "run_9c29599b",
-	"inputs": {
-		"clip_uri": "gs://.../video_clips/shot_001.mp4",
-		"shot_id": "shot_001",
-		"prompt": "Slow crane down...",
-		"qa_policy": {"finger_count": {"required": 5}},
-		"qa_mode": "full",
-		"retry_budget": 3
-	}
-}
-```
-
-**Output envelope**
-
-```json
-{
-	"stage": "video_clip_qa",
-	"status": "succeeded",
-	"outputs": {
-		"clip_passed": true,
-		"qa_report_uri": "gs://.../qa/shot_001_report.json",
-		"attempt": 1,
-		"qa_skipped": false
-	},
-	"artifacts": ["gs://.../qa/shot_001_report.json"]
-}
-```
-
 ###### Assembly & lipsync
 
 **Input envelope**
@@ -913,43 +799,6 @@ rerunning upstream work.
 }
 ```
 
-###### QA + artifacts
-
-Clip-level QA filters most issues earlier, so the final `qa_publish` sweep
-explicitly skips finger-count consistency and instead targets cross-shot
-anomalies introduced during assembly/lipsync—e.g., content safety drift,
-continuity regressions, or audio glitches.
-
-**Input envelope**
-
-```json
-{
-	"stage": "qa_publish",
-	"run_id": "run_9c29599b",
-	"inputs": {
-		"video_final_uri": "gs://.../assembly/video_final.mp4",
-		"audio_uri": "gs://.../tts/tts_timeline.wav",
-		"policy": {"checks": ["finger_count", "exposed_content", "audio_glitches"]}
-	}
-}
-```
-
-**Output envelope**
-
-```json
-{
-	"stage": "qa_publish",
-	"status": "failed",
-	"outputs": {
-		"qa_report_uri": "gs://.../qa/final_report.json",
-		"failing_checks": [
-			{"name": "finger_count", "shot_id": "shot_002", "detail": "detected six fingers"}
-		]
-	},
-	"artifacts": ["gs://.../qa/final_report.json", "gs://.../telemetry/run_9c29599b.json"]
-}
-```
-
 Each envelope is light enough to travel via HTTP/JSON, while the referenced
 artifacts remain in storage. Resume requests simply point at the same
 `asset_uri`s so downstream stages can pick up without recomputing.
@@ -958,7 +807,7 @@ artifacts remain in storage. Resume requests simply point at the same
 
 1. Progress log displays each stage’s StepExecutionRecord as it completes (e.g.,
 	via `widgets.Output` or `widgets.Accordion`).
-2. Artifact table lists URIs + local paths for plan, audio, video, QA report.
+2. Artifact table lists URIs + local paths for plan, audio, video, assemble outputs, and any reviewer notes.
 3. Optional preview section uses `IPython.display.Video` or
 	`google.colab.widgets.TabBar` to show the final MP4 when ready.
 4. Error states show the stage name, error message, and a “retry stage” action
@@ -986,11 +835,11 @@ artifacts remain in storage. Resume requests simply point at the same
 	by hand. Example helper:
 
 	- Shot-scoped manifests now include `shot_frames`, `shot_dialogue_audio`, `shot_video`, `shot_lipsync_video`,
-	  `shot_qa_base_images`, `shot_qa_video`, and `assembly_plan`. When rendering the accordion, surface the
-	  QA rows next to their corresponding media rows so operators can immediately see the decision
-	  (`qa_passed`, `qa_decision`, `issue_count`). The JSON summaries referenced by these manifests live under
-	  `artifacts/runs/<run_id>/<plan_id>/qa/<stage>/<shot_id>.json`; the UI should link to or expand that metadata
-	  when users hover a failed QA badge or choose a resume point.
+	  and `assembly_plan`. Surface any `metadata.review_notes`, `review_status`, or similar manual-review fields
+	  next to their corresponding media rows so operators can immediately see what still needs attention. Reviewer
+	  attachments (screenshots, transcripts) live alongside the manifest within the same
+	  `artifacts/runs/<run_id>/<plan_id>/<stage>/<shot_id>/` tree; link to those files when operators expand a row
+	  so they can capture context before deciding whether to resume a stage.
 
 	```python
 	import requests
@@ -1020,9 +869,9 @@ artifacts remain in storage. Resume requests simply point at the same
 	The same rows drive whatever UI widget lists the individual per-line clips (the manifest’s
 	`metadata.entry_count` clarifies how many to expect). Each `/artifacts` response now includes
 	per-stage `preview` metadata with the first image/audio/video entries plus aggregates such as
-	`media_summary` (counts, total duration, playback readiness) and `qa_summary`. Use those fields to
-	show quick badges (e.g., “2 audio clips · 44s total”) or pick the default player without scanning
-	the full manifest manually.
+	`media_summary` (counts, total duration, playback readiness) and optional `review_summary`. Use those
+	fields to show quick badges (e.g., “2 audio clips · 44s total”) or pick the default player without
+	scanning the full manifest manually.
 - **Pause / resume / stop**: add control endpoints to production_agent so the
 	notebook can orchestrate long-running jobs:
 	- `POST /control/pause` → `{ "run_id": "..." }`
@@ -1037,16 +886,16 @@ artifacts remain in storage. Resume requests simply point at the same
 	```json
 	{
 	  "run_id": "run_9c29599b",
-	  "current_stage": "video_clip_qa",
+	  "current_stage": "assemble",
 	  "status": "running",
 	  "progress": 0.62,
 	  "log": [
 	    {
-	      "stage": "base_images",
+	      "stage": "lipsync",
 	      "status": "succeeded",
 	      "started_at": "2025-11-29T03:52:10Z",
 	      "completed_at": "2025-11-29T03:54:02Z",
-	      "artifacts": ["gs://.../base_images/base_images_manifest.json"]
+	      "artifacts": ["gs://.../lipsync/lipsync_manifest.json"]
 	    }
 	  ]
 	}
@@ -1059,7 +908,7 @@ artifacts remain in storage. Resume requests simply point at the same
 	- Stage progress table that binds the `/status` response to rows with
 	  timestamps, durations, and pass/fail badges.
 	- Asset accordion with tabs for base images, dialogue/TTS clips, video clips,
-	  assembly outputs, and QA reports. Each tab fetches the matching manifest and
+	  assembly outputs, and reviewer notes/manual checklists. Each tab fetches the matching manifest and
 	  renders thumbnails/players via `widgets.Image`, `widgets.Audio`, or
 	  `IPython.display.Video`.
 	- Alert banner that flips red if the latest StepExecutionRecord reports

@@ -13,8 +13,9 @@
   | `tts_agent` | `tts_stage` | Provider-selection stage calling `function_tools/tts_chatterbox`; emits `tts_stage.*` telemetry. |
 
   FunctionTools such as `images_sdxl`, `videos_wan`, `tts_chatterbox`,
-  `lipsync_wav2lip`, `assemble_ffmpeg`, and `qa_qwen2vl` keep their adapter
-  names. Tool IDs, telemetry namespaces, notebooks, and CLI output now match
+  `lipsync_wav2lip`, and `assemble_ffmpeg` keep their adapter
+  names. QA automation tooling was removed during the Stage 3 sunset; notebook
+  control panels now highlight manual review steps instead. Tool IDs, telemetry namespaces, notebooks, and CLI output now match
   this terminology, and `docs/ARCHITECTURE.md#_agent-naming-matrix` is the only
   place that references the legacy suffixes for historical context.
 - **Why it matters:** Earlier docs mixed agents and FunctionTools, which caused
