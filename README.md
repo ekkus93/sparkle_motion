@@ -1,15 +1,19 @@
-# Sparkle Motion — Google Colab A100 Guide
+# Sparkle Motion Movie Machine
+
+Sparkle Motion is an AI-powered video generation system built on top of the ADK. It transforms text prompts into fully rendered short films by orchestrating LLM-driven planning, image/video synthesis, text-to-speech, lip-syncing, and final assembly.
+
+## Getting started 
 
 This repository is meant to run from a single environment: **Google Colab with an A100 GPU runtime**. Everything else (local shells, other GPUs, CI) is out of scope for this README. Follow the steps below to clone the repo inside Colab, bring up the notebook helpers, run a plan, and download the final video.
 
-> For expanded background (ADK architecture, control endpoints, ops playbooks), see `docs/OPERATIONS_GUIDE.md`. Stay in this README while you are inside Colab.
+> For expanded background, see `docs/`
 
 ## Prerequisites
 
 - Google account with access to Colab Pro/Pro+ and an A100 runtime quota.
-- ADK credentials stored in your Google Drive workspace (`ADK_PROJECT`, `ADK_API_KEY`, optional `GOOGLE_APPLICATION_CREDENTIALS`).
+- ADK credentials stored in your Google Drive workspace (`ADK_PROJECT`, `ADK_API_KEY`, `HF_KEY`).
 - Hugging Face token (if any private models are listed in `HF_MODELS`).
-- Enough Drive space for model weights (~25 GB for SDXL + Wan fixtures) plus run artifacts.
+- Enough Drive space for model weights (~100 GB for SDXL + Wan fixtures) plus run artifacts.
 
 ## One-Time Drive Workspace Setup
 
