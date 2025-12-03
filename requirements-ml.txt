@@ -19,4 +19,5 @@ uvicorn[standard]>=0.27
 ipywidgets>=8.1
 huggingface_hub
 syncsdk
+imagehash
 
