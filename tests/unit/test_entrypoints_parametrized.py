@@ -20,7 +20,6 @@ MODULES = [
     "sparkle_motion.function_tools.tts_chatterbox.entrypoint",
     "sparkle_motion.function_tools.lipsync_wav2lip.entrypoint",
     "sparkle_motion.function_tools.assemble_ffmpeg.entrypoint",
-    "sparkle_motion.function_tools.qa_qwen2vl.entrypoint",
 ]
 
 
@@ -100,11 +99,6 @@ def _build_payload(module_path: str, tmp_path: Path, assets: MediaAssets) -> dic
             "height": 240,
             "metadata": {"suite": "param"},
         }
-    if module_path.endswith("qa_qwen2vl.entrypoint"):
-        return {
-            "prompt": "param test",
-            "frames": [_frame_payload_from_path(assets.image)],
-        }
     if module_path.endswith("lipsync_wav2lip.entrypoint"):
         return {
             "face": _frame_payload_from_path(assets.video, frame_id=None),
@@ -117,8 +111,6 @@ def _build_payload(module_path: str, tmp_path: Path, assets: MediaAssets) -> dic
 def _build_missing_payload(module_path: str) -> dict:
     if module_path.endswith("assemble_ffmpeg.entrypoint"):
         return {"clips": []}
-    if module_path.endswith("qa_qwen2vl.entrypoint"):
-        return {"frames": [_frame_payload_from_bytes(b"missing prompt frame")]}
     return {}
 
 

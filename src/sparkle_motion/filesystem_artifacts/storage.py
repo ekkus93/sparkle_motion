@@ -98,12 +98,15 @@ class FilesystemArtifactStore:
             "local_path": str(payload_path),
             "download_url": payload_path.resolve().as_uri(),
             "metadata": dict(manifest.metadata),
-            "qa": manifest.qa,
-            "tags": manifest.tags,
             "local_path_hint": manifest.local_path_hint,
             "storage_backend": "filesystem",
             "created_at": created_at,
         }
+
+        if manifest.qa is not None:
+            manifest_doc["qa"] = manifest.qa
+        if manifest.tags is not None:
+            manifest_doc["tags"] = manifest.tags
 
         manifest_path = artifact_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest_doc, ensure_ascii=False, indent=2), encoding="utf-8")

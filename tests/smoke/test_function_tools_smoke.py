@@ -15,7 +15,6 @@ FUNCTION_TOOL_MODULES = [
     "sparkle_motion.function_tools.images_sdxl.entrypoint",
     "sparkle_motion.function_tools.assemble_ffmpeg.entrypoint",
     "sparkle_motion.function_tools.videos_wan.entrypoint",
-    "sparkle_motion.function_tools.qa_qwen2vl.entrypoint",
     "sparkle_motion.function_tools.script_agent.entrypoint",
     "sparkle_motion.function_tools.lipsync_wav2lip.entrypoint",
     "sparkle_motion.function_tools.tts_chatterbox.entrypoint",
@@ -65,13 +64,6 @@ def test_function_tools_basic_smoke(monkeypatch, deterministic_media_assets: Med
         # expect an artifact_uri pointing to a file:// for fixture mode
         uri = j.get("artifact_uri") or j.get("artifactUri")
         assert uri is not None and uri.startswith("file://"), f"unexpected artifact uri for {mod_path}: {uri}"
-        if mod_path.endswith("qa_qwen2vl.entrypoint"):
-            metadata = j.get("metadata") or {}
-            assert metadata.get("frame_ids") == ["frame-smoke"], "missing frame_ids metadata"
-            assert "frames_detail" in metadata and len(metadata["frames_detail"]) == 1
-            policy = metadata.get("policy") or {}
-            assert policy.get("prompt_match_min") is not None
-            assert "options_snapshot" in metadata
         # optional checks when fixture mode writes files
         try:
             path = Path(uri[len("file://"):])
@@ -106,16 +98,6 @@ def _payload_for_module(module_path: str, artifacts_dir: Path, assets: MediaAsse
             "width": 320,
             "height": 240,
             "metadata": {"suite": "smoke"},
-        }
-    if module_path.endswith("qa_qwen2vl.entrypoint"):
-        return {
-            "prompt": "unit-test prompt",
-            "frames": [
-                {
-                    "id": "frame-smoke",
-                    "data_b64": base64.b64encode(assets.image.read_bytes()).decode("ascii"),
-                }
-            ],
         }
     if module_path.endswith("lipsync_wav2lip.entrypoint"):
         return {

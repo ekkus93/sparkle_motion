@@ -71,8 +71,6 @@ def test_get_status_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
         payload=run_context_payload,
         metadata={
             "plan_id": plan_id,
-            "qa_mode": "skip",
-            "qa_skipped": True,
         },
     )
     _save_manifest(
@@ -81,7 +79,7 @@ def test_get_status_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
         stage="finalize",
         artifact_type="video_final",
         payload={"ok": True},
-        metadata={"plan_id": plan_id, "qa_mode": "skip", "qa_skipped": True},
+        metadata={"plan_id": plan_id},
     )
     registry = get_run_registry()
     registry.discard_run(run_id)
@@ -92,8 +90,6 @@ def test_get_status_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert status["plan_id"] == plan_id
     assert status["plan_title"] == "Filesystem Plan"
     assert status["status"] == "succeeded"
-    assert status["qa_mode"] == "skip"
-    assert status["qa_skipped"] is True
     assert status["artifact_counts"]["finalize"] == 1
     assert status["render_profile"]["video"]["model_id"] == "wan-2.1"
     assert status["metadata"]["foo"] == "bar"
@@ -132,9 +128,6 @@ def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp
         "frame_rate": 24.0,
         "resolution_px": "1280x720",
         "checksum_sha256": "f" * 64,
-        "qa_report_uri": None,
-        "qa_mode": "full",
-        "qa_skipped": False,
         "playback_ready": True,
         "notes": "filesystem fixture",
         "metadata": {"plan_id": plan_id},
@@ -148,7 +141,6 @@ def test_list_artifacts_filesystem_fallback(monkeypatch: pytest.MonkeyPatch, tmp
         payload={"ok": True},
         metadata={
             "plan_id": plan_id,
-            "qa_skipped": False,
             "stage_manifest_snapshot": manifest_snapshot,
         },
     )

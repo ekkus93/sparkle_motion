@@ -13,19 +13,6 @@ except Exception:  # adapter may be stubbed in tests
     def render_images(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # type: ignore
         raise RuntimeError("images_sdxl adapter not available")
 
-try:
-    from function_tools.qa_qwen2vl import entrypoint as _qa_entrypoint
-except Exception:  # pragma: no cover - optional dependency
-    _qa_entrypoint = None
-
-
-def _inspect_frames(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
-    target = getattr(_qa_entrypoint, "inspect_frames", None)
-    if callable(target):
-        return target(frames, prompts)
-    return {"ok": True}
-
-
 class PlanPolicyViolation(RuntimeError):
     pass
 
@@ -140,92 +127,33 @@ def _build_batches(count: int, max_per: int) -> List[_BatchSpec]:
     return batches
 
 
-def _coerce_frames(sources: Iterable[Any]) -> List[bytes]:
-    frames: List[bytes] = []
-    for source in sources:
-        if isinstance(source, bytes):
-            frames.append(source)
-        elif isinstance(source, (str, Path, PathLike)):
-            frames.append(Path(source).read_bytes())
-        elif source is None:
-            continue
-        else:
-            raise TypeError(f"Unsupported reference image type: {type(source)!r}")
-    return frames
-
-
-def _qa_status(report: Optional[Dict[str, Any]]) -> str:
-    if not report:
-        return "ok"
-    if report.get("reject") or report.get("status") == "reject":
-        return "reject"
-    if report.get("escalate") or report.get("status") == "escalate":
-        return "escalate"
-    frames = report.get("frames")
-    if isinstance(frames, Sequence):
-        for frame in frames:
-            decision = str(frame.get("decision", "")).lower()
-            if decision == "reject":
-                return "reject"
-            if decision == "escalate":
-                return "escalate"
-    return "ok"
-
-
-def _ensure_qa_ok(report: Optional[Dict[str, Any]], *, stage: str) -> None:
-    status = _qa_status(report)
-    if status == "reject":
-        raise PlanPolicyViolation(f"QA rejected {stage}: {report}")
-    if status == "escalate":
-        raise PlanPolicyViolation(f"QA escalation required for {stage}: {report}")
-
-
-def _inspect_reference_images(reference_images: Iterable[Any], prompt: str) -> None:
-    frames = _coerce_frames(reference_images)
-    if not frames:
-        return
-    report = _inspect_frames(frames, [prompt] * len(frames))
-    _ensure_qa_ok(report, stage="reference images")
-
-
-def _evaluate_post_render_qa(prompt: str, artifacts: List[Dict[str, Any]]) -> None:
-    frames: List[bytes] = []
-    prompts: List[str] = []
-    for artifact in artifacts:
-        data = artifact.get("data")
-        if isinstance(data, bytes):
-            frames.append(data)
-            prompts.append(prompt)
-    if not frames:
-        return
-    report = _inspect_frames(frames, prompts)
-    _ensure_qa_ok(report, stage="rendered frames")
-    for artifact in artifacts:
-        meta = dict(artifact.get("metadata") or {})
-        meta.setdefault("qa_status", "ok")
-        if report:
-            meta.setdefault("qa_report", report)
-        artifact["metadata"] = meta
-
-
 def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    """Orchestrate image rendering with batching, optional QA and dedupe.
+    """Orchestrate image rendering with batching and optional dedupe.
 
-        opts keys (defaults):
+    opts keys (defaults):
       - count: int = 1
       - max_images_per_call: int = 8
       - seed: Optional[int]
       - rate_limiter: Optional[RateLimiter]
-      - qa: bool = False
-            - dedupe: bool = False
-    - dedupe_phash_threshold: int = DEFAULT_PHASH_DISTANCE_THRESHOLD
-            - queue_allowed: bool = True
-            - queue_ttl_s: float = 600.0
-            - reference_images: Iterable[bytes | str | os.PathLike]
+      - dedupe: bool = False
+      - dedupe_phash_threshold: int = DEFAULT_PHASH_DISTANCE_THRESHOLD
+      - queue_allowed: bool = True
+      - queue_ttl_s: float = 600.0
+      - qa (deprecated): bool = False (ignored)
+      - reference_images (deprecated): Iterable[bytes | str | os.PathLike] (ignored)
+
     Returns list of artifact dicts (ordered as requested).
     """
     if opts is None:
         opts = {}
+    else:
+        opts = dict(opts)
+
+    qa_requested = bool(opts.pop("qa", False))
+    reference_images = opts.pop("reference_images", None)
+    if qa_requested or reference_images:
+        # QA enforcement is temporarily disabled; keep these options for backward compatibility.
+        pass
 
     count = int(opts.get("count", 1))
     if count <= 0:
@@ -237,7 +165,6 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
 
     seed = opts.get("seed")
     rate_limiter: Optional[RateLimiter] = opts.get("rate_limiter")
-    qa_enabled = bool(opts.get("qa", False))
     dedupe_enabled = bool(opts.get("dedupe", False))
     phash_threshold_opt = opts.get("dedupe_phash_threshold")
     if phash_threshold_opt is None:
@@ -251,7 +178,6 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
             raise ValueError("dedupe_phash_threshold must be >= 0")
     queue_allowed = bool(opts.get("queue_allowed", True))
     queue_ttl_s = float(opts.get("queue_ttl_s", 600.0))
-    reference_images = opts.get("reference_images") or []
 
     recent = dedupe.resolve_recent_index(
         enabled=dedupe_enabled,
@@ -264,10 +190,6 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
         recent,
         phash_threshold=dedupe_phash_threshold,
     )
-
-    # Pre-render QA check (textual sampling); here we call a lightweight inspect hook
-    if qa_enabled and reference_images:
-        _inspect_reference_images(reference_images, prompt)
 
     ordered: List[Optional[Dict[str, Any]]] = [None for _ in range(count)]
 
@@ -294,9 +216,6 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
             raise RuntimeError(
                 f"images_sdxl adapter returned {len(batch_results)} items for batch size {batch.size}"
             )
-
-        if qa_enabled:
-            _evaluate_post_render_qa(prompt, batch_results)
 
         # normalize and append preserving ordering
         for item_idx, item in enumerate(batch_results):

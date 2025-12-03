@@ -16,16 +16,7 @@
     "size_bytes": 24,
     "checksum": {
       "sha256": "3afaac217bfd89eff3f4623dbce7d6434b4a11eb93a6c5550e0bc9eb64f67475"
-    },
-    "qa_report_uri": "artifact://sparkle-motion/qa_reports/run_demo/dialogue_audio"
-  },
-  "qa": {
-    "decision": "approve",
-    "report_uri": "artifact://sparkle-motion/qa_reports/run_demo/dialogue_audio",
-    "issues": []
-  },
-  "tags": {
-    "qa_mode": "full"
+    }
   },
   "local_path_hint": "/tmp/original_tts_timeline.wav",
   "storage_backend": "filesystem",

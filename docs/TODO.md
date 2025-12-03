@@ -12,7 +12,7 @@
 - Production agent + `tts_stage` now synthesize dialogue per line, record `line_artifacts` metadata (voice_id, provider_id, durations), and publish WAV artifacts via `tts_audio` entries so downstream lipsync and QA logic can trace every clip. The run is gated by `SMOKE_TTS`/`SMOKE_ADAPTERS` (fixture-only when unset).
 - `assemble_ffmpeg` FunctionTool is implemented with a deterministic MP4 fixture plus optional ffmpeg concat path; docs/tests updated and metadata now includes duration/codec provenance for QA automation.
 - `videos_wan` FunctionTool now routes through the Wan adapter with deterministic fixtures by default, publishes `videos_wan_clip` artifacts, and surfaces chunk metadata/telemetry with smoke-flag gating for real GPU runs.
-- `qa_qwen2vl` adapter + entrypoint hardened with structured metadata propagation, frame-id plumbing, download limits, and smoke-level assertions so upstream agents can depend on the augmented fields.
+- QA gating has been sunset: `qa_qwen2vl` FunctionTool sources/tests are removed, StageManifest + RunRegistry + CLI payloads are qa-free, and runtime/tests now match the no-QA pipeline.
 - `lipsync_wav2lip` now ships a shared adapter (deterministic fixture + subprocess CLI wrapper), consolidated payload validators, and smoke/unit coverage across entrypoint + shared FunctionTool tests.
 
 ## Priority legend
@@ -210,13 +210,17 @@
 - [x] Add a release/migration note (docs + CHANGELOG) describing the renaming, run the full pytest suite, and verify that no references to the old `_agent` identifiers remain outside of the historical note. *(2025-12-01 — `docs/RELEASE_NOTES.md` updated with the agent→stage table, `docs/ARCHITECTURE.md` holds the sole historical matrix, and `PYTHONPATH=.:src pytest -q` reported 326 passed / 1 skipped.)*
 
 ### P0 — QA stage removal (qa_qwen2vl sunset)
-- [ ] Inventory every runtime/doc/test dependency on `qa_qwen2vl` (production agent, images_stage, configs, notebooks, tests) and capture the impacted files before editing so regressions are traceable.
+- [x] Inventory every runtime/doc/test dependency on `qa_qwen2vl` (production agent, images_stage, configs, notebooks, tests) and capture the impacted files before editing so regressions are traceable. *(2025-12-02 — references gathered below to bound the removal work.)*
+  - **Runtime status (2025-12-07):** `qa_qwen2vl` FunctionTool packages/tests have been deleted, and runtime entrypoints (`production_agent`, CLI, RunRegistry, StageManifest schemas) no longer surface `qa_mode` metadata.
+  - **Docs + samples:** `docs/TODO.md`, `docs/IMPLEMENTATION_TASKS.md`, `docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, `docs/OPERATIONS_GUIDE.md`, `docs/ADK_COVERAGE.md`, `docs/RELEASE_NOTES.md`, `docs/SCHEMA_ARTIFACTS.md`, `docs/samples/function_tools/qa_qwen2vl_response.sample.json` still mention QA flows and need rewrites to describe the no-QA world.
+  - **Configs/notebooks:** Tool registry + workflow configs are clear; notebooks/control-panel helpers still reference `qa_mode` inputs/QA badges and must be updated alongside the docs refresh.
 - [ ] Remove the base-image, per-shot video, and terminal `qa_publish` stages from `production_agent` (and related telemetry/RunRegistry wiring), ensuring retries/policy gates degrade gracefully without the QA tool.
-- [ ] Strip QA invocations from `images_stage` (pre-render reference QA + post-render hooks) and delete any remaining QA-specific adapters/helpers while keeping rate limits/dedupe behavior intact.
+- [x] Strip QA invocations from `images_stage` (pre-render reference QA + post-render hooks) and delete any remaining QA-specific adapters/helpers while keeping rate limits/dedupe behavior intact. *(2025-12-02 — `qa`/`reference_images` opts now no-op; render batching/dedupe untouched.)*
 - [ ] Update configuration surfaces (`configs/tool_registry.yaml`, `configs/workflow_agent.yaml`, CLI defaults, notebooks/control panel) to drop QA tool registrations, hard-code `qa_mode` semantics for the no-QA world, and document the temporary removal flag.
+  - CLI + FastAPI entrypoints (Stage 3, 2025-12-07) are QA-free; notebooks/control panel wiring still needs to drop the `qa_mode` toggles and badge helpers before closing this item.
 - [ ] Refresh docs (`docs/THE_PLAN.md`, `docs/ARCHITECTURE.md`, `docs/NOTEBOOK_AGENT_INTEGRATION.md`, Colab checklist) to explain that QA stages are disabled, including new operator guidance and known limitations until QA is reintroduced.
 - [ ] Update `notebooks/sparkle_motion.ipynb` control panel + helper cells (qa_mode inputs, qa_publish helpers, QA badges) so the Colab workflow matches the no-QA pipeline and points to the new terminal stage.
-- [ ] Revise unit/integration tests (e.g., `tests/test_production_agent.py`, `tests/unit/test_images_stage.py`, CLI/entrypoint suites) plus schema samples to remove QA expectations and add regression tests proving the pipeline still succeeds without QA artifacts.
+- [x] Revise unit/integration tests (e.g., `tests/test_production_agent.py`, CLI/entrypoint suites, filesystem parity tests) plus schema samples to remove QA expectations and add regression tests proving the pipeline still succeeds without QA artifacts. *(2025-12-07 — StageManifest schema + RunRegistry tests updated; CLI + production_agent suites now assert QA-free manifests.)*
 - [ ] Run representative dry/run production executions (fixture + filesystem backend) to validate `/status`, `/artifacts`, and final deliverable helpers continue to function with QA stages removed, capturing evidence for future rollback notes.
 
 #### Production agent observability & controls

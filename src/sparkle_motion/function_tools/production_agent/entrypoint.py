@@ -60,10 +60,6 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
     plan_model = req.plan or _load_plan_from_uri(req.plan_uri)
     if plan_model is None:
         raise HTTPException(status_code=400, detail="Unable to load MoviePlan payload")
-    plan_metadata = dict(plan_model.metadata or {})
-    plan_metadata["qa_mode"] = req.qa_mode
-    plan_metadata["qa_skipped"] = req.qa_mode == "skip"
-    plan_model.metadata = plan_metadata
     try:
         schema_uri = schema_registry.movie_plan_schema().uri
     except Exception:
@@ -74,7 +70,6 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
         plan_model,
         run_id=run_id,
         schema_uri=schema_uri,
-        metadata={"qa_mode": req.qa_mode, "qa_skipped": req.qa_mode == "skip"},
     )
     plan_payload = plan_model.model_dump()
 
@@ -89,7 +84,6 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
         expected_steps=expected_steps,
         render_profile=run_context.render_profile,
         run_metadata=run_context.metadata,
-        qa_mode=req.qa_mode,
         schema_uri=schema_uri,
     )
 
@@ -105,7 +99,6 @@ def invoke(req: RequestModel) -> Dict[str, Any]:
             progress_callback=_progress,
             run_id=run_id,
             pre_step_hook=pre_step_hook,
-            qa_mode=req.qa_mode,
         )
     except StepQueuedError as exc:
         LOG.warning(
@@ -345,10 +338,6 @@ def _entry_to_manifest(entry: Mapping[str, Any], run_id: str) -> Dict[str, Any]:
         "frame_rate": entry.get("frame_rate"),
         "resolution_px": entry.get("resolution_px"),
         "checksum_sha256": entry.get("checksum_sha256"),
-        "qa_report_uri": entry.get("qa_report_uri"),
-        "qa_passed": entry.get("qa_passed"),
-        "qa_mode": entry.get("qa_mode"),
-        "qa_skipped": entry.get("qa_skipped"),
         "playback_ready": entry.get("playback_ready"),
         "notes": entry.get("notes"),
         "metadata": entry.get("metadata", {}),
@@ -425,10 +414,6 @@ def _validate_video_final_manifest(manifest: Mapping[str, Any]) -> None:
     _require_str("local_path")
     _require_str("mime_type")
     _require_str("resolution_px")
-    qa_mode = manifest.get("qa_mode")
-    if not isinstance(qa_mode, str) or not qa_mode.strip():
-        errors.append("qa_mode missing")
-
     checksum = manifest.get("checksum_sha256")
     if not isinstance(checksum, str) or len(checksum) != 64:
         errors.append("checksum_sha256 invalid")
@@ -485,7 +470,6 @@ def _summarize_stage_section(stage_id: str, manifest_entries: Sequence[Mapping[s
     media_types = sorted({(entry.get("mime_type") or entry.get("media_type")) for entry in artifacts if entry.get("mime_type") or entry.get("media_type")})
     preview = _build_stage_previews(artifacts)
     media_summary = _aggregate_media_summary(artifacts)
-    qa_summary = _aggregate_qa_summary(artifacts)
     created_first, created_last = _created_at_range(artifacts)
     total_size = sum(entry.get("size_bytes") or 0 for entry in artifacts if isinstance(entry.get("size_bytes"), int))
     total_duration = sum(entry.get("duration_s") or 0.0 for entry in artifacts if isinstance(entry.get("duration_s"), (int, float)))
@@ -495,7 +479,6 @@ def _summarize_stage_section(stage_id: str, manifest_entries: Sequence[Mapping[s
         "artifact_types": artifact_types,
         "media_types": media_types,
         "media_summary": media_summary,
-        "qa_summary": qa_summary,
         "preview": preview,
         "size_bytes_total": total_size,
         "duration_s_total": total_duration,
@@ -546,9 +529,6 @@ def _build_preview_entry(entry: Mapping[str, Any]) -> Dict[str, Any]:
         "thumbnail_uri": thumbnail,
         "duration_s": entry.get("duration_s"),
         "size_bytes": entry.get("size_bytes"),
-        "qa_passed": entry.get("qa_passed"),
-        "qa_mode": entry.get("qa_mode"),
-        "qa_skipped": entry.get("qa_skipped"),
         "playback_ready": entry.get("playback_ready"),
     }
 
@@ -564,15 +544,6 @@ def _aggregate_media_summary(artifacts: Sequence[Mapping[str, Any]]) -> Dict[str
         if entry.get("playback_ready"):
             bucket["playback_ready"] = True
     return summary
-
-
-def _aggregate_qa_summary(artifacts: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
-    values = [entry.get("qa_passed") for entry in artifacts if entry.get("qa_passed") is not None]
-    if not values:
-        return {"total": 0, "passed": 0, "failed": 0}
-    passed = sum(1 for value in values if value is True)
-    failed = sum(1 for value in values if value is False)
-    return {"total": len(values), "passed": passed, "failed": failed}
 
 
 def _created_at_range(artifacts: Sequence[Mapping[str, Any]]) -> tuple[Optional[str], Optional[str]]:

@@ -90,7 +90,7 @@ def test_invoke_run_mode_writes_artifact(
 def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPARKLE_LOCAL_RUNS_ROOT", str(tmp_path))
     monkeypatch.setenv("SMOKE_TTS", "1")
-    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run", "qa_mode": "skip"})
+    resp = client.post("/invoke", json={"plan": sample_plan, "mode": "run"})
     assert resp.status_code == 200
     run_id = resp.json()["run_id"]
 
@@ -99,14 +99,9 @@ def test_status_and_control_endpoints(client: TestClient, sample_plan: dict, tmp
     status_data = status_resp.json()
     assert status_data["run_id"] == run_id
     assert status_data["steps"], "status should include recorded steps"
-    assert status_data["qa_mode"] == "skip"
-    assert status_data["qa_skipped"] is True
-    assert status_data["metadata"].get("qa_mode") == "skip"
     assert status_data["render_profile"]["video"]["model_id"] == "wan-fixture"
     assert status_data["timeline"] == status_data["log"]
     assert status_data["timeline"], "timeline history should be populated"
-    assert status_data["timeline"][0]["qa_mode"] == "skip"
-    assert status_data["timeline"][0]["qa_skipped"] is True
 
     artifacts_resp = client.get("/artifacts", params={"run_id": run_id})
     assert artifacts_resp.status_code == 200
@@ -156,7 +151,6 @@ def test_artifacts_endpoint_returns_video_final_manifest(
     final_entry = entries[0]
     assert final_entry["artifact_type"] == "video_final"
     assert final_entry["stage_id"] == "finalize"
-    assert isinstance(final_entry["qa_skipped"], bool)
     assert isinstance(final_entry["playback_ready"], bool)
     assert final_entry["checksum_sha256"]
     if final_entry["storage_hint"] == "adk":
@@ -207,7 +201,6 @@ def test_artifacts_endpoint_rejects_invalid_video_final_manifest(client: TestCli
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
             }
@@ -236,7 +229,6 @@ def test_artifacts_endpoint_rejects_missing_download_for_adk(client: TestClient,
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
             }
@@ -268,7 +260,6 @@ def test_artifacts_endpoint_accepts_filesystem_video_final_manifest(
                 "frame_rate": 24.0,
                 "resolution_px": "1280x720",
                 "checksum_sha256": "a" * 64,
-                "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
             }
@@ -298,8 +289,6 @@ def test_artifacts_endpoint_errors_when_video_final_missing(client: TestClient, 
                 "frame_rate": None,
                 "resolution_px": None,
                 "checksum_sha256": None,
-                "qa_report_uri": None,
-                "qa_mode": "full",
                 "playback_ready": True,
                 "metadata": {},
             }
@@ -362,7 +351,6 @@ def test_artifacts_endpoint_validates_video_final_on_aggregate(client: TestClien
                     "storage_hint": "local",
                     "mime_type": "application/json",
                     "size_bytes": 128,
-                    "qa_mode": "full",
                     "playback_ready": True,
                     "metadata": {},
                 }

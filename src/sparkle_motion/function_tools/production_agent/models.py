@@ -22,7 +22,6 @@ class ProductionAgentRequest(BaseModel):
     plan: Optional[MoviePlan] = None
     plan_uri: Optional[str] = Field(default=None, description="Optional URI pointing to a MoviePlan artifact")
     mode: Literal["dry", "run"] = "dry"
-    qa_mode: Literal["full", "skip"] = "full"
 
     @model_validator(mode="after")
     def _ensure_plan_source(self) -> "ProductionAgentRequest":

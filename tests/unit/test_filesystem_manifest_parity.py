@@ -47,14 +47,9 @@ _SCENARIOS = (
             "checksum": {
                 "sha256": "3afaac217bfd89eff3f4623dbce7d6434b4a11eb93a6c5550e0bc9eb64f67475",
             },
-            "qa_report_uri": "artifact://sparkle-motion/qa_reports/run_demo/dialogue_audio",
         },
-        qa={
-            "decision": "approve",
-            "report_uri": "artifact://sparkle-motion/qa_reports/run_demo/dialogue_audio",
-            "issues": [],
-        },
-        tags={"qa_mode": "full"},
+        qa=None,
+        tags=None,
         local_path_hint="/tmp/original_tts_timeline.wav",
         critical_paths=(
             "size_bytes",
@@ -62,10 +57,6 @@ _SCENARIOS = (
             "metadata.schema_uri",
             "metadata.size_bytes",
             "metadata.checksum.sha256",
-            "metadata.qa_report_uri",
-            "qa.decision",
-            "qa.report_uri",
-            "qa.issues",
         ),
     ),
     ManifestScenario(
@@ -80,8 +71,6 @@ _SCENARIOS = (
         filename_hint="final.mp4",
         metadata={
             "plan_id": "plan-final",
-            "qa_mode": "full",
-            "qa_skipped": False,
             "duration_s": 9.5,
             "frame_rate": 24.0,
             "resolution_px": "1280x720",
@@ -93,8 +82,6 @@ _SCENARIOS = (
             "size_bytes",
             "checksum.sha256",
             "metadata.plan_id",
-            "metadata.qa_mode",
-            "metadata.qa_skipped",
             "metadata.duration_s",
             "metadata.frame_rate",
             "metadata.resolution_px",

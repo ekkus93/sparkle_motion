@@ -15,7 +15,6 @@ from sparkle_motion.function_tools.assemble_ffmpeg.entrypoint import app as asse
 from sparkle_motion.function_tools.images_sdxl.entrypoint import app as images_app
 from sparkle_motion.function_tools.tts_chatterbox.entrypoint import app as tts_app
 from sparkle_motion.function_tools.lipsync_wav2lip.entrypoint import app as lipsync_app
-from sparkle_motion.function_tools.qa_qwen2vl.entrypoint import app as qa_app
 from sparkle_motion.function_tools.videos_wan.entrypoint import app as videos_app
 
 SAMPLES_DIR = Path(__file__).resolve().parents[2] / "docs" / "samples" / "function_tools"
@@ -261,43 +260,3 @@ def test_videos_wan_response_matches_sample(tmp_path: Path, monkeypatch: pytest.
 
     assert normalized == sample
 
-
-def test_qa_qwen2vl_response_matches_sample(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    deterministic_media_assets,
-) -> None:
-    monkeypatch.setenv("ADK_USE_FIXTURE", "1")
-    monkeypatch.setenv("DETERMINISTIC", "1")
-    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "artifacts"))
-
-    frame_b64 = base64.b64encode(deterministic_media_assets.image.read_bytes()).decode("ascii")
-
-    client = TestClient(qa_app)
-    payload = {
-        "prompt": "sunlit park QA",
-        "plan_id": "plan-qa",
-        "run_id": "run-qa",
-        "step_id": "shot-3",
-        "movie_title": "QA Fixture Film",
-        "frames": [
-            {"id": "frame_0001", "data_b64": frame_b64, "prompt": "hero smiles"},
-            {"id": "frame_0002", "data_b64": frame_b64},
-        ],
-        "metadata": {"shot_id": "shot-3"},
-        "options": {"fixture_only": True, "policy_path": "configs/qa_policy.yaml"},
-    }
-
-    resp = client.post("/invoke", json=payload)
-    assert resp.status_code == 200
-    data = resp.json()
-
-    sample = _load_sample("qa_qwen2vl_response.sample.json")
-    normalized = json.loads(json.dumps(data))
-    normalized["artifact_uri"] = "__ARTIFACT_URI__"
-    normalized["request_id"] = "__REQUEST_ID__"
-    metadata = normalized.get("metadata")
-    assert isinstance(metadata, dict)
-    metadata["artifact_uri"] = "__ARTIFACT_URI__"
-
-    assert normalized == sample

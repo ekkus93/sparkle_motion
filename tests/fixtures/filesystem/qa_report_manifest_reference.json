@@ -16,24 +16,10 @@
     "size_bytes": 17,
     "checksum": {
       "sha256": "a81cdbeb446ca71026f84735a0e834107721392786350bfa7996d3993d0ef855"
-    },
-    "qa_report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
-    "qa_summary": {
-      "issues": 0,
-      "warnings": 0,
-      "notes": [
-        "fixture"
-      ]
     }
   },
-  "qa": {
-    "decision": "approve",
-    "report_uri": "artifact://sparkle-motion/qa_reports/run_demo_qa/qa_publish",
-    "issues": []
-  },
-  "tags": {
-    "qa_mode": "skip"
-  },
+  "qa": null,
+  "tags": null,
   "local_path_hint": "/tmp/qa_report.json",
   "storage_backend": "filesystem",
   "created_at": 1700000000

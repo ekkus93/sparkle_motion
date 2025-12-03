@@ -53,7 +53,6 @@ class ProductionAgentConfig:
     lipsync_flag: str = "SMOKE_LIPSYNC"
     max_attempts: int = 2
     backoff_base_seconds: float = 0.4
-    qa_retry_attempts: int = 2
 
     def retry_delay(self, attempt: int) -> float:
         return self.backoff_base_seconds * (2 ** (attempt - 1))
@@ -211,7 +210,6 @@ def execute_plan(
     config: Optional[ProductionAgentConfig] = None,
     run_id: Optional[str] = None,
     pre_step_hook: Optional[Callable[[str], None]] = None,
-    qa_mode: Optional[Literal["full", "skip"]] = None,
 ) -> ProductionResult:
     """Execute or simulate a MoviePlan."""
 
@@ -220,7 +218,6 @@ def execute_plan(
     _validate_plan(model)
     plan_id = _plan_identifier(model)
     run_id = run_id or observability.get_session_id()
-    qa_mode = _resolve_qa_mode(model, override=qa_mode)
 
     def _execute_plan_intake_stage(output_dir: Optional[Path]) -> tuple[StepExecutionRecord, _PlanIntakeResult]:
         holder: Dict[str, _PlanIntakeResult] = {}
@@ -395,7 +392,6 @@ def execute_plan(
             shot_artifacts=shot_artifacts,
             dialogue_result=dialogue_result,
             assemble_path=final_result.path,
-            qa_mode=qa_mode,
         )
         final_delivery_holder["artifact"] = final_artifact_ref
         _record_stage_manifest_entries(run_id=run_id, manifests=manifests)
@@ -1748,10 +1744,6 @@ def _record_stage_manifest_entries(*, run_id: str, manifests: Sequence[StageMani
             frame_rate=manifest.frame_rate,
             resolution_px=manifest.resolution_px,
             checksum_sha256=manifest.checksum_sha256,
-            qa_report_uri=manifest.qa_report_uri,
-            qa_passed=manifest.qa_passed,
-            qa_mode=manifest.qa_mode,
-            qa_skipped=manifest.qa_skipped,
             playback_ready=manifest.playback_ready,
             notes=manifest.notes,
             metadata=dict(manifest.metadata),
@@ -2072,7 +2064,6 @@ def _run_final_delivery_stage(
     shot_artifacts: Sequence[_ShotArtifacts],
     dialogue_result: Optional[_DialogueStageResult],
     assemble_path: Path,
-    qa_mode: str,
 ) -> tuple[List[StageManifest], adk_helpers.ArtifactRef, StepResult]:
     stage_manifest_schema_meta = _schema_metadata(schema_registry.stage_manifest_schema())
     final_video_path = _prepare_final_video(
@@ -2087,7 +2078,6 @@ def _run_final_delivery_stage(
     resolution = _resolve_render_resolution(plan)
     checksum = _hash_file_path(final_video_path)
     size_bytes = final_video_path.stat().st_size if final_video_path.exists() else None
-    qa_skipped = qa_mode == "skip"
     video_metadata = {
         "plan_id": plan_id,
         "run_id": run_id,
@@ -2096,8 +2086,6 @@ def _run_final_delivery_stage(
         "resolution_px": resolution,
         "checksum_sha256": checksum,
         "stage": "finalize",
-        "qa_mode": qa_mode,
-        "qa_skipped": qa_skipped,
     }
     video_artifact_ref = adk_helpers.publish_artifact(
         local_path=final_video_path,
@@ -2118,8 +2106,6 @@ def _run_final_delivery_stage(
             "stage_manifest_schema": stage_manifest_schema_meta,
             "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
             "assemble_path": assemble_path.as_posix(),
-            "qa_mode": qa_mode,
-            "qa_skipped": qa_skipped,
         }
     )
     manifest = StageManifest(
@@ -2138,8 +2124,6 @@ def _run_final_delivery_stage(
         frame_rate=frame_rate,
         resolution_px=resolution,
         checksum_sha256=checksum,
-        qa_mode=qa_mode,
-        qa_skipped=qa_skipped,
         playback_ready=final_video_path.exists(),
         metadata=manifest_metadata,
     )
@@ -2160,8 +2144,6 @@ def _run_final_delivery_stage(
             "frame_rate": frame_rate,
             "resolution_px": resolution,
             "checksum_sha256": checksum,
-            "qa_mode": qa_mode,
-            "qa_skipped": qa_skipped,
             "playback_ready": final_video_path.exists(),
         },
     )
@@ -2197,7 +2179,6 @@ def _prepare_final_video(
     dest.write_text(json.dumps(placeholder, ensure_ascii=False, indent=2), encoding="utf-8")
     return dest
 
-
 def _resolve_render_resolution(plan: MoviePlan) -> str:
     candidates: List[Any] = []
     if plan.render_profile.metadata:
@@ -2210,25 +2191,6 @@ def _resolve_render_resolution(plan: MoviePlan) -> str:
         if isinstance(value, (tuple, list)) and len(value) == 2:
             return f"{value[0]}x{value[1]}"
     return "1280x720"
-
-
-def _resolve_qa_mode(plan: MoviePlan, *, override: Optional[str] = None) -> str:
-    candidates: List[str] = []
-    if isinstance(override, str) and override.strip():
-        candidates.append(override)
-    if plan.metadata:
-        value = plan.metadata.get("qa_mode")
-        if isinstance(value, str):
-            candidates.append(value)
-    if plan.render_profile.metadata:
-        candidate = plan.render_profile.metadata.get("qa_mode")
-        if isinstance(candidate, str):
-            candidates.append(candidate)
-    for value in candidates:
-        normalized = value.strip().lower()
-        if normalized in {"full", "skip"}:
-            return normalized
-    return "full"
 
 
 def _record_summary_event(

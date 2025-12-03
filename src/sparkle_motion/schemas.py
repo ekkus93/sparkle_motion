@@ -372,10 +372,6 @@ class StageManifest(BaseModel):
     frame_rate: Optional[float] = Field(default=None, ge=0)
     resolution_px: Optional[str] = None
     checksum_sha256: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    qa_report_uri: Optional[str] = None
-    qa_passed: Optional[bool] = None
-    qa_mode: Optional[str] = None
-    qa_skipped: Optional[bool] = None
     playback_ready: Optional[bool] = None
     notes: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -88,28 +88,6 @@ def _stub_videos_stage(
 
 
 @pytest.fixture(autouse=True)
-def _stub_qa_inspect(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
-    calls: List[Dict[str, Any]] = []
-    decisions: List[str] = []
-
-    def _fake_inspect(frames: List[bytes], prompts: List[str], opts: Mapping[str, Any] | None = None) -> Dict[str, Any]:
-        decision = decisions.pop(0) if decisions else "approve"
-        report = {"decision": decision, "issues": []}
-        payload = {
-            "status": decision,
-            "decision": decision,
-            "artifact_uri": f"artifact://qa/{len(calls)}",
-            "report": report,
-            "metadata": {"decision": decision, "qa_stage": (opts or {}).get("metadata", {}).get("qa_stage")},
-        }
-        calls.append({"frames": frames, "prompts": prompts, "opts": opts, "decision": decision})
-        return payload
-
-    monkeypatch.setattr("function_tools.qa_qwen2vl.entrypoint.inspect_frames", _fake_inspect)
-    return {"calls": calls, "decisions": decisions}
-
-
-@pytest.fixture(autouse=True)
 def _stub_tts_stage(
     monkeypatch: pytest.MonkeyPatch, deterministic_media_assets: MediaAssets
 ) -> List[Dict[str, Any]]:
@@ -491,7 +469,7 @@ def test_gate_flags(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp
     assert "qa_video" not in statuses
 
 
-def test_run_registry_marks_skip_mode(
+def test_run_registry_tracks_status_metadata(
     monkeypatch: pytest.MonkeyPatch,
     sample_plan: MoviePlan,
     tmp_path: Path,
@@ -500,29 +478,34 @@ def test_run_registry_marks_skip_mode(
     monkeypatch.setenv("SMOKE_ADAPTERS", "1")
     monkeypatch.setenv("SMOKE_TTS", "1")
     monkeypatch.setenv("SMOKE_LIPSYNC", "1")
-    run_id = "run-qa-skipped"
+    run_id = "run-status-metadata"
+    plan_id = "plan-status"
     registry = get_run_registry()
     registry.discard_run(run_id)
-    registry.start_run(run_id=run_id, plan_id="plan-skip", plan_title=sample_plan.title, mode="run", qa_mode="skip")
+    registry.start_run(
+        run_id=run_id,
+        plan_id=plan_id,
+        plan_title=sample_plan.title,
+        mode="run",
+        render_profile={"video": {"model_id": "wan-fixture"}},
+        run_metadata={"plan_id": plan_id},
+    )
     progress_handler = registry.build_progress_handler(run_id)
     pre_step_hook = registry.pre_step_hook(run_id)
     execute_plan(
         sample_plan,
         mode="run",
         run_id=run_id,
-        qa_mode="skip",
         progress_callback=progress_handler,
         pre_step_hook=pre_step_hook,
     )
     status = registry.get_status(run_id)
-    assert status["qa_mode"] == "skip"
-    assert status["qa_skipped"] is True
-    timeline = status["timeline"]
-    assert all(entry["qa_mode"] == "skip" for entry in timeline)
-    assert all(entry["qa_skipped"] is True for entry in timeline)
+    assert status["run_id"] == run_id
+    assert status["metadata"].get("plan_id") == plan_id
+    assert status["timeline"], "timeline entries should be captured"
     artifacts = registry.get_artifacts(run_id, stage="finalize")
     final_entry = next(entry for entry in artifacts if entry["artifact_type"] == "video_final")
-    assert final_entry["qa_skipped"] is True
+    assert isinstance(final_entry["playback_ready"], bool)
     registry.discard_run(run_id)
 
 

@@ -134,54 +134,6 @@
       "default": null,
       "title": "Playback Ready"
     },
-    "qa_mode": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Qa Mode"
-    },
-    "qa_passed": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Qa Passed"
-    },
-    "qa_report_uri": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Qa Report Uri"
-    },
-    "qa_skipped": {
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Qa Skipped"
-    },
     "resolution_px": {
       "anyOf": [
         {
@@ -220,7 +172,8 @@
         {
           "enum": [
             "adk",
-            "local"
+            "local",
+            "filesystem"
           ],
           "type": "string"
         },

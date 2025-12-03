@@ -16,9 +16,9 @@ Authoritative runtime counts (application code only — `resources/` excluded)
       model will instantiate its own `LlmAgent` at process startup. After
       normalizing a case-duplicate scaffold (`ScriptAgent` / `script_agent`),
       the canonical set of application FunctionTools is seven unique tools.
-- FunctionTools (application-level directories under `function_tools/`): 7
+- FunctionTools (application-level directories under `function_tools/`): 6
    - Canonical tool directories: `script_agent`, `images_sdxl`, `videos_wan`,
-      `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`.
+      `tts_chatterbox`, `lipsync_wav2lip`, `assemble_ffmpeg`.
    - Note: there is a case-duplicate pair `ScriptAgent` / `script_agent` in
       the tree; the duplicate scaffold will be removed during normalization.
 
@@ -83,9 +83,9 @@ with the changes made in `docs/ARCHITECTURE.md` and
 ## Authoritative runtime summary (application code only — `resources/` excluded)
 
 - ADK agents (application runtime): 7 (Option A — per-tool agents by default)
-- FunctionTools (compute adapters): 7 canonical directories
-  - `script_agent`, `images_sdxl`, `videos_wan`, `tts_chatterbox`,
-    `lipsync_wav2lip`, `assemble_ffmpeg`, `qa_qwen2vl`
+- FunctionTools (compute adapters): 6 canonical directories
+   - `script_agent`, `images_sdxl`, `videos_wan`, `tts_chatterbox`,
+      `lipsync_wav2lip`, `assemble_ffmpeg`
 
 Notes:
 - `resources/` remains reference/sample code and is not counted in runtime
@@ -137,9 +137,10 @@ Notes:
        `/control/stop` (body `{ "run_id": "..." }`) that gate the stage runner
        via an asyncio Event so users can pause/resume/stop runs without tearing
        down artifacts.
-    - Surface `qa_mode` state plus pause/stop transitions inside the status feed
-       so the UI can badge “QA skipped” runs and confirm when a pause or stop
-       request is honored.
+    - Surface pause/stop transitions inside the status feed so the UI confirms
+       when a control request is honored. QA badges were removed with the
+       Stage 3 sunset, so the status payload now focuses on stage progress and
+       delivery readiness.
 
 4. Implement `gpu_utils.model_context` (minimal, robust pattern)
    - Context manager for guarded model load/unload, device_map presets,
@@ -157,8 +158,8 @@ Notes:
 
 7. Tests & gating
    - Unit tests and deterministic stubs for agents/adapters.
-   - Integration smoke tests gated by `SMOKE_ADK=1` (and specific flags such
-     as `SMOKE_TTS=1`, `SMOKE_LIPSYNC=1`, `SMOKE_QA=1`, `SMOKE_ADAPTERS=1`).
+    - Integration smoke tests gated by `SMOKE_ADK=1` (and specific flags such
+       as `SMOKE_TTS=1`, `SMOKE_LIPSYNC=1`, `SMOKE_ADAPTERS=1`).
 
 ---
 
@@ -217,7 +218,7 @@ design referenced by the tasks below.
    with a `filesystem` namespace) and teach `adk_helpers.publish_artifact()` to
    switch between shim vs. real ADK based on `ARTIFACTS_BACKEND=filesystem`.
 4. **Manifest compatibility** – ensure the shim writes manifest files identical
-   to ADK’s (checksum, size, mime, QA linkage). Production notebooks should not
+   to ADK’s (checksum, size, mime, finalize metadata). Production notebooks should not
    need to branch on backend.
 5. **Cleanup & retention** – add a simple garbage collector (CLI or notebook
    helper) that prunes artifacts older than `N` days to keep Drive usage in
@@ -290,10 +291,12 @@ TODO once this plan lands.
      schema artifact and persist raw LLM output for audit.
 
 2. Images (SDXL FunctionTool)
-   - Stage: `images_stage` (orchestration layer). Adapter: `images_sdxl` (Diffusers)
-   - Requirements: batching rules, token-bucket rate-limiter, pre-render QA
-     (text moderation or `qa_qwen2vl` sample check), deterministic stub for
-     unit tests, and `gpu_utils.model_context` for pipeline loads.
+    - Stage: `images_stage` (orchestration layer). Adapter: `images_sdxl` (Diffusers)
+    - Requirements: batching rules, token-bucket rate-limiter, aggressive text
+       moderation plus dedupe, deterministic stub for unit tests, and
+       `gpu_utils.model_context` for pipeline loads. Dedicated QA hooks were
+       removed with the Stage 3 sunset; a future FunctionTool will own any new
+       automated review flow.
 
    **Rate limiter status (single-user deferral)** – The pipeline is expressly
    single-user/single-job today, so we are _not_ building the token-bucket +
@@ -313,11 +316,13 @@ TODO once this plan lands.
       max_images_per_call: int
       per_batch_timeout_s: int
       dedupe: bool
-      qa: bool
       priority: Literal['low','normal','high']
       negative_prompt: Optional[str]
       metadata: Mapping[str, str]
    ```
+
+   *The legacy `qa` flag is ignored at runtime until the replacement QA
+   service lands; the option remains in the type for backward compatibility.*
 
    - `ArtifactRef` (returned by `images_stage.render`) — minimal shape:
    ```py
@@ -348,12 +353,6 @@ TODO once this plan lands.
    - Support `queue_allowed` semantics: when tokens are exhausted and queueing is enabled, enqueue the batch with TTL (default 600s) and surface a `StepExecutionRecord(status="queued")` until execution resumes; otherwise raise `RateLimitError` immediately.
    - Provide `tests/unit/test_rate_limiter.py` to cover leak-free acquire/release, burst behavior, queue drain, and clock-skew handling (use a fake clock to keep tests deterministic).
    - Instrument limit hits via `adk_helpers.write_memory_event()` so production_agent can surface global backpressure in dashboards.
-
-   QA contract (stub): `function_tools/qa_qwen2vl/entrypoint.py`:
-   ```py
-   def inspect_frames(frames: list[bytes], prompts: list[str]) -> dict:
-      # returns {'ok': bool, 'reason': Optional[str], 'report': dict}
-   ```
 
    Deduplication flow (recommended):
    1. Within-plan dedupe: before calling the adapter, compute deterministic
@@ -464,16 +463,11 @@ TODO once this plan lands.
     - Determinism: record codec, CRF, seed (if transitions random), OS/ffmpeg versions. Reject arbitrary flags; map structured options only. Ensure cleanup yet retain logs when `debug=True`.
     - Tests: unit tests for command construction and retry behavior (mock `run_command`), assembly unit test with synthetic clips, and gated smoke (`SMOKE_ADK=1` or `SMOKE_ASSEMBLE=1`) that runs ffmpeg on short fixtures.
 
-7. QA (Qwen-2-VL FunctionTool)
-    - Adapter: `qa_qwen2vl.inspect_frames(frames, prompts, *, opts=None) -> QAReport`. Canonical model `Qwen/Qwen2-VL-7B-Instruct` via `transformers` + `qwen-vl-utils` (`process_vision_info`).
-    - Behavior: batch frames + prompts into chat-template messages, run multimodal QA under `gpu_utils.model_context`, and emit structured reports (`per_frame`, `global_flags`, `confidence_summary`, `artifact_uri`, `logs_uri`). Surface knobs for `min_pixels`, `max_pixels`, `resized_height/width`, `max_new_tokens`, `attn_implementation`, `torch_dtype`, `device_map`.
-    - Policy integration: map model responses to policy actions (approve/escalate/reject). On escalation call `request_human_input()` and log via `adk_helpers.write_memory_event()`. Provide lightweight stub for unit tests; gate real model runs behind `SMOKE_QA=1`/`SMOKE_ADK=1`.
-    - Tests: unit tests stub model/processor to verify QAReport shape, thresholding, and prompt packaging; integration smoke (gated) runs a small frame set through the real model.
-      - QA enforcement flow (authoritative thresholds):
-         - Pre-check prompts/reference frames via text moderation or lightweight vision QA. If prompt flagged `disallowed`, raise `PlanPolicyViolation`; if `ambiguous`, mark the step for post-run escalation and limit generation parameters.
-         - Post-render: invoke `qa_qwen2vl.inspect_frames` on every artifact before publish. Interpret `QAReport.per_frame` confidences using defaults: `nsfw_confidence >= 0.70` → reject + delete artifact, `0.40–0.69` → quarantine and call `request_human_input()`, `<0.40` → approve/publish.
-         - Always attach the serialized `QAReport` to `adk_helpers.write_memory_event()` payloads so production_agent can reconstruct the policy trail. Escalations must persist quarantined artifact URIs, reviewer assignments, and `QAReport.global_flags` for ADK review console parity.
-         - Smoke tests with `SMOKE_QA=1` must verify the escalation path by forcing synthetic outputs that cross the threshold and asserting human-input events fire.
+7. Finalize (delivery stage)
+   - Stage: `finalize` runs immediately after `assemble_ffmpeg` completes. It collates assembly metadata, copies the MP4 into the artifacts root (or filesystem shim), and publishes the canonical `video_final` manifest row consumed by notebooks and operators.
+   - Behavior: packages the final MP4 + timeline metadata, records checksums/size/duration, and ensures `artifact_uri`, `local_path`, and optional `download_url` fields exist before surfacing the manifest via `/artifacts`. Human gating/QA logic was removed during the Stage 3 sunset; this stage currently performs delivery-only work while future QA replacements are evaluated.
+   - Operator hooks: emits memory events so dashboards can highlight “final deliverable ready” and remains the rendezvous point for notebook helper cells (inline preview + download button). Reintroducing QA will layer on top of this stage instead of reactivating the old FunctionTool.
+      - Tests: unit tests verify manifest validation, download-url fallbacks, and telemetry emission; integration coverage ensures `video_final` rows exist even when the filesystem backend is selected. Future QA reinstatement will add regression tests that layer alerting back onto this stage without reviving the old FunctionTool.
 
 ---
 
@@ -496,19 +490,19 @@ TODO once this plan lands.
 ### Workflow walk-through
 1. **Session bootstrap** – `SessionService.create_session` issues `run_id`, stores the idea payload, and pre-allocates artifact prefixes (mounted via `adk mount`).
 2. **Script planning** – ScriptAgent loads schema URIs from `configs/schema_artifacts.yaml` and publishes the validated MoviePlan plus a memory event.
-3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → qa` graph, emits manifest events, and supports resume via `start_stage` overrides.
+3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → finalize` graph, emits manifest events, and supports resume via `start_stage` overrides.
 4. **FunctionTool executions** – Hosted tools listen on `127.0.0.1:<port>` inside Colab, accept artifact IDs, emit telemetry, and publish new ArtifactRefs.
-5. **QA & human gating** – `qa_qwen2vl` emits QAReport artifacts + policy decisions. Escalations use `event_actions.request_human_input` and block the workflow until reviewers respond.
+5. **Final delivery** – the `finalize` stage publishes the `video_final` manifest row immediately after assembly plus any supporting metadata (`duration_s`, `frame_rate`, `storage_hint`). QA hooks are currently paused; human review is tracked as a future enhancement.
 6. **Observability** – Operators inspect ADK timelines/metrics and local logs; telemetry export stays disabled, but `run_events.json` can be generated from ADK data when needed.
 
 ### Notebook production dashboard (Colab control cell)
 - Reuse the ipywidgets-based control-panel pattern established for `script_agent`, but expand it to surface production runs end-to-end.
 - Poll `GET /status?run_id=` every 3–5 seconds (or upgrade to SSE later) to display the current stage, elapsed time, percent complete, and a rolling log of `StepExecutionRecord` entries.
 - Query `GET /artifacts?run_id=&stage=` as each stage completes so the UI can immediately render base-image thumbnails (`widgets.Image`), per-line TTS clips (`widgets.Audio`), per-shot MP4 previews (`IPython.display.Video`), and final assembly outputs without leaving Python. Sample cells should pin `stage="dialogue_audio"` when demonstrating the dialogue/TTS view so readers instantly see the stitched `tts_timeline.wav` manifest row alongside the per-line entries.
-- Surface the shot-scoped manifest rows produced by `production_agent`: `shot_frames`, `shot_dialogue_audio`, `shot_video`, `shot_lipsync_video`, `shot_qa_base_images`, `shot_qa_video`, and `assembly_plan`. Dashboards should render these entries in the stage accordion so operators can see which asset exists, what QA decision was taken (pass/fail/skipped), and the on-disk JSON summary (`qa/qa_base_images/<shot>.json`, etc.) before choosing `resume_from`. Treat the `shot_qa_*` rows as the single source of truth for QA escalations and resume gating.
+- Surface the shot-scoped manifest rows produced by `production_agent`: `shot_frames`, `shot_dialogue_audio`, `shot_video`, `shot_lipsync_video`, and `assembly_plan`. Dashboards should render these entries in the stage accordion so operators can see which asset exists before choosing `resume_from`. QA-specific manifest rows were removed with the Stage 3 sunset, so resume decisions now rely on StepExecutionRecords + stage completion status.
 - Wire “Start production”, “Pause”, “Resume”, and “Stop” buttons to the new control endpoints; disable/enable buttons based on the latest status payload and show confirmation banners when a pause/stop takes effect.
 - Present an accordion or tabbed asset gallery so users can inspect artifacts per stage without waiting for the full pipeline, plus an alert banner that highlights failed/stopped states and offers a `resume_from` action.
-- Require the `qa_publish` stage to publish an `/artifacts` entry with `artifact_type="video_final"`, `artifact_uri`, `local_path`, and (when remote-only) a signed `download_url`. The notebook must expose a “Final Video” control cell that calls `/artifacts`, embeds the MP4 inline, and invokes `google.colab.files.download()` (or `adk artifacts download`) so users can save the deliverable immediately after QA approval.
+- Require the `finalize` stage to publish an `/artifacts` entry with `artifact_type="video_final"`, `artifact_uri`, `local_path`, and (when remote-only) a signed `download_url`. The notebook must expose a “Final Video” control cell that calls `/artifacts`, embeds the MP4 inline, and invokes `google.colab.files.download()` (or `adk artifacts download`) so users can save the deliverable immediately after assembly completes.
 
 ### Final deliverable manifest schema
 
@@ -519,20 +513,17 @@ Every `/artifacts` response MUST describe the final movie via a single manifest 
 | `artifact_type` | Literal `"video_final"` | yes | Guards client routing; reject unknown literals. |
 | `artifact_uri` | string (`artifact://...`) | yes | Canonical ADK ArtifactService URI for long-term storage. |
 | `local_path` | string (absolute) | yes | Path inside the Colab runtime where the MP4 already exists; used for inline playback without re-download. |
-| `download_url` | string (HTTPS) | conditional | Signed URL for remote-only runs; optional when `storage_hint="local"`. |
-| `storage_hint` | enum `{"adk","local"}` | yes | Tells the notebook whether it can stream from disk or must fetch via `download_url`. |
+| `download_url` | string (HTTPS) | conditional | Signed URL for remote-only runs; optional when `storage_hint="local" or "filesystem"`. |
+| `storage_hint` | enum `{"adk","local","filesystem"}` | yes | Tells the notebook whether it can stream from disk or must fetch via `download_url`. |
 | `mime_type` | string | yes | Default `video/mp4`; future-proofs alternate containers. |
 | `size_bytes` | integer | yes | File size for progress bars/quota tracking. |
 | `duration_s` | float | yes | Runtime of the final MP4; must equal stitched audio/video timeline. |
 | `frame_rate` | float | yes | Frames per second derived from assemble stage metadata. |
 | `resolution_px` | string (`"1280x720"`) | yes | Width x height; notebooks parse for layout hints. |
 | `checksum_sha256` | string | yes | Hex digest of the MP4 so clients can validate downloads. |
-| `qa_report_uri` | string | yes | Points at the QA artifact that approved the final video. |
-| `qa_passed` | boolean | yes | True iff QA probe sequence approved the asset; false when publish halted. |
-| `qa_mode` | string (`"full"|"skip"`) | yes | Mirrors run metadata so dashboards badge non-validated runs. |
 | `run_id` | string | yes | ADK run/session identifier for traceability. |
-| `stage_id` | string | yes | Should be `"qa_publish"`; used when multiple stages emit manifests. |
-| `created_at` | ISO 8601 string | yes | Timestamp when the manifest row was generated. |
+| `stage_id` | string | yes | Should be `"finalize"`; used when multiple stages emit manifests. |
+| `created_at` | ISO 8601 string | optional | Timestamp when the manifest row was generated (available when ADK backend populates it). |
 | `playback_ready` | boolean | yes | Indicates whether the MP4 already lives on the notebook filesystem and can be embedded immediately. |
 | `notes` | string | optional | Human-readable extras (e.g., render profile name, retry counts). |
 
@@ -559,18 +550,15 @@ Every `/artifacts` response MUST describe the final movie via a single manifest 
    "frame_rate": 24.0,
    "resolution_px": "1280x720",
    "checksum_sha256": "6e8c0d4a29c21a0f236f993b6db481d0ab2adc54a51091be9b2b6ec9efb95275",
-   "qa_report_uri": "artifact://sparkle-motion/qa_reports/run-42/video_final",
-   "qa_passed": true,
-   "qa_mode": "full",
    "run_id": "run-42",
-   "stage_id": "qa_publish",
+   "stage_id": "finalize",
    "created_at": "2025-11-29T04:12:55Z",
    "playback_ready": true,
    "notes": "render_profile=wan-2.1-default"
 }
 ```
 
-Clients should treat any missing `video_final` row as a terminal error and display guidance (e.g., “QA publish not finished — rerun the stage”).
+Clients should treat any missing `video_final` row as a terminal error and display guidance (e.g., “finalize stage not finished — rerun the stage”).
 
 ### Data contracts & storage layout
 - **MoviePlan / AssetRefs / QAReport / StageEvent / Checkpoint** schemas are published as ADK artifacts, with local fallbacks referenced via `sparkle_motion.schema_registry`.
@@ -579,7 +567,7 @@ Clients should treat any missing `video_final` row as a terminal error and displ
    `configs/schema_artifacts.yaml`. Update both sources together when schemas or
    policy bundles change.
 - **Artifact storage**: IDs follow `artifact://sparkle-motion/<type>/<run>/<version>`; local scratch copies live under `runs/<run_id>` for inspection only.
-- **Memory logs**: long-lived QA decisions, human approvals, and stage failures are stored via MemoryService so agents can replay context without filesystem scraping.
+- **Memory logs**: long-lived human approvals, pause/resume intents, and stage failures are stored via MemoryService so agents can replay context without filesystem scraping. Future QA reinstatement will reuse the same channel instead of bespoke files.
 
 ### Enforced ADK usage & short-term decisions
 - Application/runtime code MUST import the real `google.adk` SDK in entrypoints; per-tool agents are mandatory under Option A (no silent fallbacks).
@@ -588,15 +576,15 @@ Clients should treat any missing `video_final` row as a terminal error and displ
 - Manifest changes (torch, diffusers, ffmpeg, chatterbox, etc.) stay proposal-only via `proposals/pyproject_adk.diff` until explicitly approved.
 - FunctionTool directories must be normalized (case duplicates removed) and each tool must provide deterministic smoke tests gated by the relevant `SMOKE_*` flags.
 
-### Human + QA governance hooks
-- Script review, per-shot approvals, and QA escalations all use ADK’s review queue (`request_human_input`). Memory events must capture reviewer assignments and QAReport URIs for audit.
-- New stages plug into the WorkflowAgent graph and inherit QA/human gating declaratively; no bespoke runner work is needed beyond registering the tool and updating the workflow spec.
+### Human governance hooks (QA paused)
+- Script review and any manual approval flows continue to use ADK’s review queue (`request_human_input`). With QA automation disabled, the same plumbing now tracks pause/resume acknowledgements and operator annotations so we can reintroduce QA without new infrastructure.
+- New stages still plug into the WorkflowAgent graph and inherit the same governance wiring; when QA returns it will live alongside `finalize` rather than reviving the removed FunctionTool.
 
 ### Operational summary
 - Single-user Colab runtime hosts WorkflowAgent definitions, tool catalog, and artifact buckets under the `local-colab` profile.
 - Resume/retry is an ADK API call (`workflow_runs.resume(run_id, start_stage=...)`); no filesystem surgery required.
 - Artifact access goes through `adk artifacts download` or signed URLs; local exports are optional.
-- Human + QA governance remain auditable inside ADK; documentation parity across `THE_PLAN.md`, `docs/ARCHITECTURE.md`, and `docs/ORCHESTRATOR.md` is required before coding resumes.
+- Human governance (and future QA reinstatement) remains auditable inside ADK; documentation parity across `THE_PLAN.md`, `docs/ARCHITECTURE.md`, and `docs/ORCHESTRATOR.md` is required before coding resumes.
 
 ---
 
@@ -641,9 +629,9 @@ Clients should treat any missing `video_final` row as a terminal error and displ
 - Cleanup checklist on exit (all adapters must rely on this): delete large references (`del pipeline`), `torch.cuda.synchronize()`, `torch.cuda.empty_cache()`, `gc.collect()`, release offload helpers, and emit a final `report_memory()` snapshot into `adk_helpers.write_memory_event()` with `step="cleanup"` metadata.
    1. **Session bootstrap** – `SessionService.create_session` issues `run_id`, stores the idea payload, and pre-allocates artifact prefixes (mounted via `adk mount`).
    2. **Script planning** – ScriptAgent loads schema URIs from `configs/schema_artifacts.yaml` and publishes the validated MoviePlan plus a memory event.
-   3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → qa` graph, emits manifest events, and supports resume via `start_stage` overrides.
+   3. **WorkflowAgent orchestration** – WorkflowAgent runs the `script → images → videos → ... → finalize` graph, emits manifest events, and supports resume via `start_stage` overrides.
    4. **FunctionTool executions** – Hosted tools listen on `127.0.0.1:<port>` inside Colab, accept artifact IDs, emit telemetry, and publish new ArtifactRefs.
-   5. **QA & human gating** – `qa_qwen2vl` emits QAReport artifacts + policy decisions. Escalations use `event_actions.request_human_input` and block the workflow until reviewers respond.
+   5. **Final delivery** – the `finalize` stage emits the `video_final` manifest plus supporting metadata while QA automation remains paused.
    6. **Observability** – Operators inspect ADK timelines/metrics and local logs; telemetry export stays disabled, but `run_events.json` can be generated from ADK data when needed.
 - OOM normalization: wrap CUDA `RuntimeError` messages containing "out of memory" in `ModelOOMError(model_key=..., stage='load'|'inference', attempted_device_map=..., peak_vram_mb=...)` so callers can adaptively shrink (`adaptive_shrink_factor=0.5`) or fall back to CPU.
 - Telemetry: emit events at `load_start`, `load_complete`, `inference_start`, `inference_end`, and `cleanup`. Each payload should include `plan_id`, `step_id`, `device_stats`, `max_memory`, `generator_seed` (when provided), and `attempt_index` so production_agent dashboards stay consistent.

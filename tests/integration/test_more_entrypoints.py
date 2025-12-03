@@ -9,7 +9,6 @@ from starlette.testclient import TestClient
 MODULES = [
     "sparkle_motion.function_tools.videos_wan.entrypoint",
     "sparkle_motion.function_tools.assemble_ffmpeg.entrypoint",
-    "sparkle_motion.function_tools.qa_qwen2vl.entrypoint",
     "sparkle_motion.function_tools.lipsync_wav2lip.entrypoint",
     "sparkle_motion.function_tools.script_agent.entrypoint",
 ]

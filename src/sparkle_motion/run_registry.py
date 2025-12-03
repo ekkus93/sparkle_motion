@@ -16,7 +16,6 @@ from .schemas import StageManifest
 from .utils.env import filesystem_backend_enabled
 
 RunStatus = Literal["pending", "running", "paused", "stopped", "failed", "succeeded", "queued"]
-QAMode = Literal["full", "skip"]
 
 
 def _now_iso() -> str:
@@ -59,10 +58,6 @@ class ArtifactEntry:
     frame_rate: Optional[float] = None
     resolution_px: Optional[str] = None
     checksum_sha256: Optional[str] = None
-    qa_report_uri: Optional[str] = None
-    qa_passed: Optional[bool] = None
-    qa_mode: Optional[str] = None
-    qa_skipped: Optional[bool] = None
     playback_ready: Optional[bool] = None
     notes: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -84,10 +79,6 @@ class ArtifactEntry:
             "frame_rate": self.frame_rate,
             "resolution_px": self.resolution_px,
             "checksum_sha256": self.checksum_sha256,
-            "qa_report_uri": self.qa_report_uri,
-            "qa_passed": self.qa_passed,
-            "qa_mode": self.qa_mode,
-            "qa_skipped": self.qa_skipped,
             "playback_ready": self.playback_ready,
             "notes": self.notes,
             "metadata": self.metadata,
@@ -146,10 +137,6 @@ def _entry_from_stage_manifest(manifest: StageManifest, *, record: Optional[Arti
         frame_rate=manifest.frame_rate,
         resolution_px=manifest.resolution_px,
         checksum_sha256=checksum,
-        qa_report_uri=manifest.qa_report_uri,
-        qa_passed=manifest.qa_passed,
-        qa_mode=manifest.qa_mode,
-        qa_skipped=manifest.qa_skipped,
         playback_ready=manifest.playback_ready,
         notes=manifest.notes,
         metadata=metadata,
@@ -191,10 +178,6 @@ def _entry_from_artifact_record(record: ArtifactRecord) -> ArtifactEntry:
         frame_rate=metadata.get("frame_rate"),
         resolution_px=metadata.get("resolution_px"),
         checksum_sha256=checksum,
-        qa_report_uri=metadata.get("qa_report_uri"),
-        qa_passed=metadata.get("qa_passed"),
-        qa_mode=metadata.get("qa_mode"),
-        qa_skipped=metadata.get("qa_skipped"),
         playback_ready=metadata.get("playback_ready"),
         notes=metadata.get("notes"),
         metadata=metadata,
@@ -219,10 +202,6 @@ def _entry_to_stage_manifest(entry: ArtifactEntry, run_id: str) -> Dict[str, Any
         frame_rate=entry.frame_rate,
         resolution_px=entry.resolution_px,
         checksum_sha256=entry.checksum_sha256,
-        qa_report_uri=entry.qa_report_uri,
-        qa_passed=entry.qa_passed,
-        qa_mode=entry.qa_mode,
-        qa_skipped=entry.qa_skipped,
         playback_ready=entry.playback_ready,
         notes=entry.notes,
         metadata=dict(entry.metadata),
@@ -301,8 +280,6 @@ class RunState:
     control: ControlState = field(default_factory=ControlState)
     render_profile: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    qa_mode: QAMode = "full"
-    qa_skipped: bool = False
     schema_uri: Optional[str] = None
 
     def append_step(self, record: Dict[str, Any]) -> None:
@@ -336,7 +313,6 @@ class RunRegistry:
         expected_steps: Optional[int] = None,
         render_profile: Optional[Dict[str, Any]] = None,
         run_metadata: Optional[Dict[str, Any]] = None,
-        qa_mode: QAMode = "full",
         schema_uri: Optional[str] = None,
     ) -> RunState:
         with self._lock:
@@ -350,8 +326,6 @@ class RunRegistry:
                 expected_steps=expected_steps,
                 render_profile=dict(render_profile or {}),
                 metadata=dict(run_metadata or {}),
-                qa_mode=qa_mode,
-                qa_skipped=qa_mode == "skip",
                 schema_uri=schema_uri,
             )
             self._runs[run_id] = state
@@ -416,10 +390,6 @@ class RunRegistry:
                     frame_rate=meta.get("frame_rate"),
                     resolution_px=meta.get("resolution_px"),
                     checksum_sha256=meta.get("checksum_sha256"),
-                    qa_report_uri=meta.get("qa_report_uri"),
-                    qa_passed=meta.get("qa_passed"),
-                    qa_mode=meta.get("qa_mode"),
-                    qa_skipped=meta.get("qa_skipped"),
                     playback_ready=meta.get("playback_ready"),
                     notes=meta.get("notes"),
                     metadata=dict(meta),
@@ -470,14 +440,11 @@ class RunRegistry:
         updated_at = _select_timestamp(entries, prefer_min=False) or started_at
         plan_id = _first_metadata_value(entries, "plan_id") or run_id
         plan_title = _first_metadata_value(entries, "plan_title") or plan_id
-        qa_mode = _first_metadata_value(entries, "qa_mode") or "full"
-        qa_skipped_flag = _first_metadata_value(entries, "qa_skipped")
-        qa_skipped = bool(qa_skipped_flag)
         schema_uri = _first_metadata_value(entries, "schema_uri")
         completed = _filesystem_run_completed(entries)
         current_stage = _last_stage_name(stage_groups)
         steps = self._build_filesystem_step_records(stage_groups)
-        timeline = [self._format_timeline_entry(record, qa_mode) for record in steps]
+        timeline = [self._format_timeline_entry(record) for record in steps]
         render_profile: Dict[str, Any] = {}
         metadata: Dict[str, Any] = {"source": "filesystem_fallback"}
         context_payload = _load_run_context_payload(entries)
@@ -515,8 +482,6 @@ class RunRegistry:
             },
             "metadata": metadata,
             "render_profile": render_profile,
-            "qa_mode": qa_mode,
-            "qa_skipped": qa_skipped,
             "schema_uri": schema_uri,
             "timeline": timeline,
             "log": list(timeline),
@@ -596,7 +561,7 @@ class RunRegistry:
         return self._serialize_state(state)
 
     def _serialize_state(self, state: RunState) -> Dict[str, Any]:
-        timeline = [self._format_timeline_entry(record, state.qa_mode) for record in state.steps]
+        timeline = [self._format_timeline_entry(record) for record in state.steps]
         return {
             "run_id": state.run_id,
             "plan_id": state.plan_id,
@@ -618,8 +583,6 @@ class RunRegistry:
             },
             "metadata": dict(state.metadata),
             "render_profile": dict(state.render_profile),
-            "qa_mode": state.qa_mode,
-            "qa_skipped": state.qa_skipped,
             "schema_uri": state.schema_uri,
             "timeline": timeline,
             "log": timeline,
@@ -745,7 +708,7 @@ class RunRegistry:
             page_marker = (last.created_at, last.artifact_id)
         return results
 
-    def _format_timeline_entry(self, record: Dict[str, Any], qa_mode: QAMode) -> Dict[str, Any]:
+    def _format_timeline_entry(self, record: Dict[str, Any]) -> Dict[str, Any]:
         meta = dict(record.get("meta") or {})
         artifacts: List[str] = []
         artifact_uri = record.get("artifact_uri")
@@ -766,8 +729,6 @@ class RunRegistry:
             "device": record.get("device"),
             "artifact_uri": artifact_uri,
             "artifacts": artifacts,
-            "qa_mode": qa_mode,
-            "qa_skipped": qa_mode == "skip",
             "meta": meta,
         }
 

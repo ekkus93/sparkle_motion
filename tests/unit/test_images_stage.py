@@ -33,7 +33,7 @@ def _install_fake_renderer(monkeypatch: pytest.MonkeyPatch, responses: List[List
 
     def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - helper
         call_index = len(calls)
-        calls.append({"count": opts["count"], "batch_start": opts.get("batch_start", 0)})
+        calls.append({"count": opts["count"], "batch_start": opts.get("batch_start", 0), "opts": dict(opts)})
         return responses[call_index]
 
     monkeypatch.setattr(images_stage, "render_images", fake_render)
@@ -190,73 +190,23 @@ def test_render_with_sqlite_recent_index(monkeypatch: pytest.MonkeyPatch, tmp_pa
         recent.close()
 
 
-def test_qa_called(monkeypatch: pytest.MonkeyPatch) -> None:
-    responses = [[{"data": b"qadata", "metadata": {}}]]
-    _install_fake_renderer(monkeypatch, responses)
+def test_qa_arguments_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [[{"data": b"blob", "metadata": {}}]]
+    calls = _install_fake_renderer(monkeypatch, responses)
 
-    called = {"count": 0}
+    result = images_stage.render(
+        "prompt",
+        {
+            "count": 1,
+            "qa": True,
+            "reference_images": [b"ignored"],
+        },
+    )
 
-    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
-        called["count"] += 1
-        assert frames and frames[0] == b"qadata"
-        return {"ok": True, "frames": [{"decision": "ok"}]}
-
-    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
-
-    result = images_stage.render("prompt", {"count": 1, "qa": True})
-
-    assert called["count"] == 1
     assert len(result) == 1
-    assert result[0]["metadata"].get("qa_status") == "ok"
-
-
-def test_reference_images_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    called = {"adapter": 0}
-
-    def fake_render(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # pragma: no cover - should not run
-        called["adapter"] += 1
-        return []
-
-    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
-        assert len(frames) == 1
-        return {"reject": True, "reason": "nsfw"}
-
-    monkeypatch.setattr(images_stage, "render_images", fake_render)
-    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
-
-    with pytest.raises(images_stage.PlanPolicyViolation):
-        images_stage.render(
-            "prompt",
-            {
-                "count": 1,
-                "qa": True,
-                "reference_images": [b"img"],
-            },
-        )
-
-    assert called["adapter"] == 0
-
-
-def test_post_render_qa_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
-    responses = [[
-        {"data": b"qadata-0", "metadata": {}},
-        {"data": b"qadata-1", "metadata": {}},
-    ]]
-    _install_fake_renderer(monkeypatch, responses)
-
-    call_count = {"value": 0}
-
-    def fake_inspect(frames: List[bytes], prompts: List[str]) -> Dict[str, Any]:
-        call_count["value"] += 1
-        assert len(frames) == 2
-        return {"frames": [{"decision": "reject"}], "reason": "nsfw"}
-
-    monkeypatch.setattr(images_stage, "_inspect_frames", fake_inspect)
-
-    with pytest.raises(images_stage.PlanPolicyViolation):
-        images_stage.render("prompt", {"count": 2, "qa": True})
-
-    assert call_count["value"] == 1
+    assert "qa_status" not in result[0]["metadata"]
+    assert "qa" not in calls[0]["opts"]
+    assert "reference_images" not in calls[0]["opts"]
 
 
 def test_rate_limit_queue(monkeypatch: pytest.MonkeyPatch) -> None:
