@@ -240,7 +240,7 @@ Follow these steps to run the full notebook workflow inside Google Colab with a 
 7. **Prepare Drive workspace + download models (Cells 6–7).**
    - Cell 6 pins `REPO_ROOT` if you opened Colab from a different path.
    - Cell 7 invokes `scripts/colab_drive_setup.py` to create the workspace folders, optionally download Hugging Face weights listed in `HF_MODELS`, and emit a smoke JSON under `outputs/colab_smoke.json`. Use Cell 7b to inspect that smoke artifact.
-8. **Launch Workflow Agent servers ("Workflow Agent server controls").** Use the start/stop widgets to spawn `script_agent` (port 8101) and `production_agent` (port 8200) via uvicorn inside Colab. Logs land in `tmp/script_agent.log` and `tmp/production_agent.log`. Skip this if you already run the servers elsewhere—just leave the widgets alone.
+8. **Launch Workflow Agent servers ("Workflow Agent server controls").** Use the start/stop widgets to spawn `script_agent` (port 5001) and `production_agent` (port 5008) via uvicorn inside Colab (ports are defined in `configs/tool_registry.yaml`). Logs land in `tmp/script_agent.log` and `tmp/production_agent.log`. Skip this if you already run the servers elsewhere—just leave the widgets alone.
 9. **Quickstart control panel (Cells 8–11).**
    - Cell 8 makes sure `REPO_ROOT/src` is on `sys.path`.
    - Cell 9 imports and displays the ipywidgets control panel wired to the `local-colab` profile described in `configs/tool_registry.yaml`.

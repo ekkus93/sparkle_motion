@@ -38,7 +38,7 @@ This repository is meant to run from a single environment: **Google Colab with a
 | 5. Workspace config | Derives `REPO_ROOT`, extends `sys.path`, and prints detected paths. | Downstream cells rely on this.
 | 6. Requirements install | Installs `requirements-ml.txt` (ipywidgets, diffusers, torch) inside Colab. | Safe to rerun; idempotent.
 | 7–8. Drive helper + smoke | Runs `scripts/colab_drive_setup.py` to create workspace dirs and optionally download models. | Produces `outputs/colab_smoke.json` for verification.
-| 9. Server controls | ipywidgets to start/stop `script_agent` (port 8101) and `production_agent` (port 8200) via uvicorn inside Colab. | Keep them running for the remaining cells.
+| 9. Server controls | ipywidgets to start/stop `script_agent` (port 5001) and `production_agent` (port 5008) via uvicorn inside Colab (values come from `configs/tool_registry.yaml`). | Keep them running for the remaining cells.
 | 10–12. Control panel | Launches the production control panel (plan loader, run controls, status polling) and syncs run IDs. | Use this UI to run plans end-to-end.
 | 13. Production helper | Makes a Test_Film request directly via HTTP for reference and updates the control panel with the new run ID. | Useful sanity check before custom plans.
 | 14. Final deliverable helper | Reads the `finalize` stage manifest, previews the `video_final` artifact inline, and offers a Colab download. | Requires a completed run.
