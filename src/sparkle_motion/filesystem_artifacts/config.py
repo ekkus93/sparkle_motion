@@ -10,6 +10,7 @@ from typing import Mapping
 from sparkle_motion.utils.env import env_flag
 
 _DEFAULT_MAX_BYTES = 12 * 1024 * 1024 * 1024  # 12 GiB ceiling keeps local disks safe
+DEFAULT_ARTIFACTS_FS_BASE_URL = "http://127.0.0.1:7077"
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class FilesystemArtifactsConfig:
         root = Path(root_hint).expanduser().resolve()
         index_hint = data.get("ARTIFACTS_FS_INDEX") or str(root / "index.db")
         index_path = Path(index_hint).expanduser().resolve()
-        base_url = data.get("ARTIFACTS_FS_BASE_URL") or "http://127.0.0.1:7077"
+        base_url = data.get("ARTIFACTS_FS_BASE_URL") or DEFAULT_ARTIFACTS_FS_BASE_URL
         token = data.get("ARTIFACTS_FS_TOKEN") or None
         allow_insecure = env_flag(data.get("ARTIFACTS_FS_ALLOW_INSECURE"), default=False)
         max_payload_bytes = _coerce_int(data.get("ARTIFACTS_FS_MAX_BYTES"), default=_DEFAULT_MAX_BYTES)

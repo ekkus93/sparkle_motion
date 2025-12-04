@@ -11,6 +11,7 @@ import logging
 import os
 
 from sparkle_motion.tool_entrypoint import create_app
+from sparkle_motion.tool_registry import get_local_endpoint_info
 import uvicorn
 
 
@@ -56,11 +57,27 @@ def invoke_handler(body: dict, *, agent=None) -> dict:
     return info
 
 
+def _resolve_binding(host: str | None, port: int | None, *, profile: str) -> tuple[str, int]:
+    info = get_local_endpoint_info("script_agent", profile=profile)
+    default_host = info.host if info else os.environ.get("WORKFLOW_AGENT_HOST", "127.0.0.1")
+    default_port = info.port if info else 5001
+    resolved_host = host or default_host
+    resolved_port = port or default_port
+    return resolved_host, resolved_port
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=5001)
+    p.add_argument("--host", default=None, help="Host to bind; defaults to ToolRegistry entry")
+    p.add_argument("--port", type=int, default=None, help="Port to bind; defaults to ToolRegistry entry")
+    p.add_argument(
+        "--profile",
+        default=os.environ.get("TOOL_REGISTRY_PROFILE", "local-colab"),
+        help="ToolRegistry profile to consult for default host/port (default: local-colab)",
+    )
     args = p.parse_args()
+
+    host, port = _resolve_binding(args.host, args.port, profile=args.profile)
 
     # Eagerly create the ADK agent; failure is fatal as requested.
     agent = _create_adk_agent()
@@ -70,8 +87,8 @@ def main() -> None:
     # attach for inspection/testability
     app.state.agent = agent
 
-    LOG.info("Starting ScriptAgent (ADK LlmAgent) on %s:%s", args.host, args.port)
-    uvicorn.run(app, host=args.host, port=args.port)
+    LOG.info("Starting ScriptAgent (ADK LlmAgent) on %s:%s", host, port)
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

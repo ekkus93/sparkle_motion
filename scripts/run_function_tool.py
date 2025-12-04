@@ -12,15 +12,13 @@ from __future__ import annotations
 
 import argparse
 import logging
-from urllib.parse import urlparse
-
 from typing import Optional
 
 from fastapi import FastAPI
 import uvicorn
 from sparkle_motion.tool_entrypoint import create_app
 
-from sparkle_motion.tool_registry import get_local_endpoint
+from sparkle_motion.tool_registry import get_local_endpoint_info
 
 
 LOG = logging.getLogger("run_function_tool")
@@ -43,18 +41,12 @@ def resolve_host_port(tool: str, port: Optional[int], host: Optional[str], profi
     if host and port:
         return host, port, "/invoke"
 
-    ep = get_local_endpoint(tool, profile=profile)
-    if not ep:
+    info = get_local_endpoint_info(tool, profile=profile)
+    if not info:
         raise RuntimeError(f"No endpoint for tool '{tool}' in profile '{profile}' and no host/port provided")
-    parsed = urlparse(ep)
-    bind_host = parsed.hostname or "127.0.0.1"
-    bind_port = parsed.port or 80
-    invoke_path = parsed.path or "/invoke"
-    # allow individual overrides
-    if host:
-        bind_host = host
-    if port:
-        bind_port = port
+    bind_host = host or info.host
+    bind_port = port or info.port
+    invoke_path = info.path or "/invoke"
     return bind_host, bind_port, invoke_path
 
 

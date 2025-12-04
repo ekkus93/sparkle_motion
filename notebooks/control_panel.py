@@ -57,12 +57,13 @@ display = _load_display()
 
 from sparkle_motion import tool_registry
 from notebooks import preview_helpers
+from sparkle_motion.filesystem_artifacts.config import DEFAULT_ARTIFACTS_FS_BASE_URL
 from sparkle_motion.utils.env import ARTIFACTS_BACKEND_FILESYSTEM, resolve_artifacts_backend
 
 DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")
 DEFAULT_LOG_DIR = Path(_LOG_DIR_ENV).expanduser() if _LOG_DIR_ENV else Path(__file__).resolve().parents[1] / "artifacts" / "logs"
-DEFAULT_FS_BASE_URL = os.environ.get("ARTIFACTS_FS_BASE_URL", "http://127.0.0.1:7077")
+DEFAULT_FS_BASE_URL = os.environ.get("ARTIFACTS_FS_BASE_URL", DEFAULT_ARTIFACTS_FS_BASE_URL)
 
 
 
