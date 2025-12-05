@@ -36,6 +36,21 @@ class _FakeTorch:
         self.cuda = _FakeCuda()
 
 
+def _oom_state(**overrides: Any) -> gpu_utils.OOMAttemptState:
+    base: dict[str, Any] = {
+        "model_key": "wan",
+        "stage": "render",
+        "attempted_size": 64,
+        "min_size": 8,
+        "initial_size": 64,
+        "shrink_factor": 0.5,
+        "failure_count": 1,
+        "error_message": "RuntimeError: CUDA out of memory",
+    }
+    base.update(overrides)
+    return gpu_utils.OOMAttemptState(**base)
+
+
 @pytest.fixture(autouse=True)
 def _ensure_fixture_mode(monkeypatch):
     monkeypatch.setenv("ADK_USE_FIXTURE", "1")
@@ -198,8 +213,45 @@ def test_model_context_busy_error(monkeypatch):
     with pytest.raises(gpu_utils.GpuBusyError):
         with gpu_utils.model_context("demo", loader=loader, block_until_gpu_free=False):
             pass
-    release.set()
-    thread.join(timeout=1)
+
+
+def test_suggest_shrink_uses_torch_trace_values():
+    message = (
+        "RuntimeError: CUDA out of memory. Tried to allocate 6.0 GiB (GPU 0; "
+        "24.0 GiB total capacity; 12.0 GiB already allocated; 3.0 GiB free; 12.5 GiB reserved)"
+    )
+    state = _oom_state(error_message=message, shrink_factor=0.7)
+    result = gpu_utils.suggest_shrink_for_oom(state)
+    assert result == 28
+
+
+def test_suggest_shrink_falls_back_without_trace():
+    state = _oom_state(attempted_size=48, initial_size=48)
+    result = gpu_utils.suggest_shrink_for_oom(state)
+    assert result == 24
+
+
+def test_suggest_shrink_avoids_repeating_history():
+    state = _oom_state(
+        attempted_size=32,
+        initial_size=40,
+        shrink_factor=0.75,
+        history=(48, 24),
+    )
+    result = gpu_utils.suggest_shrink_for_oom(state)
+    assert result == 22
+
+
+def test_suggest_shrink_uses_snapshot_when_free_missing():
+    message = "RuntimeError: CUDA out of memory. Tried to allocate 2 GiB"
+    snapshot = {"cuda:0": {"free_mb": 512.0, "total_mb": 24576.0}}
+    state = _oom_state(
+        attempted_size=64,
+        error_message=message,
+        memory_snapshot=snapshot,
+    )
+    result = gpu_utils.suggest_shrink_for_oom(state)
+    assert result == 14
 
 
 def test_model_context_async_usage(monkeypatch):

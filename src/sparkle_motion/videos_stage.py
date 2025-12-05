@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable, List, Mapping, MutableMapping, Optio
 from typing_extensions import Literal, Protocol, TypedDict
 
 from . import adk_helpers, observability, telemetry
-from .gpu_utils import ModelOOMError
+from .gpu_utils import ModelOOMError, OOMAttemptState, suggest_shrink_for_oom
 from .utils import dedupe
 
 
@@ -352,6 +352,7 @@ def _execute_chunk(
         mode_attempts += 1
         attempt_opts = dict(adapter_base_opts)
         attempt_opts.setdefault("chunk_length_frames", adaptive_length)
+        current_length = attempt_opts["chunk_length_frames"]
         attempt_opts.setdefault("chunk_index", spec.chunk_index)
         attempt_opts.setdefault("render_start", spec.render_start)
         attempt_opts.setdefault("render_end", spec.render_end)
@@ -380,7 +381,22 @@ def _execute_chunk(
             return result, meta
         except ModelOOMError as exc:
             _record("oom", attempt_opts)
-            adaptive_length = max(int(adaptive_length * config.adaptive_shrink_factor), config.min_chunk_frames)
+            history = [entry["chunk_length_frames"] for entry in attempt_records if entry["outcome"] == "oom"]
+            attempt_state = OOMAttemptState(
+                model_key=exc.model_key,
+                stage=exc.stage,
+                attempted_size=current_length,
+                min_size=config.min_chunk_frames,
+                initial_size=spec.logical_length,
+                shrink_factor=config.adaptive_shrink_factor,
+                failure_count=mode_attempts,
+                error_message=str(exc),
+                history=tuple(history),
+                memory_snapshot=getattr(exc, "memory_snapshot", None),
+            )
+            adaptive_length = suggest_shrink_for_oom(attempt_state)
+            if adaptive_length >= current_length:
+                adaptive_length = max(config.min_chunk_frames, current_length - 1)
             if mode_attempts >= max_attempts:
                 if config.allow_cpu_fallback and not cpu_fallback:
                     cpu_fallback = True

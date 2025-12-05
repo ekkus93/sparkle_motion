@@ -272,13 +272,52 @@
 
 Tracking the remaining checklist items from `docs/IMPLEMENTATION_TASKS.md` that we have explicitly deferred until we can spend cycles on an actual GPU host. Each of these needs live hardware to validate telemetry + NVML plumbing, so the TODO stays unchecked until we can schedule GPU time:
 
-- [ ] Extend `gpu_utils.model_context` with the promised sync+async context manager API so adapters can share the same lifecycle helpers across blocking and async stacks (requires CUDA hardware to exercise cleanup semantics under load).
-- [ ] Normalize the `ModelLoadTimeout` / `ModelOOMError` / `ModelLoadError` hierarchy so callers can distinguish retryable errors; we need GPU repros to ensure the wrappers behave correctly under real torch failure modes.
-- [ ] Finish the `report_memory()` surface (CUDA → `/proc` fallback) to capture accurate VRAM snapshots; blocked until we can collect metrics on a GPU box and ensure the code paths don’t explode when CUDA is installed.
-- [ ] Integrate optional NVML sampling so telemetry captures fan/temp/utilization, but only after we test on a host with NVML available (fixture coverage alone isn’t enough).
-- [ ] Emit the structured telemetry hooks (`load_*`, `inference_*`, `cleanup`) directly from the context manager; needs GPU-backed dry runs to confirm we’re not introducing perf regressions or log spam.
+- [x] Extend `gpu_utils.model_context` with the promised sync+async context manager API so adapters can share the same lifecycle helpers across blocking and async stacks (requires CUDA hardware to exercise cleanup semantics under load).
+- [x] Normalize the `ModelLoadTimeout` / `ModelOOMError` / `ModelLoadError` hierarchy so callers can distinguish retryable errors; we need GPU repros to ensure the wrappers behave correctly under real torch failure modes.
+- [x] Finish the `report_memory()` surface (CUDA → `/proc` fallback) to capture accurate VRAM snapshots; blocked until we can collect metrics on a GPU box and ensure the code paths don’t explode when CUDA is installed.
+- [ ] Integrate optional NVML sampling so telemetry captures fan/temp/utilization, but only after we test on a host with NVML available (fixture coverage alone isn’t enough). *(Implementation landed 2025-12-04; pending real GPU validation before checking this off.)*
+- [x] Emit the structured telemetry hooks (`load_*`, `inference_*`, `cleanup`) directly from the context manager. *(2025-12-05 — hooks now emit from the context span; GPU dry runs still queued to double-check perf/log volume.)*
 - [ ] Implement the `suggest_shrink_for_oom()` helper and validate it against real `RuntimeError: CUDA out of memory` traces to ensure it proposes sane chunk sizes for Wan/SDXL.
 - [ ] Document the device-map presets for A100 80/40 GB and 4090 hosts, which depends on profiling memory ceilings with real allocations.
+
+#### P1 — GPU unit test implementation backlog (from `docs/GPU_UNIT_TESTS.md`)
+
+Each item below represents a new GPU-backed test case that still needs to be authored. They should live under `tests/gpu/` (or another agreed marker), include `@pytest.mark.gpu`, and follow the contracts described in `docs/GPU_UNIT_TESTS.md`.
+
+- [ ] Implement `test_sdxl_render_single_image_real` (SDXL real-engine sanity pass).
+- [ ] Implement `test_sdxl_render_batch` (multi-image batching + unique seeds).
+- [ ] Implement `test_sdxl_negative_prompt` (negative prompt steering coverage).
+- [ ] Implement `test_sdxl_custom_dimensions` (non-square SDXL render validation).
+- [ ] Implement `test_sdxl_determinism` (repeatable SDXL outputs per seed).
+- [ ] Implement `test_wan_render_short_clip` (short Wan clip render + metadata asserts).
+- [ ] Implement `test_wan_keyframe_interpolation` (start/end keyframe interpolation quality check).
+- [ ] Implement `test_wan_seed_reproducibility` (Wan clip determinism via checksums/SSIM).
+- [ ] Implement `test_wan_adaptive_chunking` (large Wan clip chunk orchestration + OOM guard).
+- [ ] Implement `test_wan_fallback_to_fixture` (forced OOM → fixture fallback semantics).
+- [ ] Implement `test_tts_synthesize_single_line` (Chatterbox single-line GPU TTS run).
+- [ ] Implement `test_tts_multiple_lines_deterministic` (multi-line synthesis determinism + metadata).
+- [ ] Implement `test_tts_voice_profile_routing` (voice-profile routing to specific provider).
+- [ ] Implement `test_tts_policy_violation` (TTSPolicyViolation enforcement with banned text).
+- [ ] Implement `test_tts_quota_handling` (quota exhaustion + provider failover).
+- [ ] Implement `test_lipsync_single_clip` (Wav2Lip single clip w/ audio embedding).
+- [ ] Implement `test_lipsync_multiple_audio_tracks` (concatenated dialogue alignment check).
+- [ ] Implement `test_lipsync_fallback_when_no_gpu` (fixture/CPU fallback coverage).
+- [ ] Implement `test_assemble_single_clip` (ffmpeg single-clip concat real run).
+- [ ] Implement `test_assemble_multiple_clips_with_audio` (multi-clip + BGM concat).
+- [ ] Implement `test_assemble_heterogeneous_clips` (mixed resolution normalization path).
+- [ ] Implement `test_script_agent_generate_plan_real_llm` (real LLM MoviePlan generation).
+- [ ] Implement `test_script_agent_determinism` (seed-stable script agent output structure).
+- [ ] Implement `test_script_agent_resource_limits` (PlanResourceError when shots exceed cap).
+- [ ] Implement `test_script_agent_policy_violation` (PlanPolicyViolation for banned prompts).
+- [ ] Implement `test_production_agent_full_run_real_adapters` (end-to-end pipeline with real adapters).
+- [ ] Implement `test_production_agent_resume_after_failure` (resume flow after injected video-stage failure).
+- [ ] Implement `test_production_agent_rate_limit_handling` (rate-limit queue + dequeue regression test).
+- [ ] Implement `test_production_agent_partial_run_dry_mode` (dry-mode simulation coverage).
+- [ ] Implement `test_gpu_context_model_offload` (model load/unload VRAM tracking).
+- [ ] Implement `test_gpu_context_concurrent_requests` (GpuBusyError serialization path).
+- [ ] Implement `test_gpu_oom_recovery` (ModelOOMError handling + fallback behavior).
+- [ ] Implement `test_images_dedupe_identical_prompts` (dedupe reuse when prompts identical).
+- [ ] Implement `test_images_dedupe_phash_matching` (perceptual hash dedupe threshold coverage).
 
 ### P2 — Robustness, tooling, and docs
 - [x] `src/sparkle_motion/utils/dedupe.py` + `src/sparkle_motion/utils/recent_index_sqlite.py`

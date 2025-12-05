@@ -5,12 +5,13 @@ import contextlib
 import ctypes
 import gc
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Generator, Iterator, Mapping, MutableMapping, Optional, Pattern, Sequence
 
 from ctypes.util import find_library
 
@@ -25,6 +26,10 @@ except Exception:  # pragma: no cover - environments without torch
 _OOM_TOKENS = ("out of memory", "cuda error", "cublas_status_alloc_failed")
 _CLEANUP_METHODS = ("close", "shutdown", "stop", "release", "unload", "dispose")
 _PROC_MEMINFO_PATH = Path("/proc/meminfo")
+
+_TORCH_ALLOC_PATTERN = re.compile(r"tried to allocate ([0-9.]+)\s*([kmgt]?i?b|bytes)", re.IGNORECASE)
+_TORCH_FREE_PATTERN = re.compile(r"([0-9.]+)\s*([kmgt]?i?b|bytes)\s+free", re.IGNORECASE)
+_TORCH_TOTAL_PATTERN = re.compile(r"([0-9.]+)\s*([kmgt]?i?b|bytes)\s+total capacity", re.IGNORECASE)
 
 _DEVICE_MAP_PRESETS: dict[str, Mapping[str, str]] = {
     "a100-80gb": {"text_encoder": "cuda:0", "unet": "cuda:0", "vae": "cuda:0", "controlnet": "cuda:0"},
@@ -101,6 +106,22 @@ class GpuBusyError(ModelContextError):
     def __init__(self, *, model_key: str) -> None:
         super().__init__(f"GPU busy while loading '{model_key}'")
         self.model_key = model_key
+
+
+@dataclass(frozen=True)
+class OOMAttemptState:
+    """Snapshot of a failed GPU attempt used to compute the next chunk/batch size."""
+
+    model_key: str
+    stage: str
+    attempted_size: int
+    min_size: int
+    initial_size: int
+    shrink_factor: float
+    failure_count: int
+    error_message: str
+    history: Sequence[int] = field(default_factory=tuple)
+    memory_snapshot: Optional[Mapping[str, Mapping[str, float]]] = None
 
 
 @dataclass
@@ -840,6 +861,132 @@ class _NvmlSampler:
         raw = self._error_string_fn(status)
         return raw.decode("utf-8", "replace") if raw else f"status={status}"
 
+
+@dataclass(frozen=True)
+class _TorchOomStats:
+    requested_bytes: Optional[float]
+    free_bytes: Optional[float]
+    total_bytes: Optional[float]
+
+
+def suggest_shrink_for_oom(state: OOMAttemptState) -> int:
+    """Return a smaller chunk/batch size after an OOM event.
+
+    The helper combines heuristics from CUDA trace parsing, prior attempt history,
+    and the configured shrink factor so higher-level stages can respond
+    consistently when Wan/SDXL allocations fail.
+    """
+
+    attempted = max(state.attempted_size, 1)
+    if attempted <= state.min_size:
+        return state.min_size
+
+    ratio_candidate = _candidate_from_trace(state)
+    shrink_base = state.shrink_factor if state.shrink_factor > 0 else 0.5
+    shrink_base = min(shrink_base, 0.95)
+    progressive = int(attempted * (shrink_base ** max(1, state.failure_count)))
+    fallback = attempted - 1
+
+    candidates = [
+        c for c in (ratio_candidate, progressive, fallback) if c is not None and c >= state.min_size
+    ]
+    if not candidates:
+        return state.min_size
+
+    target = min(candidates)
+    target = min(target, attempted - 1, state.initial_size)
+    if target < state.min_size:
+        target = state.min_size
+
+    target = _avoid_duplicate_target(target, state.history, state.min_size)
+    if target >= attempted:
+        target = max(state.min_size, attempted - 1)
+    return target
+
+
+def _candidate_from_trace(state: OOMAttemptState) -> Optional[int]:
+    stats = _parse_torch_oom_message(state.error_message)
+    free_bytes = stats.free_bytes or _free_bytes_from_snapshot(state.memory_snapshot)
+    requested_bytes = stats.requested_bytes
+    if (
+        requested_bytes is None
+        or requested_bytes <= 0
+        or free_bytes is None
+        or free_bytes <= 0
+    ):
+        return None
+    ratio = (free_bytes * 0.9) / requested_bytes
+    ratio = max(0.05, min(ratio, 0.95))
+    candidate = int(state.attempted_size * ratio)
+    return candidate if candidate > 0 else None
+
+
+def _avoid_duplicate_target(target: int, history: Sequence[int], min_size: int) -> int:
+    if not history:
+        return target
+    seen = {size for size in history if size >= min_size}
+    adjusted = target
+    while adjusted in seen and adjusted > min_size:
+        adjusted -= max(1, adjusted // 10)
+    return max(adjusted, min_size)
+
+
+def _parse_torch_oom_message(message: str) -> _TorchOomStats:
+    if not message:
+        return _TorchOomStats(None, None, None)
+    requested = _match_size(_TORCH_ALLOC_PATTERN, message)
+    free = _match_size(_TORCH_FREE_PATTERN, message)
+    total = _match_size(_TORCH_TOTAL_PATTERN, message)
+    return _TorchOomStats(requested, free, total)
+
+
+def _match_size(pattern: Pattern[str], message: str) -> Optional[float]:
+    match = pattern.search(message)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    unit = match.group(2)
+    return _size_to_bytes(value, unit)
+
+
+def _size_to_bytes(value: float, unit: str) -> float:
+    normalized = unit.strip().lower()
+    if normalized in {"b", "byte", "bytes"}:
+        return value
+    multipliers = {
+        "kib": 1024.0,
+        "mib": 1024.0 ** 2,
+        "gib": 1024.0 ** 3,
+        "tib": 1024.0 ** 4,
+        "kb": 1000.0,
+        "mb": 1000.0 ** 2,
+        "gb": 1000.0 ** 3,
+        "tb": 1000.0 ** 4,
+    }
+    return value * multipliers.get(normalized, 1.0)
+
+
+def _free_bytes_from_snapshot(snapshot: Optional[Mapping[str, Mapping[str, float]]]) -> Optional[float]:
+    if not snapshot:
+        return None
+    ordered = sorted(snapshot.items(), key=_device_sort_key)
+    for _, stats in ordered:
+        if "free_mb" in stats:
+            return float(stats["free_mb"]) * 1024.0 * 1024.0
+        if "free_gb" in stats:
+            return float(stats["free_gb"]) * 1024.0 * 1024.0 * 1024.0
+        if "free_bytes" in stats:
+            return float(stats["free_bytes"])
+    return None
+
+
+def _device_sort_key(item: tuple[str, Mapping[str, float]]) -> tuple[int, str]:
+    device, _ = item
+    lowered = device.lower()
+    return (0, device) if lowered.startswith("cuda") else (1, device)
 
 def _normalize_oom(
     exc: RuntimeError,
