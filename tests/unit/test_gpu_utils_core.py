@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import threading
 from typing import Any
@@ -71,7 +72,19 @@ def test_model_context_runs_loader_and_cleanup(monkeypatch):
     events = telemetry.get_events()
     names = [ev["name"] for ev in events]
     assert "gpu.model.load_start" in names
+    assert "gpu.model.inference_start" in names
+    assert "gpu.model.inference_end" in names
     assert "gpu.model.cleanup" in names
+    inference_start = next(ev for ev in events if ev["name"] == "gpu.model.inference_start")
+    assert inference_start["payload"]["model_key"] == "demo"
+    assert inference_start["payload"]["label"] == "context"
+    inference_end = next(ev for ev in events if ev["name"] == "gpu.model.inference_end")
+    assert inference_end["payload"]["status"] == "ok"
+    assert inference_end["payload"]["duration_ms"] >= 0
+    cleanup_event = next(ev for ev in events if ev["name"] == "gpu.model.cleanup")
+    snapshot = cleanup_event["payload"].get("snapshot")
+    assert snapshot is not None
+    assert "cuda:0" in snapshot
 
 
 def test_model_context_timeout(monkeypatch):
@@ -81,9 +94,10 @@ def test_model_context_timeout(monkeypatch):
     def slow_loader() -> None:
         time.sleep(0.2)
 
-    with pytest.raises(gpu_utils.ModelLoadTimeoutError):
+    with pytest.raises(gpu_utils.ModelLoadTimeoutError) as excinfo:
         with gpu_utils.model_context("timeout-demo", loader=slow_loader, timeout_s=0.05):
             pass
+    assert excinfo.value.retryable is True
 
 
 def test_model_context_normalizes_oom(monkeypatch):
@@ -97,6 +111,22 @@ def test_model_context_normalizes_oom(monkeypatch):
         with gpu_utils.model_context("oom-demo", loader=oom_loader):
             pass
 
+    assert excinfo.value.stage == "load"
+    assert excinfo.value.retryable is False
+
+
+def test_model_context_wraps_generic_error(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    def broken_loader() -> None:
+        raise ValueError("boom")
+
+    with pytest.raises(gpu_utils.ModelLoadError) as excinfo:
+        with gpu_utils.model_context("broken", loader=broken_loader):
+            pass
+
+    assert excinfo.value.retryable is False
     assert excinfo.value.stage == "load"
 
 
@@ -172,8 +202,160 @@ def test_model_context_busy_error(monkeypatch):
     thread.join(timeout=1)
 
 
+def test_model_context_async_usage(monkeypatch):
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    cleanup_called: dict[str, bool] = {"flag": False}
+
+    class _Handle:
+        def close(self) -> None:
+            cleanup_called["flag"] = True
+
+    loader_calls: list[int] = []
+
+    def loader() -> Any:
+        loader_calls.append(1)
+        return _Handle()
+
+    async def _exercise() -> None:
+        async with gpu_utils.model_context("demo-async", loader=loader) as ctx:
+            assert isinstance(ctx.pipeline, _Handle)
+
+    asyncio.run(_exercise())
+
+    assert loader_calls
+    assert cleanup_called["flag"]
+
+
+def test_report_memory_cpu_fallback(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        """MemTotal: 1024000 kB
+MemFree: 204800 kB
+MemAvailable: 512000 kB
+"""
+    )
+    monkeypatch.setattr(gpu_utils, "_PROC_MEMINFO_PATH", meminfo)
+    monkeypatch.setattr(gpu_utils, "torch", None)
+    ctx = gpu_utils.ModelContext(
+        model_key="cpu-only",
+        pipeline=object(),
+        weights=None,
+        device_map=None,
+        allocated_devices=("cpu",),
+        metadata={},
+    )
+    snapshot = ctx.report_memory()
+    assert "cpu" in snapshot
+    assert snapshot["cpu"]["total_mb"] == pytest.approx(1000.0, rel=0.01)
+    assert snapshot["cpu"]["used_mb"] == pytest.approx(500.0, rel=0.01)
+    events = telemetry.get_events()
+    mem_events = [ev for ev in events if ev["name"] == "gpu.model.memory_snapshot"]
+    assert len(mem_events) == 1
+    payload = mem_events[0]["payload"]
+    assert payload["model_key"] == "cpu-only"
+    assert payload["snapshot"] == snapshot
+    assert "nvml" not in payload
+
+
+def test_report_memory_gpu_and_cpu(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        """MemTotal: 1024000 kB
+MemFree: 204800 kB
+MemAvailable: 512000 kB
+"""
+    )
+    monkeypatch.setattr(gpu_utils, "_PROC_MEMINFO_PATH", meminfo)
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+    ctx = gpu_utils.ModelContext(
+        model_key="combo",
+        pipeline=object(),
+        weights=None,
+        device_map=None,
+        allocated_devices=("cuda:0", "cpu"),
+        metadata={},
+    )
+    snapshot = ctx.report_memory()
+    assert "cuda:0" in snapshot
+    assert snapshot["cuda:0"]["total_mb"] == pytest.approx(800.0, rel=0.01)
+    assert "cpu" in snapshot
+    events = telemetry.get_events()
+    mem_events = [ev for ev in events if ev["name"] == "gpu.model.memory_snapshot"]
+    assert len(mem_events) == 1
+    payload = mem_events[0]["payload"]
+    assert payload["model_key"] == "combo"
+    assert payload["snapshot"] == snapshot
+    assert "nvml" not in payload
+
+
+def test_report_memory_emits_nvml_payload(monkeypatch, tmp_path):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        """MemTotal: 1024000 kB
+MemFree: 204800 kB
+MemAvailable: 512000 kB
+"""
+    )
+    monkeypatch.setattr(gpu_utils, "_PROC_MEMINFO_PATH", meminfo)
+    fake_torch = _FakeTorch()
+    monkeypatch.setattr(gpu_utils, "torch", fake_torch)
+
+    def _fake_nvml(devices):
+        return {"cuda:0": {"temperature_c": 42, "fan_percent": 30}}
+
+    monkeypatch.setattr(gpu_utils, "_collect_nvml_metrics", lambda devices: _fake_nvml(devices))
+    ctx = gpu_utils.ModelContext(
+        model_key="nvml-demo",
+        pipeline=object(),
+        weights=None,
+        device_map=None,
+        allocated_devices=("cuda:0",),
+        metadata={},
+    )
+    snapshot = ctx.report_memory()
+    assert "cuda:0" in snapshot
+    events = telemetry.get_events()
+    mem_events = [ev for ev in events if ev["name"] == "gpu.model.memory_snapshot"]
+    assert len(mem_events) == 1
+    payload = mem_events[0]["payload"]
+    assert payload["model_key"] == "nvml-demo"
+    assert payload["snapshot"] == snapshot
+    assert payload["nvml"] == {"cuda:0": {"temperature_c": 42, "fan_percent": 30}}
+
+
 def test_compute_device_map_presets():
     preset = gpu_utils.compute_device_map("a100-80gb")
     assert preset["unet"] == "cuda:0"
     overrides = gpu_utils.compute_device_map("rtx4090", overrides={"vae": "cuda:1"})
     assert overrides["vae"] == "cuda:1"
+
+
+def test_collect_nvml_metrics_uses_sampler(monkeypatch):
+    class _Sampler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def sample(self, devices):
+            self.calls += 1
+            return {"cuda:0": {"temperature_c": 55}}
+
+    sampler = _Sampler()
+    monkeypatch.setattr(gpu_utils, "_resolve_nvml_sampler", lambda: sampler)
+    result = gpu_utils._collect_nvml_metrics(("cuda:0",))
+    assert result == {"cuda:0": {"temperature_c": 55}}
+    assert sampler.calls == 1
+
+
+def test_collect_nvml_metrics_logs_error(monkeypatch):
+    class _Sampler:
+        def sample(self, devices):
+            raise gpu_utils.NvmlError("nvml broke")
+
+    monkeypatch.setattr(gpu_utils, "_resolve_nvml_sampler", lambda: _Sampler())
+    result = gpu_utils._collect_nvml_metrics(("cuda:0",))
+    assert result is None
+    events = telemetry.get_events()
+    assert any(ev["name"] == "gpu.model.nvml_error" for ev in events)
