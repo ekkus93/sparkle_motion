@@ -200,6 +200,8 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - ffmpeg rescales/reencodes to consistent output.
   - Final MP4 playable.
   - Logs warning about resolution mismatch.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_assemble_ffmpeg_gpu.py::test_assemble_heterogeneous_clips`.
+- **Notes**: Sets `SMOKE_ASSEMBLE=1` with fixture fallbacks disabled and asserts `metadata.normalization.applied` alongside the expected log warning.
 
 ---
 

@@ -47,6 +47,14 @@ class AssemblyResult:
 
 
 @dataclass(frozen=True)
+class VideoStreamInfo:
+    width: int
+    height: int
+    codec_name: str
+    pix_fmt: str
+
+
+@dataclass(frozen=True)
 class SubprocessResult:
     exit_code: int
     stdout: str
@@ -236,13 +244,28 @@ def _assemble_with_ffmpeg(
     crf = str(options.get("crf", "18"))
     preset = str(options.get("preset", "veryslow"))
     audio_bitrate = str(options.get("audio_bitrate", "192k"))
+    normalize_video = bool(options.get("normalize_video", True))
 
     filename = f"{_slug(plan_id or 'assemble')}-{int(time.time())}.mp4"
     target = out_dir / filename
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        list_file = Path(tmp_dir) / "concat.txt"
-        list_file.write_text(_build_concat_manifest(clips), encoding="utf-8")
+        work_dir = Path(tmp_dir)
+        prepared_clips, normalization_details = _prepare_clips(
+            clips=list(clips),
+            ffmpeg_bin=ffmpeg_bin,
+            video_codec=video_codec,
+            pix_fmt=pix_fmt,
+            preset=preset,
+            crf=crf,
+            tmp_dir=work_dir,
+            timeout_s=timeout_s,
+            retries=retries,
+            normalize=normalize_video,
+        )
+
+        list_file = work_dir / "concat.txt"
+        list_file.write_text(_build_concat_manifest(prepared_clips), encoding="utf-8")
         cmd: list[str] = [
             ffmpeg_bin,
             "-y",
@@ -285,6 +308,7 @@ def _assemble_with_ffmpeg(
         "stdout_tail": result.stdout[-1024:],
         "stderr_tail": result.stderr[-1024:],
         "options": dict(options),
+        "normalization": normalization_details,
     }
     if plan_id:
         metadata["plan_id"] = plan_id
@@ -327,6 +351,154 @@ def _build_concat_manifest(clips: Sequence[ClipSpec]) -> str:
     for clip in clips:
         lines.append(f"file '{clip.uri}'")
     return "\n".join(lines)
+
+
+def _prepare_clips(
+    *,
+    clips: Sequence[ClipSpec],
+    ffmpeg_bin: str,
+    video_codec: str,
+    pix_fmt: str,
+    preset: str,
+    crf: str,
+    tmp_dir: Path,
+    timeout_s: float,
+    retries: int,
+    normalize: bool,
+) -> tuple[Sequence[ClipSpec], Mapping[str, Any]]:
+    if not clips:
+        return clips, {"applied": False}
+    infos = [_probe_video_stream(clip.uri) for clip in clips]
+    target_width = max(info.width for info in infos)
+    target_height = max(info.height for info in infos)
+    target = {"width": target_width, "height": target_height, "pix_fmt": pix_fmt}
+    normalization_meta: MutableMapping[str, Any] = {
+        "applied": False,
+        "target": target,
+        "mismatched_clips": 0,
+    }
+    if not normalize:
+        return clips, normalization_meta
+    mismatched_indexes = [
+        idx
+        for idx, info in enumerate(infos)
+        if info.width != target_width or info.height != target_height or info.pix_fmt != pix_fmt
+    ]
+    if not mismatched_indexes:
+        return clips, normalization_meta
+
+    normalization_meta["applied"] = True
+    normalization_meta["mismatched_clips"] = len(mismatched_indexes)
+    LOG.warning(
+        "Assemble ffmpeg resolution mismatch detected; normalizing %s clip(s) to %sx%s (%s)",
+        len(mismatched_indexes),
+        target_width,
+        target_height,
+        pix_fmt,
+    )
+
+    normalized_dir = tmp_dir / "normalized"
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    normalized_clips: list[ClipSpec] = []
+    for idx, clip in enumerate(clips):
+        if idx not in mismatched_indexes:
+            normalized_clips.append(clip)
+            continue
+        output = normalized_dir / f"clip_{idx:03d}.mp4"
+        _transcode_clip(
+            ffmpeg_bin=ffmpeg_bin,
+            src=clip.uri,
+            dest=output,
+            width=target_width,
+            height=target_height,
+            pix_fmt=pix_fmt,
+            video_codec=video_codec,
+            preset=preset,
+            crf=crf,
+            timeout_s=timeout_s,
+            retries=retries,
+        )
+        normalized_clips.append(
+            ClipSpec(
+                uri=output,
+                start_s=clip.start_s,
+                end_s=clip.end_s,
+                metadata=clip.metadata,
+                transition=clip.transition,
+            )
+        )
+    return normalized_clips, normalization_meta
+
+
+def _probe_video_stream(path: Path) -> VideoStreamInfo:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,codec_name,pix_fmt",
+        "-of",
+        "json",
+        str(path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=10)
+    if proc.returncode != 0:
+        raise AssemblyError(
+            "Failed to probe video stream",
+            metadata={"path": str(path), "stderr": proc.stderr.strip()},
+        )
+    try:
+        payload = json.loads(proc.stdout or "{}")
+        stream = payload.get("streams", [])[0]
+        return VideoStreamInfo(
+            width=int(stream["width"]),
+            height=int(stream["height"]),
+            codec_name=str(stream.get("codec_name", "unknown")),
+            pix_fmt=str(stream.get("pix_fmt", "unknown")),
+        )
+    except Exception as exc:  # pragma: no cover - defensive parsing
+        raise AssemblyError("Unable to parse ffprobe output", metadata={"stdout": proc.stdout}) from exc
+
+
+def _transcode_clip(
+    *,
+    ffmpeg_bin: str,
+    src: Path,
+    dest: Path,
+    width: int,
+    height: int,
+    pix_fmt: str,
+    video_codec: str,
+    preset: str,
+    crf: str,
+    timeout_s: float,
+    retries: int,
+) -> None:
+    filter_arg = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease"
+        f",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+    )
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-i",
+        str(src),
+        "-vf",
+        filter_arg,
+        "-pix_fmt",
+        pix_fmt,
+        "-c:v",
+        video_codec,
+        "-preset",
+        preset,
+        "-crf",
+        str(crf),
+        "-an",
+        str(dest),
+    ]
+    run_command(cmd, cwd=dest.parent, timeout_s=timeout_s, retries=retries)
 
 
 def _slug(value: str) -> str:

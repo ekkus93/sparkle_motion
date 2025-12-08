@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import pytest
 
@@ -11,17 +12,25 @@ from sparkle_motion.function_tools.assemble_ffmpeg import adapter
 from . import helpers
 
 
-def _generate_color_clip(dest: Path, duration_s: float = 1.5, *, color: str = "navy") -> None:
+def _generate_color_clip(
+    dest: Path,
+    duration_s: float = 1.5,
+    *,
+    color: str = "navy",
+    size: Tuple[int, int] = (640, 360),
+    fps: int = 24,
+) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    width, height = size
     cmd = [
         "ffmpeg",
         "-y",
         "-f",
         "lavfi",
         "-i",
-        f"color=c={color}:s=640x360:d={duration_s}",
+        f"color=c={color}:s={width}x{height}:d={duration_s}",
         "-r",
-        "24",
+        str(fps),
         "-pix_fmt",
         "yuv420p",
         str(dest),
@@ -95,6 +104,33 @@ def _video_has_audio_stream(path: Path) -> bool:
     if proc.returncode != 0:
         raise AssertionError(f"ffprobe audio stream probe failed for {path}: {proc.stderr.strip()}")
     return any(line.strip().lower() == "audio" for line in proc.stdout.splitlines())
+
+
+def _video_resolution(path: Path) -> tuple[int, int]:
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"ffprobe resolution probe failed for {path}: {proc.stderr.strip()}")
+    parts = proc.stdout.strip().split(",")
+    if len(parts) != 2:
+        raise AssertionError(f"Unexpected ffprobe width/height output for {path}: {proc.stdout}")
+    return int(parts[0]), int(parts[1])
 
 
 @pytest.mark.gpu
@@ -202,3 +238,51 @@ def test_assemble_multiple_clips_with_audio(monkeypatch: "pytest.MonkeyPatch", t
     metadata = result.metadata
     assert metadata.get("engine") == "ffmpeg"
     assert metadata.get("plan_id") == "gpu-multi-clip"
+
+
+@pytest.mark.gpu
+def test_assemble_heterogeneous_clips(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path, caplog: "pytest.LogCaptureFixture") -> None:
+    helpers.require_gpu_available()
+
+    helpers.ensure_real_adapter(
+        monkeypatch,
+        flags=["SMOKE_ASSEMBLE", "SMOKE_ADAPTERS"],
+        disable_keys=["ADK_USE_FIXTURE", "ASSEMBLE_FFMPEG_FIXTURE_ONLY"],
+    )
+    helpers.set_env(
+        monkeypatch,
+        {
+            "ARTIFACTS_DIR": str(tmp_path / "artifacts"),
+            "ASSEMBLE_FFMPEG_FIXTURE_ONLY": "0",
+        },
+    )
+
+    sizes: Sequence[Tuple[int, int]] = ((640, 360), (1280, 720), (1920, 1080))
+    clips: list[adapter.ClipSpec] = []
+    for idx, size in enumerate(sizes):
+        clip_path = tmp_path / "inputs" / f"hetero_{idx}.mp4"
+        _generate_color_clip(clip_path, duration_s=1.0 + idx * 0.1, color="navy", size=size)
+        clips.append(adapter.ClipSpec(uri=clip_path))
+
+    caplog.set_level(logging.WARNING)
+
+    output_dir = tmp_path / "outputs"
+    result = adapter.assemble_movie(
+        clips=clips,
+        audio=None,
+        plan_id="gpu-hetero-clip",
+        output_dir=output_dir,
+        options={"fixture_only": False},
+    )
+
+    assert result.engine == "ffmpeg"
+    assert result.path.exists()
+    width, height = _video_resolution(result.path)
+    assert (width, height) == (1920, 1080)
+
+    metadata = result.metadata
+    normalization = metadata.get("normalization", {})
+    assert normalization.get("applied") is True
+    assert normalization.get("target") == {"width": 1920, "height": 1080, "pix_fmt": "yuv420p"}
+
+    assert any("resolution mismatch" in record.getMessage() for record in caplog.records), "Expected normalization warning"
