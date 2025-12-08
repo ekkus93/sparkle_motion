@@ -81,12 +81,14 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Video transitions from start to end frame.
   - No abrupt cuts or black frames (manual or automated visual check).
   - Duration matches `num_frames / fps`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_keyframe_interpolation`.
 
 ### `test_wan_seed_reproducibility`
 - **Purpose**: Render same clip with fixed seed twice, verify consistency.
 - **Inputs**: prompt="Slow zoom", seed=150, num_frames=24, fps=12, run twice.
 - **Assertions**:
   - Both outputs have identical frame checksums (or high SSIM score).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_seed_reproducibility`.
 
 ### `test_wan_adaptive_chunking`
 - **Purpose**: Request 128-frame clip, ensure adapter chunks correctly without OOM.
@@ -95,6 +97,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Final MP4 contains ~128 frames (allow ±2 for codec rounding).
   - No CUDA OOM or chunking errors.
   - `metadata.chunk_count` reflects chunking strategy.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_adaptive_chunking`.
 
 ### `test_wan_fallback_to_fixture`
 - **Purpose**: Force OOM condition, verify fixture fallback.
@@ -103,6 +106,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Adapter falls back gracefully.
   - Output metadata marks `engine="fixture"`.
   - No unhandled exceptions.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_fallback_to_fixture`.
 
 ---
 
