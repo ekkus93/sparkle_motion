@@ -26,6 +26,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Metadata includes `engine="sdxl"`, `seed=42`, `phash` (perceptual hash), and `width=1024`.
   - File size > 100KB (real render, not fixture placeholder).
 - **Flags**: `SMOKE_ADAPTERS=1`, `IMAGES_SDXL_FIXTURE_ONLY=0`.
+- **Status**: done — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_render_single_image_real`.
 
 ### `test_sdxl_render_batch`
 - **Purpose**: Render batch of 4 images with different seeds, ensure each is distinct.
