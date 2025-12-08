@@ -119,6 +119,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Output WAV file exists and is valid audio.
   - Duration > 0.5s.
   - Metadata includes `provider_id="chatterbox"`, `voice_id`, `sample_rate`, `watermarked=true/false`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_synthesize_single_line`.
 
 ### `test_tts_multiple_lines_deterministic`
 - **Purpose**: Synthesize 3 lines with same seed, verify consistent outputs.
@@ -127,6 +128,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - 3 WAV files generated.
   - Re-running with same seed produces byte-identical (or near-identical) audio.
   - Metadata includes per-line `artifact_uri`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_multiple_lines_deterministic`.
 
 ### `test_tts_voice_profile_routing`
 - **Purpose**: Request specific voice profile, ensure correct provider selected.
@@ -134,6 +136,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - Adapter routes to Polly provider (or fallback if unavailable).
   - Metadata reflects chosen provider.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_voice_profile_routing`.
 
 ### `test_tts_policy_violation`
 - **Purpose**: Submit text containing banned words, expect TTSPolicyViolation.
@@ -141,6 +144,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - `TTSPolicyViolation` raised.
   - No WAV file created.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_policy_violation`.
 
 ### `test_tts_quota_handling`
 - **Purpose**: Mock quota exhaustion, verify fallback to next provider.
@@ -149,6 +153,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Adapter selects fallback provider.
   - WAV still generated.
   - Metadata indicates failover.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_quota_handling`.
 
 ---
 
