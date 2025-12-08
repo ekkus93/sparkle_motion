@@ -157,7 +157,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Output MP4 exists and is playable.
   - Duration matches input video duration.
   - Audio track embedded correctly.
-  - Metadata includes `engine="wav2lip"` or `engine="fixture"`.
+  - Metadata includes `engine="wav2lip"` (hard fails if fixture path used).
 - **Status**: done (2025-12-08) — see `tests/gpu/test_lipsync_wav2lip_gpu.py::test_lipsync_single_clip`.
 
 ### `test_lipsync_multiple_audio_tracks`
@@ -166,6 +166,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - Output MP4 duration = sum of audio durations.
   - No audio sync drift.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_lipsync_wav2lip_gpu.py::test_lipsync_multiple_audio_tracks` (fails if adapter reports fixture engine).
 - **Status**: done (2025-12-08) — see `tests/gpu/test_lipsync_wav2lip_gpu.py::test_lipsync_multiple_audio_tracks`.
 
 ---

@@ -194,7 +194,7 @@ def test_lipsync_single_clip(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) 
 
     metadata = result.metadata
     engine = metadata.get("engine")
-    assert engine in {"wav2lip_subprocess", "wav2lip_fixture"}
+    assert engine == "wav2lip_subprocess", "GPU test must exercise the real Wav2Lip adapter"
     assert metadata.get("face_video")
     assert metadata.get("audio")
 
@@ -265,7 +265,8 @@ def test_lipsync_multiple_audio_tracks(monkeypatch: "pytest.MonkeyPatch", tmp_pa
     assert _video_has_audio_stream(output_path)
 
     metadata = result.metadata
-    assert metadata.get("engine") in {"wav2lip_subprocess", "wav2lip_fixture"}
+    engine = metadata.get("engine")
+    assert engine == "wav2lip_subprocess", "GPU test must exercise the real Wav2Lip adapter"
     assert metadata.get("audio") == str(combined_audio)
     assert metadata.get("face_video") == str(face_video)
 
