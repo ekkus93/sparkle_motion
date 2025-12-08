@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover - torch optional on CPU-only hosts
     torch = None  # type: ignore
 
 ASSETS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "assets"
-GPU_SKIP_REASON = "GPU tests require CUDA-enabled hardware (set CUDA_VISIBLE_DEVICES accordingly)."
+GPU_FAIL_REASON = "GPU tests require CUDA-enabled hardware (set CUDA_VISIBLE_DEVICES accordingly)."
 
 
 def asset_path(name: str) -> Path:
@@ -44,9 +44,11 @@ def _pytest_module() -> Any:
 def require_gpu_available() -> None:
     pytest = _pytest_module()
     if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
-        pytest.skip(GPU_SKIP_REASON)
-    if torch is None or not torch.cuda.is_available():
-        pytest.skip(GPU_SKIP_REASON)
+        pytest.fail(GPU_FAIL_REASON)
+    if torch is None:
+        pytest.fail(GPU_FAIL_REASON)
+    if not torch.cuda.is_available():
+        pytest.fail(GPU_FAIL_REASON)
 
 
 def set_env(monkeypatch: MonkeyPatch, values: Mapping[str, str]) -> None:

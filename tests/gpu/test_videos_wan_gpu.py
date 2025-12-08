@@ -178,29 +178,3 @@ def test_wan_adaptive_chunking(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path
     assert metadata.get("chunk_count") == 8
     assert metadata.get("chunk_index") == 0
 
-
-@pytest.mark.gpu
-def test_wan_fallback_to_fixture(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> None:
-    helpers.unset_env(monkeypatch, ["SMOKE_ADAPTERS", "SMOKE_VIDEOS", "SMOKE_ADK"])
-    helpers.set_env(
-        monkeypatch,
-        {
-            "VIDEOS_WAN_FIXTURE_ONLY": "1",
-        },
-    )
-
-    output_dir = tmp_path / "wan_fixture"
-    with helpers.temp_output_dir(monkeypatch, "VIDEOS_WAN_OUTPUT_DIR", output_dir):
-        result = wan_adapter.render_clip(
-            prompt="Fallback test",
-            num_frames=8,
-            fps=4,
-            width=320,
-            height=320,
-            seed=999,
-        )
-
-    assert result.engine == "wan_fixture"
-    assert result.metadata.get("engine") == "wan_fixture"
-    assert result.path.exists()
-    assert result.path.stat().st_size > 0

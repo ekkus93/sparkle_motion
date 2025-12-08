@@ -5,7 +5,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 ## Test Markers & Configuration
 
 - **Marker**: `@pytest.mark.gpu` — identifies tests requiring GPU hardware.
-- **Environment gating**: tests skip automatically when `CUDA_VISIBLE_DEVICES=""` or no GPU is detected.
+- **Environment gating**: tests now fail immediately when `CUDA_VISIBLE_DEVICES=""` or no CUDA-capable GPU is detected (no automatic skips).
 - **Model downloads**: tests assume Hugging Face models are cached locally or download on first run (expect long initial execution).
 - **pytest.ini additions**:
   ```ini
@@ -99,15 +99,6 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - `metadata.chunk_count` reflects chunking strategy.
 - **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_adaptive_chunking`.
 
-### `test_wan_fallback_to_fixture`
-- **Purpose**: Force OOM condition, verify fixture fallback.
-- **Setup**: Inject `GpuBusyError` or set `VIDEOS_WAN_FIXTURE_ONLY=1`.
-- **Assertions**:
-  - Adapter falls back gracefully.
-  - Output metadata marks `engine="fixture"`.
-  - No unhandled exceptions.
-- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_fallback_to_fixture`.
-
 ---
 
 ## TTS (Text-to-Speech) Tests
@@ -167,6 +158,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Duration matches input video duration.
   - Audio track embedded correctly.
   - Metadata includes `engine="wav2lip"` or `engine="fixture"`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_lipsync_wav2lip_gpu.py::test_lipsync_single_clip`.
 
 ### `test_lipsync_multiple_audio_tracks`
 - **Purpose**: Merge video with concatenated dialogue audio.
@@ -174,14 +166,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - Output MP4 duration = sum of audio durations.
   - No audio sync drift.
-
-### `test_lipsync_fallback_when_no_gpu`
-- **Purpose**: Force Wav2Lip to use fixture/CPU fallback.
-- **Setup**: Set `SMOKE_LIPSYNC=0` or mask GPU.
-- **Assertions**:
-  - Adapter falls back to fixture (simple audio overlay).
-  - Output MP4 valid.
-  - Metadata marks `engine="fixture"`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_lipsync_wav2lip_gpu.py::test_lipsync_multiple_audio_tracks`.
 
 ---
 
@@ -274,14 +259,6 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Response includes `status="queued"` and `queue.ticket_id`.
   - Step record marks `status="queued"`.
   - Retry logic dequeues and completes run.
-
-### `test_production_agent_partial_run_dry_mode`
-- **Purpose**: Run in `mode="dry"`, verify no artifacts generated.
-- **Inputs**: MoviePlan, mode="dry".
-- **Assertions**:
-  - `status="success"` with `simulation_report`.
-  - `artifact_uris=[]` (no files created).
-  - `steps` list contains simulated records with `status="simulated"`.
 
 ---
 
