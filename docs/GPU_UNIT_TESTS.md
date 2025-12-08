@@ -72,6 +72,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Output MP4 exists and is playable.
   - Metadata includes `engine="wan"`, `frame_count=16`, `fps=8`, `duration_s=2.0`.
   - File size > 10KB (real video, not JSON placeholder).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_videos_wan_gpu.py::test_wan_render_short_clip`.
 
 ### `test_wan_keyframe_interpolation`
 - **Purpose**: Provide distinct start/end frames, ensure smooth interpolation.
