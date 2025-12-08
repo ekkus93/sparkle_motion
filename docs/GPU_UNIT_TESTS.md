@@ -180,6 +180,8 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Output file exists and is valid MP4.
   - Duration matches input.
   - No audio track present.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_assemble_ffmpeg_gpu.py::test_assemble_single_clip`.
+- **Notes**: Test enforces the real ffmpeg engine (`engine="ffmpeg"`) and fails if the adapter falls back to fixtures.
 
 ### `test_assemble_multiple_clips_with_audio`
 - **Purpose**: Concatenate 3 clips + background audio track.
@@ -188,6 +190,8 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Final MP4 duration = sum of clip durations.
   - Audio track plays continuously.
   - No frame drops or sync issues.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_assemble_ffmpeg_gpu.py::test_assemble_multiple_clips_with_audio`.
+- **Notes**: Requires `SMOKE_ASSEMBLE=1` with `ASSEMBLE_FFMPEG_FIXTURE_ONLY=0` and fails if metadata reports any engine other than `ffmpeg`.
 
 ### `test_assemble_heterogeneous_clips`
 - **Purpose**: Mix clips with different resolutions/codecs, verify ffmpeg normalization.
