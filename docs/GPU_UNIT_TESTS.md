@@ -26,7 +26,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Metadata includes `engine="sdxl"`, `seed=42`, `phash` (perceptual hash), and `width=1024`.
   - File size > 100KB (real render, not fixture placeholder).
 - **Flags**: `SMOKE_ADAPTERS=1`, `IMAGES_SDXL_FIXTURE_ONLY=0`.
-- **Status**: done — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_render_single_image_real`.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_render_single_image_real`.
 
 ### `test_sdxl_render_batch`
 - **Purpose**: Render batch of 4 images with different seeds, ensure each is distinct.
@@ -35,6 +35,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - 4 files generated with sequential seeds (100, 101, 102, 103).
   - Each `phash` is unique (no duplicate images).
   - All images have identical dimensions.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_render_batch`.
 
 ### `test_sdxl_negative_prompt`
 - **Purpose**: Validate negative prompt steering.
@@ -43,6 +44,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Image rendered successfully.
   - Metadata includes both `prompt` and `negative_prompt` fields.
   - Compare perceptual hash against baseline (optional).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_negative_prompt`.
 
 ### `test_sdxl_custom_dimensions`
 - **Purpose**: Test non-square resolutions (512×768, 1280×720).
@@ -50,12 +52,14 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - Output PNG matches requested dimensions.
   - No CUDA OOM errors for supported resolutions.
+- **Status**: done (2025-12-08) — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_custom_dimensions`.
 
 ### `test_sdxl_determinism`
 - **Purpose**: Run same prompt/seed twice, verify identical outputs.
 - **Inputs**: prompt="Test consistency", seed=7, steps=15, run twice.
 - **Assertions**:
   - Both renders produce byte-identical PNG files (or matching phashes within tolerance).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_images_sdxl_gpu.py::test_sdxl_determinism`.
 
 ---
 
