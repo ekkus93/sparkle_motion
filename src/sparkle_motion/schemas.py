@@ -299,7 +299,6 @@ class RunContext(BaseModel):
         metadata: Optional[Dict[str, Any]] = None,
         dialogue_timeline_uri: Optional[str] = None,
         base_image_map: Optional[Mapping[str, str]] = None,
-        policy_decisions: Optional[Sequence[str]] = None,
     ) -> "RunContext":
         """Construct a RunContext using canonical identifiers from the plan."""
 
@@ -309,9 +308,6 @@ class RunContext(BaseModel):
         ctx_meta = dict(metadata or {})
         if base_meta:
             ctx_meta.setdefault("plan_metadata", base_meta)
-        if policy_decisions:
-            ctx_meta.setdefault("policy_decisions", list(policy_decisions))
-
         if render_profile is not None:
             render_profile_payload = dict(render_profile)
         else:

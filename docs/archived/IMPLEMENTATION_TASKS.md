@@ -272,7 +272,6 @@ This agent is plan-only: it generates and validates a `MoviePlan` (the script) a
     - `TTSProviderUnavailable` — provider-side unavailability; treat as `retryable` for short backoff but also trigger provider-failover logic.
     - `TTSQuotaExceeded` — billing/quota errors; do not retry on same provider, attempt fallback provider if available; surface `PlanResourceError` if no fallback.
     - `TTSInvalidInputError` — non-retryable: invalid audio params, unsupported characters, voice_id unknown. Surface to caller as `BadRequest` / `PlanSchemaError` and do not retry.
-    - `TTSPolicyViolation` — non-retryable: content moderation blocked; fail with `PlanPolicyViolation` and do not publish artifact.
     - `TTSServerError` — generic server error; treat as retryable up to `max_retries` then escalate.
 
   - Retry policy (recommended):
@@ -1138,9 +1137,8 @@ def run_command(cmd: List[str], cwd: Path, timeout_s: int = 600, retries: int = 
   - Ensure `ffmpeg` is available in CI images for the gated smoke test, or run the smoke test in a container with `ffmpeg` installed.
   - Provide a lightweight fixture mode for tests to avoid heavy binaries when not gating (unit tests should not need `ffmpeg`).
 
-- Security / policy notes:
+- Security notes:
   - The assembler must not execute arbitrary user-supplied shell commands. Validate and whitelist options.
-  - Production callers (e.g., `production_agent`) must run content policy checks before assembly.
 
 If you want, I can implement the skeleton and safe subprocess helper as a local patch (showing diffs), create the unit tests, and add example docs. I will not modify `pyproject.toml` or push changes without your explicit approval phrase.
 
@@ -1148,20 +1146,19 @@ If you want, I can implement the skeleton and safe subprocess helper as a local 
 
 ### production_agent (expanded)
 
-- **Purpose**: execute `MoviePlan` objects end-to-end; orchestrate `images_stage`, `tts_stage`, `videos_stage`, and `assemble_ffmpeg`; enforce policy and gating; publish final artifacts.
+- **Purpose**: execute `MoviePlan` objects end-to-end; orchestrate `images_stage`, `tts_stage`, `videos_stage`, and `assemble_ffmpeg`; publish final artifacts.
 
 - **Public API**: `execute_plan(plan: MoviePlan, *, mode: Literal["dry", "run"] = "dry") -> list[ArtifactRef]`
   - `dry`: validate and simulate orchestration without invoking heavy FunctionTools.
-  - `run`: perform guarded execution (checks, gated services, publish artifacts).
+  - `run`: perform guarded execution of all stages and publish artifacts.
 
 - **Responsibilities & behavior**:
   - Validate `MoviePlan` schema and preconditions before execution.
-  - Run content & safety policy checks early; on rejection raise `PolicyViolationError` with clear reason and memory event.
   - Apply gating: only call heavy FunctionTools when the appropriate environment flags are set (e.g., `SMOKE_ADK`, `SMOKE_LIPSYNC`) and when `adk_helpers.require_adk()` succeeds for ADK-backed providers.
   - Orchestrate per-step execution with retries/backoff and bounded concurrency for expensive steps (e.g., chunked video renders).
   - Track and publish intermediate artifacts (images, wavs, clips) and final assembled artifact via `adk_helpers.publish_artifact()`; include rich metadata (plan_id, step_id, model_id, device, seed, durations).
   - Provide observability: for each step record timing, peak-memory hints, stdout/stderr logs for subprocess-backed tools and callback progress events for pipeline-backed tools.
-  - Provide a `simulate_execution_report(plan, policy_decisions)` output for `dry` runs that lists expected invocation graph, resource estimates, and publish URIs that would be created.
+  - Provide a `simulate_execution_report(plan)` output for `dry` runs that lists expected invocation graph, resource estimates, and publish URIs that would be created.
 
 - **Error handling & cleanup**:
   - Implement bounded retries for transient errors with exponential backoff and jitter.
@@ -1173,11 +1170,8 @@ If you want, I can implement the skeleton and safe subprocess helper as a local 
 ```python
 def execute_plan(plan, mode="dry"):
     validate_plan_schema(plan)
-    policy_decisions = run_policy_checks(plan)
-    if policy_decisions.reject:
-        raise PolicyViolationError(policy_decisions.reason)
     if mode == "dry":
-        return simulate_execution_report(plan, policy_decisions)
+    return simulate_execution_report(plan)
 
     artifacts = []
     for step in plan.steps:
@@ -1199,7 +1193,7 @@ def execute_plan(plan, mode="dry"):
 ```
 
 - **Tests**:
-  - Unit tests: mock FunctionTools and assert orchestration, policy enforcement, and retry behavior.
+  - Unit tests: mock FunctionTools and assert orchestration and retry behavior.
   - Integration/gated: full end-to-end smoke test run behind `SMOKE_ADK=1` that exercises a tiny plan, verifies published artifacts and metadata.
 
 - **Estimate**: 2–4 days to implement a robust `production_agent` scaffold and unit tests.
@@ -1248,7 +1242,6 @@ def execute_plan(plan, mode="dry"):
   - `plan_id: str`
   - `steps: list[{step_id, step_type, estimated_runtime_s, estimated_gpu_memory_mb, simulated_artifact_uri}]`
   - `resource_summary: {total_estimated_gpu_hours, total_estimated_runtime_s}`
-  - `policy_decisions: list` — any policy flags or warnings
 
 **Observable telemetry contract (per-step metadata)**
 
@@ -1283,8 +1276,7 @@ Emit these records to logger/metrics sink and include them in any artifact metad
 - Unit tests (fast, mocked adapters):
   1. `test_execute_plan_dry_simulation`: feed a simple plan into `execute_plan(mode='dry')` and assert `simulate_execution_report` shape and simulated URIs.
   2. `test_retry_on_transient_error`: mock an adapter to raise a transient exception on first call and succeed on the second; assert `attempts == 2` and final `status == 'succeeded'`.
-  3. `test_policy_rejection`: create a plan with disallowed content; assert `PlanPolicyViolation` is raised and no adapters are called.
-  4. `test_oom_adaptive_retry`: mock a video chunk renderer to raise an OOM on first attempt; assert that `production_agent` reduces chunk size and retries once before failing or succeeding per mock.
+  3. `test_oom_adaptive_retry`: mock a video chunk renderer to raise an OOM on first attempt; assert that `production_agent` reduces chunk size and retries once before failing or succeeding per mock.
 
 - Integration/gated smoke tests (requires flags):
   1. `smoke_execute_plan_end_to_end` (gated by `SMOKE_ADK=1`): run a tiny plan (1 image + 1 short TTS) against fixture/backed adapters and assert artifacts are published and `StepExecutionRecord` entries are produced.

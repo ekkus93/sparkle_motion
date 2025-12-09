@@ -31,10 +31,6 @@ class ProductionAgentError(RuntimeError):
     """Base error for production agent failures."""
 
 
-class PlanPolicyViolation(ProductionAgentError):
-    """Raised when a plan violates gating or safety policies."""
-
-
 class StepExecutionError(ProductionAgentError):
     """Raised when a step exhausts retries without success."""
 
@@ -141,7 +137,6 @@ class SimulationReport:
     plan_id: str
     steps: Sequence[SimulationStep]
     resource_summary: Dict[str, float]
-    policy_decisions: Sequence[str]
 
 
 class ProductionResult(list):
@@ -179,7 +174,6 @@ class _BaseImageAsset:
 class _PlanIntakeResult:
     base_image_lookup: Dict[str, BaseImageSpec]
     base_image_assets: Dict[str, _BaseImageAsset]
-    policy_decisions: List[str]
     run_context: RunContext
     run_context_path: Optional[Path]
     plan_path: Optional[Path]
@@ -234,7 +228,6 @@ def execute_plan(
                 "dialogue_timeline_uri": result.run_context.dialogue_timeline_uri,
                 "base_image_map": dict(result.run_context.base_image_map),
                 "schema_uris": result.schema_meta,
-                "policy_decisions": list(result.policy_decisions),
             }
             meta = {key: value for key, value in meta.items() if value is not None}
             _record_stage_manifest_entries(run_id=run_id, manifests=result.stage_manifests)
@@ -262,7 +255,7 @@ def execute_plan(
 
     if mode == "dry":
         plan_record, plan_intake_result = _execute_plan_intake_stage(output_dir=None)
-        report = _simulate_execution_report(model, plan_intake_result.policy_decisions)
+        report = _simulate_execution_report(model)
         _record_summary_event(run_id, plan_id, "dry", [plan_record], simulation=report)
         return ProductionResult([], steps=[plan_record], simulation_report=report)
 
@@ -487,36 +480,6 @@ def _base_image_prompt(
     return prompt
 
 
-def _run_policy_checks(plan: MoviePlan, base_images: Mapping[str, BaseImageSpec]) -> List[str]:
-    banned_keywords = {"weaponized", "forbidden"}
-    decisions: List[str] = []
-    for shot in plan.shots:
-        start_prompt = _base_image_prompt(
-            base_images,
-            shot.start_base_image_id,
-            shot_id=shot.id,
-            role="start",
-            allow_empty=True,
-        )
-        end_prompt = _base_image_prompt(
-            base_images,
-            shot.end_base_image_id,
-            shot_id=shot.id,
-            role="end",
-            allow_empty=True,
-        )
-        text = " ".join(
-            filter(
-                None,
-                [shot.visual_description, start_prompt, end_prompt],
-            )
-        ).lower()
-        if any(keyword in text for keyword in banned_keywords):
-            raise PlanPolicyViolation(f"Shot {shot.id} violates content policy")
-        if shot.duration_sec > 120:
-            decisions.append(f"shot:{shot.id} exceeds duration target")
-    return decisions
-
 def _run_plan_intake(
     plan: MoviePlan,
     *,
@@ -525,7 +488,6 @@ def _run_plan_intake(
     output_dir: Optional[Path],
 ) -> _PlanIntakeResult:
     base_image_lookup = _build_base_image_lookup(plan)
-    policy_decisions = _run_policy_checks(plan, base_image_lookup)
     plan_dir: Optional[Path] = None
     if output_dir is not None:
         plan_dir = output_dir / "plan"
@@ -555,7 +517,6 @@ def _run_plan_intake(
         metadata={"schemas": schema_meta},
         dialogue_timeline_uri=timeline_path.as_posix() if timeline_path else None,
         base_image_map=base_image_map,
-        policy_decisions=policy_decisions,
     )
     run_context_path = _persist_run_context(run_context, plan_dir)
     stage_manifests = _build_plan_intake_manifests(
@@ -566,14 +527,12 @@ def _run_plan_intake(
         dialogue_timeline_path=timeline_path,
         run_context_path=run_context_path,
         schema_meta=schema_meta,
-        policy_decisions=policy_decisions,
         base_image_map=base_image_map,
     )
 
     return _PlanIntakeResult(
         base_image_lookup=base_image_lookup,
         base_image_assets=base_image_assets,
-        policy_decisions=list(policy_decisions),
         run_context=run_context,
         run_context_path=run_context_path,
         plan_path=plan_path,
@@ -720,7 +679,6 @@ def _build_plan_intake_manifests(
     dialogue_timeline_path: Optional[Path],
     run_context_path: Optional[Path],
     schema_meta: Mapping[str, Dict[str, str]],
-    policy_decisions: Sequence[str],
     base_image_map: Mapping[str, str],
 ) -> List[StageManifest]:
     manifests: List[StageManifest] = []
@@ -796,7 +754,6 @@ def _build_plan_intake_manifests(
         name="run_context.json",
         schema_key="run_context",
         extra_meta={
-            "policy_decisions": list(policy_decisions),
             "base_image_map": dict(base_image_map),
             "dialogue_timeline_uri": dialogue_timeline_path.as_posix() if dialogue_timeline_path else None,
         },
@@ -1184,7 +1141,7 @@ def _model_dump(value: Any) -> Any:
     return value
 
 
-def _simulate_execution_report(plan: MoviePlan, policy_decisions: Sequence[str]) -> SimulationReport:
+def _simulate_execution_report(plan: MoviePlan) -> SimulationReport:
     steps: List[SimulationStep] = []
     for shot in plan.shots:
         steps.append(
@@ -1220,7 +1177,7 @@ def _simulate_execution_report(plan: MoviePlan, policy_decisions: Sequence[str])
         "total_estimated_runtime_s": total_runtime,
         "total_estimated_gpu_hours": total_runtime / 3600.0,
     }
-    return SimulationReport(plan_id=_plan_identifier(plan), steps=steps, resource_summary=summary, policy_decisions=list(policy_decisions))
+    return SimulationReport(plan_id=_plan_identifier(plan), steps=steps, resource_summary=summary)
 
 
 def _plan_identifier(plan: MoviePlan) -> str:

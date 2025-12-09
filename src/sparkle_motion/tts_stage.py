@@ -24,7 +24,6 @@ __all__ = [
     "TTSRetryableError",
     "TTSQuotaExceeded",
     "TTSInvalidInputError",
-    "TTSPolicyViolation",
     "VoiceMetadata",
 ]
 
@@ -51,10 +50,6 @@ class TTSQuotaExceeded(TTSError):
 
 class TTSInvalidInputError(TTSError):
     """Raised when the request payload cannot be fulfilled by any provider."""
-
-
-class TTSPolicyViolation(TTSError):
-    """Raised when the text violates the safety/policy guardrails."""
 
 
 @dataclass(frozen=True)
@@ -177,7 +172,6 @@ _CONFIG_CACHE: Optional[Tuple[Path, float, TTSConfig]] = None
 _ADAPTERS: Dict[str, AdapterCallable] = {}
 _TRUTHY = {"1", "true", "yes", "on"}
 _ARTIFACT_TYPE = "tts_audio"
-_POLICY_BLOCKLIST = {"weaponized", "forbidden", "terror", "bomb"}
 _RETRY_JITTER_FRACTION = 0.2
 
 
@@ -264,7 +258,6 @@ def synthesize(
 
     if not text or not text.strip():
         raise TTSInvalidInputError("text must be a non-empty string")
-    _ensure_policy(text)
 
     cfg = _load_config(config_path)
     resolved_run = run_id or observability.get_session_id()
@@ -676,13 +669,6 @@ def _normalize_weights(weights: Mapping[str, Any]) -> Dict[str, float]:
     if total <= 0:
         return {"quality": 0.5, "latency": 0.25, "cost": 0.25}
     return {k: v / total for k, v in floats.items()}
-
-
-def _ensure_policy(text: str) -> None:
-    lower = text.lower()
-    for token in _POLICY_BLOCKLIST:
-        if token in lower:
-            raise TTSPolicyViolation(f"Text contains disallowed content: '{token}'")
 
 
 def _fixture_only_mode() -> bool:

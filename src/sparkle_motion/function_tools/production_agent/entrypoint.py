@@ -265,7 +265,6 @@ def _simulation_report_to_dict(report: Optional[SimulationReport]) -> Optional[D
     return {
         "plan_id": report.plan_id,
         "resource_summary": report.resource_summary,
-        "policy_decisions": list(report.policy_decisions),
         "steps": [asdict(step) for step in report.steps],
     }
 

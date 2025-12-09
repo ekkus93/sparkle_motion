@@ -18,10 +18,6 @@ class VideoStageError(RuntimeError):
     """Base error for videos_stage orchestration issues."""
 
 
-class PlanPolicyViolation(VideoStageError):
-    """Raised when a prompt violates content or safety policy."""
-
-
 class ChunkExecutionError(VideoStageError):
     """Raised when a chunk exhausts retries/fallbacks."""
 
@@ -490,10 +486,8 @@ def _coerce_frames(sources: Iterable[Any]) -> List[bytes]:
 
 
 def _validate_prompt(prompt: str) -> None:
-    lowered = prompt.lower()
-    banned = {"weaponized", "forbidden"}
-    if any(word in lowered for word in banned):
-        raise PlanPolicyViolation("Prompt contains banned content")
+    if not prompt or not prompt.strip():
+        raise ValueError("prompt must be a non-empty string")
 
 
 def _write_result_file(
@@ -527,7 +521,6 @@ def _deterministic_chunk_renderer(chunk: ChunkSpec, context: VideoAdapterContext
 
 __all__ = [
     "render_video",
-    "PlanPolicyViolation",
     "ChunkExecutionError",
     "VideoStageError",
     "VideoChunkRenderer",

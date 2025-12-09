@@ -57,9 +57,6 @@ class PlanResourceError(ScriptAgentError):
     pass
 
 
-class PlanPolicyViolation(ScriptAgentError):
-    pass
-
 
 def generate_plan(
     prompt: str,
@@ -342,5 +339,4 @@ __all__ = [
     "PlanParseError",
     "PlanSchemaError",
     "PlanResourceError",
-    "PlanPolicyViolation",
 ]

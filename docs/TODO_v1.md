@@ -297,7 +297,6 @@ Each item below represents a new GPU-backed test case that still needs to be aut
 - [ ] Implement `test_tts_synthesize_single_line` (Chatterbox single-line GPU TTS run).
 - [ ] Implement `test_tts_multiple_lines_deterministic` (multi-line synthesis determinism + metadata).
 - [ ] Implement `test_tts_voice_profile_routing` (voice-profile routing to specific provider).
-- [ ] Implement `test_tts_policy_violation` (TTSPolicyViolation enforcement with banned text).
 - [ ] Implement `test_tts_quota_handling` (quota exhaustion + provider failover).
 - [ ] Implement `test_lipsync_single_clip` (Wav2Lip single clip w/ audio embedding).
 - [ ] Implement `test_lipsync_multiple_audio_tracks` (concatenated dialogue alignment check).
@@ -308,7 +307,6 @@ Each item below represents a new GPU-backed test case that still needs to be aut
 - [ ] Implement `test_script_agent_generate_plan_real_llm` (real LLM MoviePlan generation).
 - [ ] Implement `test_script_agent_determinism` (seed-stable script agent output structure).
 - [ ] Implement `test_script_agent_resource_limits` (PlanResourceError when shots exceed cap).
-- [ ] Implement `test_script_agent_policy_violation` (PlanPolicyViolation for banned prompts).
 - [ ] Implement `test_production_agent_full_run_real_adapters` (end-to-end pipeline with real adapters).
 - [ ] Implement `test_production_agent_resume_after_failure` (resume flow after injected video-stage failure).
 - [ ] Implement `test_production_agent_rate_limit_handling` (rate-limit queue + dequeue regression test).

@@ -37,7 +37,6 @@
             "sha256": "2912029bd874161c58b3b8e2891c4af752884b9fb1c466c8bc02db4ddec2e317"
           }
         },
-        "policy_decisions": [],
         "stage_manifest_count": 0
       }
     }
@@ -48,7 +47,6 @@
       "total_estimated_runtime_s": 3.0,
       "total_estimated_gpu_hours": 0.0008333333333333334
     },
-    "policy_decisions": [],
     "steps": [
       {
         "step_id": "shot-1:images",

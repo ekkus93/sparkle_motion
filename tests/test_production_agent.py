@@ -265,7 +265,6 @@ def test_plan_intake_builds_stage_manifests(monkeypatch: pytest.MonkeyPatch, sam
     artifact_types = {entry.artifact_type for entry in manifests}
     assert {"plan_run_context", "movie_plan", "dialogue_timeline"}.issubset(artifact_types)
     rc_entry = next(entry for entry in manifests if entry.artifact_type == "plan_run_context")
-    assert rc_entry.metadata.get("policy_decisions") == []
     assert rc_entry.local_path and rc_entry.local_path.endswith("run_context.json")
 
 
@@ -1069,24 +1068,6 @@ def test_multiple_dialogue_lines_recorded(
     assert len(record.meta["tts"]["line_artifacts"]) == 2
     for artifact in record.meta["tts"]["line_artifacts"]:
         assert artifact["voice_metadata"]["language_codes"] == ["en"]
-
-
-def test_tts_policy_violation_raises(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
-    _enable_full_execution(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        "sparkle_motion.tts_stage.synthesize",
-        lambda *_, **__: (_ for _ in ()).throw(tts_stage.TTSPolicyViolation("blocked")),
-    )
-    records: List[StepExecutionRecord] = []
-
-    with pytest.raises(StepExecutionError):
-        execute_plan(sample_plan, mode="run", progress_callback=records.append)
-
-    assert records, "Expected progress records when policy error occurs"
-    assert records[-1].step_type in {"dialogue_audio", "tts"}
-    assert records[-1].status == "failed"
-    assert records[-1].error_type == "TTSPolicyViolation"
-
 
 def test_tts_quota_error_surfaces(monkeypatch: pytest.MonkeyPatch, sample_plan: MoviePlan, tmp_path: Path) -> None:
     _enable_full_execution(monkeypatch, tmp_path)

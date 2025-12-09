@@ -185,26 +185,6 @@ def test_tts_voice_profile_routing(monkeypatch: "pytest.MonkeyPatch", tmp_path: 
 
 
 @pytest.mark.gpu
-def test_tts_policy_violation(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> None:
-    helpers.require_gpu_available()
-    helpers.ensure_real_adapter(
-        monkeypatch,
-        flags=["SMOKE_TTS", "SMOKE_ADAPTERS"],
-        disable_keys=["ADK_USE_FIXTURE"],
-    )
-
-    with pytest.raises(tts_stage.TTSPolicyViolation):
-        tts_stage.synthesize(
-            text="This contains weaponized intent.",
-            voice_config={"voice_id": "emma"},
-            output_dir=tmp_path / "tts_policy",
-            plan_id="gpu-test-plan",
-            step_id="tts-policy",
-            run_id="gpu-tts-run",
-        )
-
-
-@pytest.mark.gpu
 def test_tts_quota_handling(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> None:
     helpers.require_gpu_available()
     _prepare_real_tts_env(monkeypatch, tmp_path)

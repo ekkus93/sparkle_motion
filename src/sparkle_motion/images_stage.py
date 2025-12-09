@@ -13,10 +13,6 @@ except Exception:  # adapter may be stubbed in tests
     def render_images(prompt: str, opts: Dict[str, Any]) -> List[Dict[str, Any]]:  # type: ignore
         raise RuntimeError("images_sdxl adapter not available")
 
-class PlanPolicyViolation(RuntimeError):
-    pass
-
-
 class RateLimitError(RuntimeError):
     def __init__(self, message: str, decision: RateLimitDecision) -> None:
         super().__init__(message)
@@ -237,4 +233,4 @@ def render(prompt: str, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str,
     return [art for art in ordered if art is not None]
 
 
-__all__ = ["render", "PlanPolicyViolation", "RateLimitExceeded", "RateLimitQueued"]
+__all__ = ["render", "RateLimitExceeded", "RateLimitQueued"]

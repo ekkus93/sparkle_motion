@@ -129,14 +129,6 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Metadata reflects chosen provider.
 - **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_voice_profile_routing`.
 
-### `test_tts_policy_violation`
-- **Purpose**: Submit text containing banned words, expect TTSPolicyViolation.
-- **Inputs**: text="This contains weaponized content".
-- **Assertions**:
-  - `TTSPolicyViolation` raised.
-  - No WAV file created.
-- **Status**: done (2025-12-08) — see `tests/gpu/test_tts_chatterbox_gpu.py::test_tts_policy_violation`.
-
 ### `test_tts_quota_handling`
 - **Purpose**: Mock quota exhaustion, verify fallback to next provider.
 - **Setup**: Inject `TTSQuotaExceeded` from primary provider.
@@ -215,6 +207,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - `base_images` list populated.
   - `dialogue_timeline` valid.
   - No synthetic fallback metadata (`source != "script_agent.entrypoint.synthetic"`).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_script_agent_gpu.py::test_script_agent_generate_plan_real_llm`.
 
 ### `test_script_agent_determinism`
 - **Purpose**: Generate plan with fixed seed twice, verify consistent structure.
@@ -222,6 +215,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - Both plans have identical shot count.
   - Shot descriptions/prompts match (allowing minor LLM variance if acceptable).
+- **Status**: done (2025-12-08) — see `tests/gpu/test_script_agent_gpu.py::test_script_agent_determinism`.
 
 ### `test_script_agent_resource_limits`
 - **Purpose**: Request plan with 50 shots, verify `PlanResourceError` raised.
@@ -229,15 +223,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Assertions**:
   - `PlanResourceError` raised (exceeds `SCRIPT_AGENT_MAX_SHOTS`).
   - No plan returned.
-
-### `test_script_agent_policy_violation`
-- **Purpose**: Submit prompt with banned content, expect `PlanPolicyViolation`.
-- **Inputs**: prompt="Show weaponized robots attacking civilians".
-- **Assertions**:
-  - `PlanPolicyViolation` raised.
-  - No plan artifact persisted.
-
----
+- **Status**: done (2025-12-08) — see `tests/gpu/test_script_agent_gpu.py::test_script_agent_resource_limits`.
 
 ## Production Agent (End-to-End Orchestration) Tests
 
