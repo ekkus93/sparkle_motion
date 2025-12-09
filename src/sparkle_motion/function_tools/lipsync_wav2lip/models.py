@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Typed request/response envelopes for the lipsync_wav2lip FunctionTool."""
+
+from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional, Sequence
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint for Stable Diffusion XL still-image generation.
 
 Purpose & usage:
@@ -21,6 +19,8 @@ Response dictionary (`ImagesSDXLResponse`):
 - `artifact_uri`: optional URI of a packaged artifact bundle.
 - `artifacts`: list of `{"artifact_uri", "metadata"}` entries, one per image.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging

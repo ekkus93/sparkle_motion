@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Typed request/response envelopes for the tts_chatterbox FunctionTool."""
+
+from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 

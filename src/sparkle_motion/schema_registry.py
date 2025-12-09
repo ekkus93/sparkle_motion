@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Central registry for Sparkle Motion schema artifacts.
 
 The canonical artifact/catalog table lives in ``docs/SCHEMA_ARTIFACTS.md``. When
@@ -7,6 +5,8 @@ adding a new schema, update that document first, then ensure the corresponding
 entry exists in ``configs/schema_artifacts.yaml`` so this module can surface the
 URI + local fallback consistently for agents and FunctionTools.
 """
+
+from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass

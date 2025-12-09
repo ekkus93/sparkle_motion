@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Contract tests that compare FunctionTool responses to documented samples."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """FastAPI application for the filesystem ArtifactService shim."""
+
+from __future__ import annotations
 
 import base64
 import binascii

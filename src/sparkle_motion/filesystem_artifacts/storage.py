@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Filesystem-backed artifact persistence helpers."""
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -10,10 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple
-
-if TYPE_CHECKING:  # pragma: no cover - imported only for typing
-    from sparkle_motion.adk_helpers import MemoryWriteError
+from typing import Any, Literal, Optional, Tuple
 
 from .config import FilesystemArtifactsConfig
 from .models import ArtifactManifest, ArtifactRecord, StoragePaths

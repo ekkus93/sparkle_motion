@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """Pydantic models shared by the filesystem ArtifactService shim."""
 
-from typing import Any, Dict, Literal, Optional
+from __future__ import annotations
+
 import re
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,8 +19,8 @@ class ArtifactManifest(BaseModel):
     stage: str = Field(min_length=1)
     artifact_type: str = Field(min_length=1)
     mime_type: str = Field(min_length=1)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    tags: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    tags: Optional[dict[str, Any]] = None
     local_path_hint: Optional[str] = None
 
 
@@ -50,10 +50,10 @@ class ArtifactRecord(BaseModel):
     stage: str
     artifact_type: str
     mime_type: str
-    metadata: Dict[str, Any]
-    tags: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any]
+    tags: Optional[dict[str, Any]] = None
     created_at: int
-    manifest: Dict[str, Any]
+    manifest: dict[str, Any]
     storage: StoragePaths
 
 

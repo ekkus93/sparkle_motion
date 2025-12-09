@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Test helpers for backend-aware artifact assertions."""
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Mapping

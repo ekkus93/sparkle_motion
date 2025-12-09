@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint for WAV2Lip-driven lipsync renders.
 
 Purpose & usage:
@@ -23,6 +21,8 @@ Response dictionary (`LipsyncWav2LipResponse`):
 - `metadata`: structured adapter data (timings, fps, inference source, etc.).
 - `logs`: stdout/stderr summary from the wav2lip subprocess for debugging.
 """
+
+from __future__ import annotations
 
 import asyncio
 import base64

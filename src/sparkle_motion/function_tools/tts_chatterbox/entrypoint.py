@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint for the chatterbox text-to-speech renderer.
 
 Purpose & usage:
@@ -20,6 +18,8 @@ Response dictionary (`TTSChatterboxResponse`):
 - `request_id`: identifier used in logs/telemetry.
 - `metadata`: adapter-populated fields, e.g., line duration and voice profile.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -59,13 +59,6 @@ def _serialize_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[Ma
             data["ctx"] = {k: (str(v) if isinstance(v, BaseException) else v) for k, v in ctx.items()}
         cleaned.append(data)
     return cleaned
-
-
-class ResponseModel(BaseModel):
-    status: Literal["success", "error"]
-    artifact_uri: str | None
-    request_id: str
-    metadata: Dict[str, Any] | None = None
 
 
 def make_app() -> FastAPI:

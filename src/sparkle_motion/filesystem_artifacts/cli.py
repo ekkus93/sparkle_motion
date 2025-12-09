@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Command-line interface for filesystem artifact utilities."""
+
+from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
@@ -21,14 +21,7 @@ from sparkle_motion.utils.env import (
 )
 
 from .config import FilesystemArtifactsConfig
-from .retention import (
-    ArtifactRow,
-    RetentionOptions,
-    RetentionPlan,
-    execute_plan,
-    load_artifacts,
-    plan_retention,
-)
+from .retention import ArtifactRow, RetentionOptions, execute_plan, load_artifacts, plan_retention
 from .app import create_app
 
 

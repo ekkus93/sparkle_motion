@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Configuration helpers for the filesystem ArtifactService shim."""
+
+from __future__ import annotations
 
 import os
 from dataclasses import dataclass

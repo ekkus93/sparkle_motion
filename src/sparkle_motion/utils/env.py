@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Environment helpers shared across runtime modules."""
+
+from __future__ import annotations
 
 from typing import Mapping, MutableMapping, Literal, cast
 import os

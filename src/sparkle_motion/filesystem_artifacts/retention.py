@@ -1,15 +1,14 @@
-from __future__ import annotations
-
 """Retention planning helpers for filesystem-backed artifacts."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
-from pathlib import Path
 import shutil
 import sqlite3
 import time
-from typing import Iterable, Literal, Optional, Sequence
+from typing import Literal, Optional, Sequence
 
 from .config import FilesystemArtifactsConfig
 

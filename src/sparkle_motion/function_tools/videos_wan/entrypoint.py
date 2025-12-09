@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint for WAN video generation.
 
 Purpose & usage:
@@ -21,6 +19,8 @@ Response dictionary (`VideosWanResponse`):
 - `request_id`: unique identifier printed in logs/telemetry.
 - `metadata`: adapter details (model id, fps, timings, chunk lineage, etc.).
 """
+
+from __future__ import annotations
 
 from typing import Any, Dict, Mapping
 from pathlib import Path

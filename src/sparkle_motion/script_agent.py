@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """ScriptAgent plan generation helpers."""
+
+from __future__ import annotations
 
 import hashlib
 import json

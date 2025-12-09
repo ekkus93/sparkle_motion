@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint for generating MoviePlans via the script_agent.
 
 Purpose & usage:
@@ -21,6 +19,8 @@ Response dictionary (`ScriptAgentResponse`):
 - `request_id`: server-generated identifier linking logs and telemetry.
 - `schema_uri`: points to the MoviePlan schema version used for validation.
 """
+
+from __future__ import annotations
 
 import re
 import os
