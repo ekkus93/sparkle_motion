@@ -236,6 +236,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Final MP4 exists at `artifacts/runs/<run_id>/<plan_id>/final/<plan_id>-video_final.mp4`.
   - File size > 50KB (real render).
   - All steps succeeded (no `status="failed"` in step records).
+- **Status**: done (2025-12-09) — see `tests/gpu/test_production_agent_gpu.py::test_production_agent_full_run_real_adapters`.
 
 ### `test_production_agent_resume_after_failure`
 - **Purpose**: Simulate failure at `video` stage, verify resume logic.
@@ -244,6 +245,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - First run fails at `video` stage.
   - Resume skips completed stages (`images`, `tts`).
   - Final run succeeds and generates `video_final`.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_production_agent_gpu.py::test_production_agent_resume_after_failure` once GPU run completes.
 
 ### `test_production_agent_rate_limit_handling`
 - **Purpose**: Trigger rate-limit condition, verify queuing.
@@ -252,6 +254,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Response includes `status="queued"` and `queue.ticket_id`.
   - Step record marks `status="queued"`.
   - Retry logic dequeues and completes run.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_production_agent_gpu.py::test_production_agent_rate_limit_handling` once GPU run completes.
 
 ---
 
@@ -264,6 +267,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - VRAM usage drops after each unload.
   - No CUDA OOM errors.
   - Models reload successfully on next use.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_gpu_context.py::test_gpu_context_model_offload` once GPU run completes.
 
 ### `test_gpu_context_concurrent_requests`
 - **Purpose**: Simulate 2 overlapping requests (SDXL + Wan), ensure serialization.
@@ -272,6 +276,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - Wan render waits for SDXL to release GPU.
   - Both renders succeed.
   - `GpuBusyError` handled gracefully.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_gpu_context.py::test_gpu_context_concurrent_requests` once GPU run completes.
 
 ### `test_gpu_oom_recovery`
 - **Purpose**: Force OOM condition, verify adapter fallback.
@@ -280,6 +285,7 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
   - `ModelOOMError` caught.
   - Adapter falls back to fixture or lower resolution.
   - No process crash.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_gpu_context.py::test_gpu_oom_recovery` once GPU run completes.
 
 ---
 

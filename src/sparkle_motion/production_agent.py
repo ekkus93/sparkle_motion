@@ -9,7 +9,7 @@ import shutil
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, MutableMapping, Optional, Sequence, Union
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
 
 from pydantic import ValidationError
 
@@ -196,6 +196,342 @@ class _DialogueStageResult:
     stage_manifests: List[StageManifest]
 
 
+class _ResumeSnapshot:
+    def __init__(self, *, enabled: bool, plan_id: str, run_id: str, output_dir: Path) -> None:
+        self.enabled = enabled
+        self.plan_id = plan_id
+        self.run_id = run_id
+        self.output_dir = output_dir
+
+    def resume_dialogue_stage(self) -> Optional[Tuple[StepExecutionRecord, StepResult, _DialogueStageResult]]:
+        if not self.enabled:
+            return None
+        summary_path = self.output_dir / "audio" / "timeline" / "dialogue_timeline_audio.json"
+        payload = _load_json_object(summary_path)
+        if payload is None:
+            return None
+        timeline_meta = payload.get("timeline_audio") or {}
+        timeline_path = _resolve_existing_path(timeline_meta.get("path"), base=summary_path.parent)
+        if timeline_path is None or not timeline_path.exists():
+            return None
+        line_entries_raw = payload.get("lines") or []
+        line_entries = [dict(entry) for entry in line_entries_raw if isinstance(entry, Mapping)]
+        line_paths: List[Path] = []
+        for entry in line_entries:
+            candidate = _resolve_existing_path(entry.get("local_path"), base=summary_path.parent)
+            if candidate is not None:
+                line_paths.append(candidate)
+        offsets_payload = payload.get("timeline_offsets") or {}
+        timeline_offsets: Dict[int, Dict[str, Any]] = {}
+        if isinstance(offsets_payload, Mapping):
+            for key, value in offsets_payload.items():
+                try:
+                    timeline_offsets[int(key)] = dict(value)
+                except (TypeError, ValueError):
+                    continue
+        total_duration = float(timeline_meta.get("duration_s", 0.0))
+        sample_rate = int(timeline_meta.get("sample_rate", 22050))
+        channels = int(timeline_meta.get("channels", 1))
+        sample_width = int(timeline_meta.get("sample_width_bytes", 2))
+        stage_result = _DialogueStageResult(
+            line_entries=line_entries,
+            line_paths=line_paths,
+            summary_path=summary_path,
+            timeline_audio_path=timeline_path,
+            total_duration_s=total_duration,
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
+            timeline_offsets=timeline_offsets,
+            stage_manifests=[],
+        )
+        metadata: Dict[str, Any] = {
+            "stage": "dialogue_audio",
+            "entry_count": len(line_entries),
+            "timeline_summary_path": summary_path.as_posix(),
+            "timeline_audio_path": timeline_path.as_posix(),
+            "resume": True,
+        }
+        step_result = StepResult(
+            path=timeline_path,
+            paths=tuple([*line_paths, timeline_path]),
+            artifact_uri=timeline_path.as_posix(),
+            meta=metadata,
+        )
+        record = self._resume_record(
+            step_id=f"{self.plan_id}:dialogue_audio",
+            step_type="dialogue_audio",
+            artifact_path=timeline_path,
+            meta=metadata,
+        )
+        return record, step_result, stage_result
+
+    def resume_shot_images(
+        self,
+        shot: ShotSpec,
+        *,
+        base_images: Mapping[str, BaseImageSpec],
+        base_image_assets: MutableMapping[str, _BaseImageAsset],
+    ) -> Optional[Tuple[StepExecutionRecord, StepResult]]:
+        if not self.enabled:
+            return None
+        summary_path = self.output_dir / "frames" / shot.id / "frames.json"
+        payload = _load_json_object(summary_path)
+        if payload is None:
+            return None
+        start_id = payload.get("start_base_image_id")
+        end_id = payload.get("end_base_image_id")
+        start_path = _resolve_existing_path(payload.get("start_frame_path"), base=summary_path.parent)
+        end_path = _resolve_existing_path(payload.get("end_frame_path"), base=summary_path.parent)
+        if start_id and start_path and start_path.exists():
+            _hydrate_base_image_asset(base_image_assets, base_images, start_id, start_path)
+        if end_id and end_path and end_path.exists():
+            _hydrate_base_image_asset(base_image_assets, base_images, end_id, end_path)
+        meta = {
+            "shot_id": shot.id,
+            "start_frame_path": start_path.as_posix() if start_path else payload.get("start_frame_path"),
+            "end_frame_path": end_path.as_posix() if end_path else payload.get("end_frame_path"),
+            "resume": True,
+        }
+        step_result = StepResult(path=summary_path, meta=meta)
+        record = self._resume_record(
+            step_id=f"{shot.id}:images",
+            step_type="images",
+            artifact_path=summary_path,
+            meta=meta,
+        )
+        return record, step_result
+
+    def resume_shot_tts(self, shot: ShotSpec) -> Optional[Tuple[StepExecutionRecord, StepResult, List[Path]]]:
+        if not self.enabled:
+            return None
+        summary_path = self.output_dir / "audio" / shot.id / "tts_summary.json"
+        payload = _load_json_object(summary_path)
+        if payload is None:
+            return None
+        dialogue_paths = _resolve_existing_paths(payload.get("dialogue_paths"), base=summary_path.parent)
+        line_entries = payload.get("lines") or []
+        tts_meta: Dict[str, Any] = {
+            "line_artifacts": line_entries,
+            "lines_synthesized": len(line_entries),
+            "dialogue_paths": [path.as_posix() for path in dialogue_paths],
+            "total_duration_s": payload.get("total_duration_s"),
+            "provider_id": payload.get("provider_id"),
+            "voice_id": payload.get("voice_id"),
+        }
+        if payload.get("voice_metadata"):
+            tts_meta["voice_metadata"] = payload["voice_metadata"]
+        meta = {
+            "tts": tts_meta,
+            "dialogue_paths": [path.as_posix() for path in dialogue_paths],
+            "lines": len(line_entries),
+            "summary_path": summary_path.as_posix(),
+            "resume": True,
+        }
+        artifact_uri = None
+        if line_entries:
+            first = line_entries[0]
+            artifact_uri = first.get("artifact_uri")
+        if artifact_uri is None and dialogue_paths:
+            artifact_uri = dialogue_paths[0].as_posix()
+        step_result = StepResult(
+            path=summary_path,
+            paths=tuple(dialogue_paths),
+            artifact_uri=artifact_uri,
+            meta=meta,
+        )
+        record = self._resume_record(
+            step_id=f"{shot.id}:tts",
+            step_type="tts",
+            artifact_path=summary_path,
+            meta=meta,
+        )
+        return record, step_result, dialogue_paths
+
+    def resume_shot_video(self, shot: ShotSpec) -> Optional[Tuple[StepExecutionRecord, StepResult, Path]]:
+        if not self.enabled:
+            return None
+        video_path = self.output_dir / "video" / f"{shot.id}.mp4"
+        if not video_path.exists():
+            return None
+        meta = {"shot_id": shot.id, "duration_sec": shot.duration_sec, "resume": True}
+        step_result = StepResult(path=video_path, artifact_uri=video_path.as_posix(), meta=meta)
+        record = self._resume_record(
+            step_id=f"{shot.id}:video",
+            step_type="video",
+            artifact_path=video_path,
+            meta=meta,
+        )
+        return record, step_result, video_path
+
+    def resume_shot_lipsync(self, shot: ShotSpec) -> Optional[Tuple[StepExecutionRecord, StepResult, Path]]:
+        if not self.enabled:
+            return None
+        lipsync_path = self.output_dir / "lipsync" / f"{shot.id}.mp4"
+        if not lipsync_path.exists():
+            return None
+        meta = {"shot_id": shot.id, "resume": True}
+        step_result = StepResult(path=lipsync_path, artifact_uri=lipsync_path.as_posix(), meta=meta)
+        record = self._resume_record(
+            step_id=f"{shot.id}:lipsync",
+            step_type="lipsync",
+            artifact_path=lipsync_path,
+            meta=meta,
+        )
+        return record, step_result, lipsync_path
+
+    def resume_assemble_stage(self, plan: MoviePlan) -> Optional[Tuple[StepExecutionRecord, StepResult]]:
+        if not self.enabled:
+            return None
+        assemble_path = self.output_dir / "final" / f"{self.plan_id}-assembly.json"
+        if not assemble_path.exists():
+            return None
+        metadata = {
+            "stage": "assemble",
+            "shot_count": len(plan.shots),
+            "resume": True,
+        }
+        step_result = StepResult(
+            path=assemble_path,
+            artifact_uri=assemble_path.as_posix(),
+            meta=metadata,
+        )
+        record = self._resume_record(
+            step_id=f"{self.plan_id}:assemble",
+            step_type="assemble",
+            artifact_path=assemble_path,
+            meta=metadata,
+        )
+        return record, step_result
+
+    def resume_finalize_stage(
+        self,
+        plan: MoviePlan,
+        dialogue_result: Optional[_DialogueStageResult],
+    ) -> Optional[Tuple[StepExecutionRecord, StepResult]]:
+        if not self.enabled:
+            return None
+        final_path = self.output_dir / "final" / f"{self.plan_id}-video_final.mp4"
+        if not final_path.exists():
+            return None
+        assemble_path = self.output_dir / "final" / f"{self.plan_id}-assembly.json"
+        timeline_audio_path = dialogue_result.timeline_audio_path if dialogue_result else None
+        total_duration = (
+            dialogue_result.total_duration_s
+            if dialogue_result
+            else sum(shot.duration_sec for shot in plan.shots)
+        )
+        frame_rate = float(plan.render_profile.video.max_fps or _default_video_fps())
+        resolution = _resolve_render_resolution(plan)
+        checksum = _hash_file_path(final_path)
+        size_bytes = final_path.stat().st_size if final_path.exists() else None
+        metadata = {
+            "stage": "finalize",
+            "artifact_type": "video_final",
+            "media_type": "video/mp4",
+            "mime_type": "video/mp4",
+            "local_path": final_path.as_posix(),
+            "storage_hint": "local",
+            "size_bytes": size_bytes,
+            "duration_s": total_duration,
+            "frame_rate": frame_rate,
+            "resolution_px": resolution,
+            "checksum_sha256": checksum,
+            "playback_ready": final_path.exists(),
+            "timeline_audio": timeline_audio_path.as_posix() if timeline_audio_path else None,
+            "assemble_path": assemble_path.as_posix() if assemble_path.exists() else None,
+            "resume": True,
+        }
+        step_result = StepResult(
+            path=final_path,
+            paths=(final_path,),
+            artifact_uri=final_path.as_posix(),
+            meta=metadata,
+        )
+        record = self._resume_record(
+            step_id=f"{self.plan_id}:finalize",
+            step_type="finalize",
+            artifact_path=final_path,
+            meta=metadata,
+        )
+        return record, step_result
+
+    def _resume_record(
+        self,
+        *,
+        step_id: str,
+        step_type: str,
+        artifact_path: Optional[Path],
+        meta: Mapping[str, Any],
+    ) -> StepExecutionRecord:
+        artifact_uri = artifact_path.as_posix() if artifact_path else None
+        meta_payload = dict(meta)
+        meta_payload.setdefault("resume", True)
+        now = _now_iso()
+        return StepExecutionRecord(
+            plan_id=self.plan_id,
+            step_id=step_id,
+            step_type=step_type,
+            status="succeeded",
+            start_time=now,
+            end_time=now,
+            duration_s=0.0,
+            attempts=0,
+            artifact_uri=artifact_uri,
+            meta=meta_payload,
+        )
+
+
+def _load_json_object(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    return dict(payload)
+
+
+def _resolve_existing_path(candidate: Optional[str], *, base: Path) -> Optional[Path]:
+    if not candidate:
+        return None
+    path = Path(candidate)
+    if not path.is_absolute():
+        path = base / candidate
+    if path.exists():
+        return path
+    return None
+
+
+def _resolve_existing_paths(values: Optional[Iterable[Any]], *, base: Path) -> List[Path]:
+    paths: List[Path] = []
+    if not values:
+        return paths
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        candidate = _resolve_existing_path(value, base=base)
+        if candidate is not None:
+            paths.append(candidate)
+    return paths
+
+
+def _hydrate_base_image_asset(
+    assets: MutableMapping[str, _BaseImageAsset],
+    base_images: Mapping[str, BaseImageSpec],
+    image_id: str,
+    asset_path: Path,
+) -> None:
+    spec = base_images.get(image_id)
+    if spec is None or not asset_path.exists():
+        return
+    assets[image_id] = _BaseImageAsset(spec=spec, path=asset_path, payload_bytes=asset_path.read_bytes())
+
+
 def execute_plan(
     plan: MoviePlan | Mapping[str, Any],
     *,
@@ -204,6 +540,7 @@ def execute_plan(
     config: Optional[ProductionAgentConfig] = None,
     run_id: Optional[str] = None,
     pre_step_hook: Optional[Callable[[str], None]] = None,
+    resume: bool = False,
 ) -> ProductionResult:
     """Execute or simulate a MoviePlan."""
 
@@ -211,7 +548,12 @@ def execute_plan(
     model = _coerce_plan(plan)
     _validate_plan(model)
     plan_id = _plan_identifier(model)
-    run_id = run_id or observability.get_session_id()
+    provided_run_id = run_id
+    if resume and mode != "run":
+        raise ProductionAgentError("resume support requires run mode")
+    run_id = provided_run_id or observability.get_session_id()
+    if resume and provided_run_id is None:
+        raise ProductionAgentError("resume support requires explicit run_id")
 
     def _execute_plan_intake_stage(output_dir: Optional[Path]) -> tuple[StepExecutionRecord, _PlanIntakeResult]:
         holder: Dict[str, _PlanIntakeResult] = {}
@@ -260,8 +602,14 @@ def execute_plan(
         return ProductionResult([], steps=[plan_record], simulation_report=report)
 
     output_dir = _resolve_output_dir(run_id, plan_id)
+    resume_snapshot = _ResumeSnapshot(enabled=resume, plan_id=plan_id, run_id=run_id, output_dir=output_dir)
     plan_record, plan_intake_result = _execute_plan_intake_stage(output_dir)
     records: List[StepExecutionRecord] = [plan_record]
+
+    def _append_resume_record(record: StepExecutionRecord) -> None:
+        _emit_step_record(run_id, record, progress_callback)
+        records.append(record)
+
     shot_artifacts: List[_ShotArtifacts] = []
 
     base_images = plan_intake_result.base_image_lookup
@@ -300,24 +648,30 @@ def execute_plan(
             meta=meta_payload,
         )
 
-    try:
-        dialogue_record, _ = _run_step(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{plan_id}:dialogue_audio",
-            step_type="dialogue_audio",
-            gate_flag=cfg.tts_flag,
-            cfg=cfg,
-            action=_dialogue_stage_action,
-            meta={"stage": "dialogue_audio", "entry_count": len(model.dialogue_timeline)},
-            progress_callback=progress_callback,
-            pre_step_hook=pre_step_hook,
-        )
-        records.append(dialogue_record)
-    except StepRateLimitError as exc:
-        records.append(exc.record)
-        _record_summary_event(run_id, plan_id, "run", records)
-        raise
+    resumed_dialogue = resume_snapshot.resume_dialogue_stage()
+    if resumed_dialogue:
+        dialogue_record, _, dialogue_result = resumed_dialogue
+        dialogue_stage_holder["result"] = dialogue_result
+        _append_resume_record(dialogue_record)
+    else:
+        try:
+            dialogue_record, _ = _run_step(
+                plan_id=plan_id,
+                run_id=run_id,
+                step_id=f"{plan_id}:dialogue_audio",
+                step_type="dialogue_audio",
+                gate_flag=cfg.tts_flag,
+                cfg=cfg,
+                action=_dialogue_stage_action,
+                meta={"stage": "dialogue_audio", "entry_count": len(model.dialogue_timeline)},
+                progress_callback=progress_callback,
+                pre_step_hook=pre_step_hook,
+            )
+            records.append(dialogue_record)
+        except StepRateLimitError as exc:
+            records.append(exc.record)
+            _record_summary_event(run_id, plan_id, "run", records)
+            raise
 
     try:
         for shot in model.shots:
@@ -329,52 +683,69 @@ def execute_plan(
                 cfg=cfg,
                 progress_callback=progress_callback,
                 pre_step_hook=pre_step_hook,
-                records=records,
-                voice_profiles=voice_profiles,
-                base_images=base_images,
-                base_image_assets=base_image_assets,
-            )
-            shot_artifacts.append(artifacts)
-    except StepRateLimitError:
-        _record_summary_event(run_id, plan_id, "run", records)
-        raise
-
-    try:
-        final_record, final_result = _run_step(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{plan_id}:assemble",
-            step_type="assemble",
-            gate_flag=None,
-            cfg=cfg,
+                try:
+                    for shot in model.shots:
+                        artifacts = _execute_shot(
+                            shot,
+                            plan_id=plan_id,
+                            run_id=run_id,
+                            output_dir=output_dir,
+                            cfg=cfg,
+                            progress_callback=progress_callback,
+                            pre_step_hook=pre_step_hook,
+                            records=records,
+                            voice_profiles=voice_profiles,
+                            base_images=base_images,
+                            base_image_assets=base_image_assets,
+                            resume_snapshot=resume_snapshot,
+                        )
+                        shot_artifacts.append(artifacts)
+                except StepRateLimitError:
+                    _record_summary_event(run_id, plan_id, "run", records)
+                    raise
             progress_callback=progress_callback,
-            pre_step_hook=pre_step_hook,
-            action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
-            meta={"shot_count": len(model.shots)},
-        )
-        records.append(final_record)
-        if final_record.status == "succeeded" and final_result.path:
-            manifest = _build_assemble_stage_manifest(
-                run_id=run_id,
-                plan_id=plan_id,
-                plan_title=model.title,
-                shot_count=len(model.shots),
-                assemble_path=final_result.path,
-            )
-            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
-    except StepRateLimitError as exc:
-        records.append(exc.record)
-        _record_summary_event(run_id, plan_id, "run", records)
-        raise
-
-    artifact_ref = adk_helpers.publish_artifact(
-        local_path=final_result.path,
-        artifact_type=cfg.artifact_type,
-        metadata={"plan_id": plan_id, "shot_count": len(model.shots)},
-    )
-
-    final_delivery_holder: Dict[str, adk_helpers.ArtifactRef] = {}
-
+                final_result: StepResult
+                assemble_resume = resume_snapshot.resume_assemble_stage(model)
+                if assemble_resume:
+                    assemble_record, final_result = assemble_resume
+                    _append_resume_record(assemble_record)
+                    if final_result.path:
+                        manifest = _build_assemble_stage_manifest(
+                            run_id=run_id,
+                            plan_id=plan_id,
+                            plan_title=model.title,
+                            shot_count=len(model.shots),
+                            assemble_path=final_result.path,
+                        )
+                        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+                else:
+                    try:
+                        final_record, final_result = _run_step(
+                            plan_id=plan_id,
+                            run_id=run_id,
+                            step_id=f"{plan_id}:assemble",
+                            step_type="assemble",
+                            gate_flag=None,
+                            cfg=cfg,
+                            progress_callback=progress_callback,
+                            pre_step_hook=pre_step_hook,
+                            action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
+                            meta={"shot_count": len(model.shots)},
+                        )
+                        records.append(final_record)
+                        if final_record.status == "succeeded" and final_result.path:
+                            manifest = _build_assemble_stage_manifest(
+                                run_id=run_id,
+                                plan_id=plan_id,
+                                plan_title=model.title,
+                                shot_count=len(model.shots),
+                                assemble_path=final_result.path,
+                            )
+                            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+                    except StepRateLimitError as exc:
+                        records.append(exc.record)
+                        _record_summary_event(run_id, plan_id, "run", records)
+                        raise
     def _finalize_action() -> StepResult:
         dialogue_result = dialogue_stage_holder.get("result")
         final_artifact_ref, step_result = _run_final_delivery_stage(
@@ -398,24 +769,50 @@ def execute_plan(
             _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
         return step_result
 
-    try:
-        finalize_record, _ = _run_step(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{plan_id}:finalize",
-            step_type="finalize",
-            gate_flag=None,
-            cfg=cfg,
-            progress_callback=progress_callback,
-            pre_step_hook=pre_step_hook,
-            action=_finalize_action,
-            meta={"stage": "finalize", "shot_count": len(model.shots)},
-        )
-        records.append(finalize_record)
-    except StepRateLimitError as exc:
-        records.append(exc.record)
-        _record_summary_event(run_id, plan_id, "run", records)
-        raise
+    finalize_resume = resume_snapshot.resume_finalize_stage(model, dialogue_stage_holder.get("result"))
+    if finalize_resume:
+        finalize_record, finalize_step_result = finalize_resume
+        _append_resume_record(finalize_record)
+        if finalize_step_result.path:
+            manifest = _build_finalize_stage_manifest(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot_count=len(model.shots),
+                video_path=finalize_step_result.path,
+                step_result=finalize_step_result,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+            final_metadata = dict(finalize_step_result.meta or {})
+            final_metadata.setdefault("plan_id", plan_id)
+            final_metadata.setdefault("run_id", run_id)
+            final_metadata.setdefault("stage", "finalize")
+            final_artifact_ref = adk_helpers.publish_artifact(
+                local_path=finalize_step_result.path,
+                artifact_type="video_final",
+                media_type=final_metadata.get("media_type") or final_metadata.get("mime_type") or "video/mp4",
+                metadata=final_metadata,
+                run_id=run_id,
+            )
+            final_delivery_holder["artifact"] = final_artifact_ref
+    else:
+        try:
+            finalize_record, _ = _run_step(
+                plan_id=plan_id,
+                run_id=run_id,
+                step_id=f"{plan_id}:finalize",
+                step_type="finalize",
+                gate_flag=None,
+                cfg=cfg,
+                progress_callback=progress_callback,
+                pre_step_hook=pre_step_hook,
+                action=_finalize_action,
+                meta={"stage": "finalize", "shot_count": len(model.shots)},
+            )
+            records.append(finalize_record)
+        except StepRateLimitError as exc:
+            records.append(exc.record)
+            _record_summary_event(run_id, plan_id, "run", records)
+            raise
 
     telemetry.emit_event(
         "production_agent.execute_plan.completed",
@@ -1237,12 +1634,17 @@ def _execute_shot(
     records: List[StepExecutionRecord],
     voice_profiles: Mapping[str, Mapping[str, Any]],
     base_images: Mapping[str, BaseImageSpec],
-    base_image_assets: Mapping[str, _BaseImageAsset],
+    base_image_assets: MutableMapping[str, _BaseImageAsset],
+    resume_snapshot: _ResumeSnapshot,
 ) -> _ShotArtifacts:
     artifacts = _ShotArtifacts(shot_id=shot.id)
 
     def _append_record(record: StepExecutionRecord) -> None:
         records.append(record)
+
+    def _append_resume_record(record: StepExecutionRecord) -> None:
+        _emit_step_record(run_id, record, progress_callback)
+        _append_record(record)
 
     def _run_with_tracking(**kwargs: Any) -> tuple[StepExecutionRecord, StepResult]:
         try:
@@ -1253,119 +1655,183 @@ def _execute_shot(
         _append_record(record)
         return record, step_result
 
-    _frames_record, frames_result = _run_with_tracking(
-        plan_id=plan_id,
-        run_id=run_id,
-        step_id=f"{shot.id}:images",
-        step_type="images",
-        gate_flag=cfg.adapters_flag,
-        cfg=cfg,
-        pre_step_hook=pre_step_hook,
-        progress_callback=progress_callback,
-        action=lambda: _render_frames(shot, output_dir, base_images, base_image_assets),
-        meta={"shot_id": shot.id},
+    frames_resume = resume_snapshot.resume_shot_images(
+        shot,
+        base_images=base_images,
+        base_image_assets=base_image_assets,
     )
-    artifacts.frames_path = frames_result.path
-    if _frames_record.status == "succeeded" and frames_result.path:
-        manifest = _build_shot_frames_manifest(
-            run_id=run_id,
-            plan_id=plan_id,
-            shot=shot,
-            frames_path=frames_result.path,
-            meta=dict(frames_result.meta or {}),
-        )
-        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
-
-    if shot.dialogue:
-        tts_record, tts_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:tts",
-            step_type="tts",
-            gate_flag=cfg.tts_flag,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            action=lambda: _synthesize_dialogue(
-                shot,
-                output_dir,
-                plan_id=plan_id,
-                run_id=run_id,
-                voice_profiles=voice_profiles,
-            ),
-            meta={
-                "shot_id": shot.id,
-                "lines": len(shot.dialogue),
-                "characters": sorted({line.character_id for line in shot.dialogue if line.character_id}),
-            },
-        )
-        artifacts.dialogue_paths = list(tts_result.paths or ([tts_result.path] if tts_result.path else []))
-        if tts_record.status == "succeeded" and tts_result.path and artifacts.dialogue_paths:
-            manifest = _build_shot_tts_manifest(
+    if frames_resume:
+        frames_record, frames_result = frames_resume
+        _append_resume_record(frames_record)
+        if frames_result.path:
+            manifest = _build_shot_frames_manifest(
                 run_id=run_id,
                 plan_id=plan_id,
                 shot=shot,
-                summary_path=tts_result.path,
-                dialogue_paths=artifacts.dialogue_paths,
-                meta=dict(tts_result.meta or {}),
+                frames_path=frames_result.path,
+                meta=dict(frames_result.meta or {}),
             )
             _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
-
-    video_record, video_result = _run_with_tracking(
-        plan_id=plan_id,
-        run_id=run_id,
-        step_id=f"{shot.id}:video",
-        step_type="video",
-        gate_flag=cfg.adapters_flag,
-        cfg=cfg,
-        pre_step_hook=pre_step_hook,
-        progress_callback=progress_callback,
-        action=lambda: _render_video_clip(
-            shot,
-            output_dir,
-            plan_id,
-            run_id,
-            base_images,
-            base_image_assets,
-            progress_callback,
-        ),
-        meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
-    )
-    artifacts.video_path = video_result.path
-    if video_record.status == "succeeded" and video_result.path:
-        manifest = _build_shot_video_manifest(
-            run_id=run_id,
+    else:
+        frames_record, frames_result = _run_with_tracking(
             plan_id=plan_id,
-            shot=shot,
-            video_path=video_result.path,
-            shot_duration=shot.duration_sec,
+            run_id=run_id,
+            step_id=f"{shot.id}:images",
+            step_type="images",
+            gate_flag=cfg.adapters_flag,
+            cfg=cfg,
+            pre_step_hook=pre_step_hook,
+            progress_callback=progress_callback,
+            action=lambda: _render_frames(shot, output_dir, base_images, base_image_assets),
+            meta={"shot_id": shot.id},
         )
-        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+        if frames_record.status == "succeeded" and frames_result.path:
+            manifest = _build_shot_frames_manifest(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot=shot,
+                frames_path=frames_result.path,
+                meta=dict(frames_result.meta or {}),
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+    artifacts.frames_path = frames_result.path
+
+    if shot.dialogue:
+        tts_resume = resume_snapshot.resume_shot_tts(shot)
+        if tts_resume:
+            tts_record, tts_result, dialogue_paths = tts_resume
+            artifacts.dialogue_paths = list(dialogue_paths)
+            _append_resume_record(tts_record)
+            if tts_result.path and artifacts.dialogue_paths:
+                manifest = _build_shot_tts_manifest(
+                    run_id=run_id,
+                    plan_id=plan_id,
+                    shot=shot,
+                    summary_path=tts_result.path,
+                    dialogue_paths=artifacts.dialogue_paths,
+                    meta=dict(tts_result.meta or {}),
+                )
+                _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+        else:
+            tts_record, tts_result = _run_with_tracking(
+                plan_id=plan_id,
+                run_id=run_id,
+                step_id=f"{shot.id}:tts",
+                step_type="tts",
+                gate_flag=cfg.tts_flag,
+                cfg=cfg,
+                pre_step_hook=pre_step_hook,
+                progress_callback=progress_callback,
+                action=lambda: _synthesize_dialogue(
+                    shot,
+                    output_dir,
+                    plan_id=plan_id,
+                    run_id=run_id,
+                    voice_profiles=voice_profiles,
+                ),
+                meta={
+                    "shot_id": shot.id,
+                    "lines": len(shot.dialogue),
+                    "characters": sorted({line.character_id for line in shot.dialogue if line.character_id}),
+                },
+            )
+            artifacts.dialogue_paths = list(tts_result.paths or ([tts_result.path] if tts_result.path else []))
+            if tts_record.status == "succeeded" and tts_result.path and artifacts.dialogue_paths:
+                manifest = _build_shot_tts_manifest(
+                    run_id=run_id,
+                    plan_id=plan_id,
+                    shot=shot,
+                    summary_path=tts_result.path,
+                    dialogue_paths=artifacts.dialogue_paths,
+                    meta=dict(tts_result.meta or {}),
+                )
+                _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+
+    video_resume = resume_snapshot.resume_shot_video(shot)
+    if video_resume:
+        video_record, video_result, video_path = video_resume
+        artifacts.video_path = video_path
+        _append_resume_record(video_record)
+        if video_result.path:
+            manifest = _build_shot_video_manifest(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot=shot,
+                video_path=video_result.path,
+                shot_duration=shot.duration_sec,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+    else:
+        video_record, video_result = _run_with_tracking(
+            plan_id=plan_id,
+            run_id=run_id,
+            step_id=f"{shot.id}:video",
+            step_type="video",
+            gate_flag=cfg.adapters_flag,
+            cfg=cfg,
+            pre_step_hook=pre_step_hook,
+            progress_callback=progress_callback,
+            action=lambda: _render_video_clip(
+                shot,
+                output_dir,
+                plan_id,
+                run_id,
+                base_images,
+                base_image_assets,
+                progress_callback,
+            ),
+            meta={"shot_id": shot.id, "duration_sec": shot.duration_sec},
+        )
+        artifacts.video_path = video_result.path
+        if video_record.status == "succeeded" and video_result.path:
+            manifest = _build_shot_video_manifest(
+                run_id=run_id,
+                plan_id=plan_id,
+                shot=shot,
+                video_path=video_result.path,
+                shot_duration=shot.duration_sec,
+            )
+            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
 
 
     if shot.is_talking_closeup and artifacts.dialogue_paths and artifacts.video_path:
-        lipsync_record, lipsync_result = _run_with_tracking(
-            plan_id=plan_id,
-            run_id=run_id,
-            step_id=f"{shot.id}:lipsync",
-            step_type="lipsync",
-            gate_flag=cfg.lipsync_flag,
-            cfg=cfg,
-            pre_step_hook=pre_step_hook,
-            progress_callback=progress_callback,
-            action=lambda: _lipsync_clip(shot, output_dir),
-            meta={"shot_id": shot.id},
-        )
-        artifacts.lipsync_path = lipsync_result.path
-        if lipsync_record.status == "succeeded" and lipsync_result.path:
-            manifest = _build_shot_lipsync_manifest(
-                run_id=run_id,
+        lipsync_resume = resume_snapshot.resume_shot_lipsync(shot)
+        if lipsync_resume:
+            lipsync_record, lipsync_result, lipsync_path = lipsync_resume
+            artifacts.lipsync_path = lipsync_path
+            _append_resume_record(lipsync_record)
+            if lipsync_result.path:
+                manifest = _build_shot_lipsync_manifest(
+                    run_id=run_id,
+                    plan_id=plan_id,
+                    shot=shot,
+                    lipsync_path=lipsync_result.path,
+                    dialogue_paths=artifacts.dialogue_paths,
+                )
+                _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+        else:
+            lipsync_record, lipsync_result = _run_with_tracking(
                 plan_id=plan_id,
-                shot=shot,
-                lipsync_path=lipsync_result.path,
-                dialogue_paths=artifacts.dialogue_paths,
+                run_id=run_id,
+                step_id=f"{shot.id}:lipsync",
+                step_type="lipsync",
+                gate_flag=cfg.lipsync_flag,
+                cfg=cfg,
+                pre_step_hook=pre_step_hook,
+                progress_callback=progress_callback,
+                action=lambda: _lipsync_clip(shot, output_dir),
+                meta={"shot_id": shot.id},
             )
-            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+            artifacts.lipsync_path = lipsync_result.path
+            if lipsync_record.status == "succeeded" and lipsync_result.path:
+                manifest = _build_shot_lipsync_manifest(
+                    run_id=run_id,
+                    plan_id=plan_id,
+                    shot=shot,
+                    lipsync_path=lipsync_result.path,
+                    dialogue_paths=artifacts.dialogue_paths,
+                )
+                _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
 
     return artifacts
 
