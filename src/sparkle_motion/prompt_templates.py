@@ -31,10 +31,6 @@ class PromptTemplateSpec:
     response_schema_path: Path
     input_variables: Tuple[str, ...]
 
-    def to_payload(self) -> Dict[str, Any]:
-        """Return a dict ready for `adk llm-prompts push` JSON serialization."""
-        return self.to_payload(portable=True)
-
     def to_payload(self, portable: bool = True) -> Dict[str, Any]:
         """Return a dict ready for `adk llm-prompts push` JSON serialization.
 

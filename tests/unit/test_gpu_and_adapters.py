@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-import tempfile
 from typing import TYPE_CHECKING
 
 from sparkle_motion.gpu_utils import model_context

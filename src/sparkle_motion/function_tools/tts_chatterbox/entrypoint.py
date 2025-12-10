@@ -29,13 +29,11 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
 from sparkle_motion import adk_factory, adk_helpers, gpu_utils, observability, telemetry
 from sparkle_motion.function_tools.entrypoint_common import send_telemetry
 from sparkle_motion.function_tools.tts_chatterbox import adapter as chatterbox_adapter

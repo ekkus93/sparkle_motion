@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from array import array
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence
 import wave
 
 import pytest

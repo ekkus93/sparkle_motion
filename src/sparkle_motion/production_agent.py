@@ -18,7 +18,6 @@ from .dialogue_timeline import (
     DialogueTimelineBuilder,
     DialogueTimelineError,
     DialogueSynthesizer,
-    build_dialogue_timeline,
 )
 from .run_registry import ArtifactEntry, get_run_registry
 from .images_stage import RateLimitExceeded, RateLimitQueued
@@ -2094,8 +2093,8 @@ def _update_stage_manifest(manifest: StageManifest, **updates: Any) -> StageMani
     metadata = updates.pop("metadata", None)
     if metadata is not None:
         manifest.metadata = dict(metadata)
-    for field, value in updates.items():
-        setattr(manifest, field, value)
+    for attr, value in updates.items():
+        setattr(manifest, attr, value)
     return manifest
 
 
@@ -2725,7 +2724,6 @@ def _video_progress_forwarder(
 __all__ = [
     "execute_plan",
     "ProductionAgentError",
-    "PlanPolicyViolation",
     "StepExecutionError",
     "StepRateLimitError",
     "StepQueuedError",

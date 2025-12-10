@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-import subprocess
 from unittest import mock
 from typing import TYPE_CHECKING
 

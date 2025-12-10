@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Literal, Annotated, Union, Mapping, Sequence
+from typing import Any, Dict, List, Optional, Literal, Annotated, Union, Mapping
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 

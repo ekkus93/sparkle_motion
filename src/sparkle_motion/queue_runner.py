@@ -145,7 +145,8 @@ def _resume_ticket(ticket: QueueTicket) -> None:
     _record_event("resuming", ticket)
     ticket.status = "resuming"
     try:
-        progress_cb = lambda record: registry.record_step(ticket.run_id, record.as_dict())
+        def progress_cb(record: StepExecutionRecord) -> None:
+            registry.record_step(ticket.run_id, record.as_dict())
         pre_step_hook = registry.pre_step_hook(ticket.run_id)
         _EXECUTOR(
             ticket.plan_payload,

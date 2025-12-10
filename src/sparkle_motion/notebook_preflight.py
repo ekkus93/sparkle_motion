@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Literal, Sequence
+from typing import List, Literal, Sequence
 import argparse
 import os
 import shutil

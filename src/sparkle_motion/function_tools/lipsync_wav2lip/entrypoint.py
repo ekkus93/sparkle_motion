@@ -48,7 +48,6 @@ from sparkle_motion.function_tools.lipsync_wav2lip import adapter
 from sparkle_motion.function_tools.lipsync_wav2lip.adapter import LipsyncError
 from sparkle_motion.function_tools.lipsync_wav2lip.models import (
     LipsyncMediaPayload,
-    LipsyncWav2LipOptions,
     LipsyncWav2LipRequest,
     LipsyncWav2LipResponse,
 )

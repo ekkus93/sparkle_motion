@@ -1,8 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from os import PathLike
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from sparkle_motion.ratelimit import RateLimitDecision, RateLimiter
 from sparkle_motion.utils import dedupe

@@ -15,7 +15,6 @@ from sparkle_motion import adk_helpers, tts_stage
 from sparkle_motion.images_stage import RateLimitExceeded, RateLimitQueued
 from sparkle_motion.production_agent import (
     ProductionResult,
-    ProductionAgentConfig,
     StepExecutionError,
     StepExecutionRecord,
     StepQueuedError,

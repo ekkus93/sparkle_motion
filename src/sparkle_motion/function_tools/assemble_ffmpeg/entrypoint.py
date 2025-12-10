@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """FunctionTool entrypoint that stitches rendered clips with FFmpeg.
 
 Purpose & usage:
@@ -28,6 +26,8 @@ Response dictionary (`AssembleResponse`):
 - `request_id`: server-generated correlation identifier.
 - `metadata`: adapter-supplied diagnostics (frame count, timings, retries, etc.).
 """
+
+from __future__ import annotations
 
 from typing import Any, Dict, Mapping
 from pathlib import Path

@@ -6,7 +6,7 @@ import subprocess
 import importlib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
 
 MonkeyPatch = Any
 
