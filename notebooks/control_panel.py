@@ -28,6 +28,10 @@ from typing import Any, Deque, Dict, List, Optional
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import httpx
+from notebooks import preview_helpers
+from sparkle_motion import tool_registry
+from sparkle_motion.filesystem_artifacts.config import DEFAULT_ARTIFACTS_FS_BASE_URL
+from sparkle_motion.utils.env import ARTIFACTS_BACKEND_FILESYSTEM, resolve_artifacts_backend
 
 
 def _load_widgets_module() -> Any:
@@ -54,11 +58,6 @@ def _load_display() -> Any:
 
 widgets = _load_widgets_module()
 display = _load_display()
-
-from sparkle_motion import tool_registry
-from notebooks import preview_helpers
-from sparkle_motion.filesystem_artifacts.config import DEFAULT_ARTIFACTS_FS_BASE_URL
-from sparkle_motion.utils.env import ARTIFACTS_BACKEND_FILESYSTEM, resolve_artifacts_backend
 
 DEFAULT_HTTP_TIMEOUT_S = 30.0
 _LOG_DIR_ENV = os.environ.get("CONTROL_PANEL_LOG_DIR")

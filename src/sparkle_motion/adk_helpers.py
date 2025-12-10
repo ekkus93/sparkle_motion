@@ -175,8 +175,6 @@ def _resolve_runs_root() -> Path:
 
 
 def _copy_local_artifact(*, source: Path, run_id: str, artifact_type: str) -> Path:
-    import shutil
-
     dest_root = _resolve_runs_root() / run_id
     dest_root.mkdir(parents=True, exist_ok=True)
     checksum = _hash_file(source)[:12]

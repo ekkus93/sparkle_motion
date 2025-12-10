@@ -10,9 +10,14 @@ import argparse
 import logging
 import os
 
+from typing import TYPE_CHECKING, Any, Dict
+
 from sparkle_motion.tool_entrypoint import create_app
 from sparkle_motion.tool_registry import get_local_endpoint_info
 import uvicorn
+
+if TYPE_CHECKING:
+    from google.adk.agents import LlmAgent
 
 
 LOG = logging.getLogger("script_agent.entrypoint")
@@ -47,7 +52,7 @@ def _create_adk_agent() -> "LlmAgent":
     return agent
 
 
-def invoke_handler(body: dict, *, agent=None) -> dict:
+def invoke_handler(body: Dict[str, Any], *, agent: "LlmAgent" | None = None) -> Dict[str, Any]:
     # Keep a simple echo + attach a note that the ADK agent is available.
     # The agent instance is stored on the app and can be used by more
     # sophisticated handlers if desired.

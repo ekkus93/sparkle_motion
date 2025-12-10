@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ from sparkle_motion.production_agent import (
     StepQueuedError,
     execute_plan,
 )
-from sparkle_motion.run_registry import ArtifactEntry, RunHalted, get_run_registry
+from sparkle_motion.run_registry import RunHalted, get_run_registry
 from sparkle_motion.schemas import MoviePlan, RunContext, StageManifest
 from sparkle_motion.function_tools.production_agent.models import (
     ControlRequest,

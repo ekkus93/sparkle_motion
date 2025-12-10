@@ -326,7 +326,6 @@ def test_images_dedupe_phash_matching(monkeypatch: "pytest.MonkeyPatch", tmp_pat
     assert duplicate.get("uri") == primary_uri, "Second render should reuse canonical URI"
     assert duplicate.get("duplicate_of") == primary_uri
 
-    primary_meta = primary.get("metadata", {})
     duplicate_meta = duplicate.get("metadata", {})
     assert duplicate_meta.get("deduped") is True
 

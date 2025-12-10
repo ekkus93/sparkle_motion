@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import os
 import time
-import sqlite3
 from pathlib import Path
-
-import pytest
 
 from sparkle_motion.db.sqlite import get_conn, ensure_schema
 from sparkle_motion.utils.recent_index_sqlite import RecentIndexSqlite

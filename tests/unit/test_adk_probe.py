@@ -11,7 +11,7 @@ def test_probe_sdk_returns_none_when_sdk_missing(monkeypatch):
     monkeypatch.setitem(sys.modules, 'google.adk', None)
     # Remove any existing 'google.adk' entry if present
     sys.modules.pop('google.adk', None)
-    res = adk_helpers.probe_sdk()
+    adk_helpers.probe_sdk()
     # ADK probe unit test removed per user request (let runtime fail loudly if
     # `google.adk` is not installed).
 
