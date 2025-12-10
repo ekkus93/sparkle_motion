@@ -617,6 +617,8 @@ def execute_plan(
     voice_profiles = _character_voice_map(model)
 
     dialogue_stage_holder: Dict[str, _DialogueStageResult] = {}
+    final_delivery_holder: Dict[str, adk_helpers.ArtifactRef] = {}
+    finalize_result_holder: Dict[str, StepResult] = {}
 
     def _dialogue_stage_action() -> StepResult:
         result = _run_dialogue_stage(
@@ -683,71 +685,61 @@ def execute_plan(
                 cfg=cfg,
                 progress_callback=progress_callback,
                 pre_step_hook=pre_step_hook,
-                try:
-                    for shot in model.shots:
-                        artifacts = _execute_shot(
-                            shot,
-                            plan_id=plan_id,
-                            run_id=run_id,
-                            output_dir=output_dir,
-                            cfg=cfg,
-                            progress_callback=progress_callback,
-                            pre_step_hook=pre_step_hook,
-                            records=records,
-                            voice_profiles=voice_profiles,
-                            base_images=base_images,
-                            base_image_assets=base_image_assets,
-                            resume_snapshot=resume_snapshot,
-                        )
-                        shot_artifacts.append(artifacts)
-                except StepRateLimitError:
-                    _record_summary_event(run_id, plan_id, "run", records)
-                    raise
-            progress_callback=progress_callback,
-                final_result: StepResult
-                assemble_resume = resume_snapshot.resume_assemble_stage(model)
-                if assemble_resume:
-                    assemble_record, final_result = assemble_resume
-                    _append_resume_record(assemble_record)
-                    if final_result.path:
-                        manifest = _build_assemble_stage_manifest(
-                            run_id=run_id,
-                            plan_id=plan_id,
-                            plan_title=model.title,
-                            shot_count=len(model.shots),
-                            assemble_path=final_result.path,
-                        )
-                        _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
-                else:
-                    try:
-                        final_record, final_result = _run_step(
-                            plan_id=plan_id,
-                            run_id=run_id,
-                            step_id=f"{plan_id}:assemble",
-                            step_type="assemble",
-                            gate_flag=None,
-                            cfg=cfg,
-                            progress_callback=progress_callback,
-                            pre_step_hook=pre_step_hook,
-                            action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
-                            meta={"shot_count": len(model.shots)},
-                        )
-                        records.append(final_record)
-                        if final_record.status == "succeeded" and final_result.path:
-                            manifest = _build_assemble_stage_manifest(
-                                run_id=run_id,
-                                plan_id=plan_id,
-                                plan_title=model.title,
-                                shot_count=len(model.shots),
-                                assemble_path=final_result.path,
-                            )
-                            _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
-                    except StepRateLimitError as exc:
-                        records.append(exc.record)
-                        _record_summary_event(run_id, plan_id, "run", records)
-                        raise
+                records=records,
+                voice_profiles=voice_profiles,
+                base_images=base_images,
+                base_image_assets=base_image_assets,
+                resume_snapshot=resume_snapshot,
+            )
+            shot_artifacts.append(artifacts)
+    except StepRateLimitError:
+        _record_summary_event(run_id, plan_id, "run", records)
+        raise
+
+    final_step_result: Optional[StepResult] = None
+    assemble_resume = resume_snapshot.resume_assemble_stage(model)
+    if assemble_resume:
+        assemble_record, final_step_result = assemble_resume
+        _append_resume_record(assemble_record)
+    else:
+        try:
+            assemble_record, final_step_result = _run_step(
+                plan_id=plan_id,
+                run_id=run_id,
+                step_id=f"{plan_id}:assemble",
+                step_type="assemble",
+                gate_flag=None,
+                cfg=cfg,
+                progress_callback=progress_callback,
+                pre_step_hook=pre_step_hook,
+                action=lambda: _assemble_plan(model, shot_artifacts, output_dir),
+                meta={"shot_count": len(model.shots)},
+            )
+            records.append(assemble_record)
+        except StepRateLimitError as exc:
+            records.append(exc.record)
+            _record_summary_event(run_id, plan_id, "run", records)
+            raise
+
+    if final_step_result is None or final_step_result.path is None:
+        raise ProductionAgentError("assemble stage did not produce an artifact path")
+
+    assert final_step_result is not None
+
+    manifest = _build_assemble_stage_manifest(
+        run_id=run_id,
+        plan_id=plan_id,
+        plan_title=model.title,
+        shot_count=len(model.shots),
+        assemble_path=final_step_result.path,
+    )
+    _record_stage_manifest_entries(run_id=run_id, manifests=[manifest])
+
     def _finalize_action() -> StepResult:
         dialogue_result = dialogue_stage_holder.get("result")
+        assemble_path = final_step_result.path
+        if assemble_path is None:
+            raise ProductionAgentError("finalize stage missing assemble artifact path")
         final_artifact_ref, step_result = _run_final_delivery_stage(
             plan=model,
             plan_id=plan_id,
@@ -755,7 +747,7 @@ def execute_plan(
             output_dir=output_dir,
             shot_artifacts=shot_artifacts,
             dialogue_result=dialogue_result,
-            assemble_path=final_result.path,
+            assemble_path=assemble_path,
         )
         final_delivery_holder["artifact"] = final_artifact_ref
         if step_result.path:
@@ -773,6 +765,7 @@ def execute_plan(
     if finalize_resume:
         finalize_record, finalize_step_result = finalize_resume
         _append_resume_record(finalize_record)
+        finalize_result_holder["result"] = finalize_step_result
         if finalize_step_result.path:
             manifest = _build_finalize_stage_manifest(
                 run_id=run_id,
@@ -796,7 +789,7 @@ def execute_plan(
             final_delivery_holder["artifact"] = final_artifact_ref
     else:
         try:
-            finalize_record, _ = _run_step(
+            finalize_record, finalize_step_result = _run_step(
                 plan_id=plan_id,
                 run_id=run_id,
                 step_id=f"{plan_id}:finalize",
@@ -809,24 +802,47 @@ def execute_plan(
                 meta={"stage": "finalize", "shot_count": len(model.shots)},
             )
             records.append(finalize_record)
+            finalize_result_holder["result"] = finalize_step_result
         except StepRateLimitError as exc:
             records.append(exc.record)
             _record_summary_event(run_id, plan_id, "run", records)
             raise
 
+    final_artifact_ref = final_delivery_holder.get("artifact")
+    finalize_step_result = finalize_result_holder.get("result")
+    artifact_ref: Optional[adk_helpers.ArtifactRef] = None
+    if finalize_step_result and finalize_step_result.path:
+        final_metadata = dict(finalize_step_result.meta or {})
+        final_metadata.setdefault("plan_id", plan_id)
+        final_metadata.setdefault("run_id", run_id)
+        final_metadata.setdefault("stage", "finalize")
+        artifact_ref = adk_helpers.publish_artifact(
+            local_path=finalize_step_result.path,
+            artifact_type=cfg.artifact_type,
+            media_type=final_metadata.get("media_type") or "video/mp4",
+            metadata=final_metadata,
+            run_id=run_id,
+        )
+
+    telemetry_payload = {
+        "plan_id": plan_id,
+        "shot_count": len(model.shots),
+    }
+    if artifact_ref:
+        telemetry_payload["artifact_uri"] = artifact_ref.get("uri")
+    elif final_artifact_ref:
+        telemetry_payload["artifact_uri"] = final_artifact_ref.get("uri")
+
     telemetry.emit_event(
         "production_agent.execute_plan.completed",
-        {
-            "plan_id": plan_id,
-            "artifact_uri": artifact_ref["uri"],
-            "shot_count": len(model.shots),
-        },
+        telemetry_payload,
     )
     _record_summary_event(run_id, plan_id, "run", records)
-    artifacts: List[adk_helpers.ArtifactRef] = [artifact_ref]
-    final_artifact = final_delivery_holder.get("artifact")
-    if final_artifact:
-        artifacts.append(final_artifact)
+    artifacts: List[adk_helpers.ArtifactRef] = []
+    if artifact_ref:
+        artifacts.append(artifact_ref)
+    if final_artifact_ref:
+        artifacts.append(final_artifact_ref)
     return ProductionResult(artifacts, steps=records)
 
 

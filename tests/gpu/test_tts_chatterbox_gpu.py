@@ -272,4 +272,3 @@ def test_tts_multiple_lines_deterministic(monkeypatch: "pytest.MonkeyPatch", tmp
         duration_a = _read_wav_duration(wav_a)
         duration_b = _read_wav_duration(wav_b)
         assert duration_a > 0.3 and pytest.approx(duration_a, rel=0.01) == duration_b
-```},
