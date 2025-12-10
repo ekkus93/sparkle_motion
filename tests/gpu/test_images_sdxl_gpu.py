@@ -6,6 +6,8 @@ from typing import Any, Mapping
 import pytest
 
 from sparkle_motion.function_tools.images_sdxl import adapter as sdxl_adapter
+from sparkle_motion import images_stage
+from sparkle_motion.utils import dedupe as dedupe_utils
 
 from . import helpers
 
@@ -181,3 +183,154 @@ def test_sdxl_determinism(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> 
 
     assert first.metadata.get("phash") == second.metadata.get("phash"), "Perceptual hashes should match for identical parameters"
     assert first.path.read_bytes() == second.path.read_bytes(), "SDXL renders should be byte-identical for the same prompt/seed"
+
+
+@pytest.mark.gpu
+def test_images_dedupe_identical_prompts(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> None:
+    helpers.require_gpu_available()
+
+    helpers.ensure_real_adapter(
+        monkeypatch,
+        flags=["SMOKE_ADAPTERS", "SMOKE_IMAGES"],
+        disable_keys=["IMAGES_SDXL_FIXTURE_ONLY", "ADK_USE_FIXTURE"],
+    )
+    helpers.set_env(monkeypatch, {"IMAGES_SDXL_FIXTURE_ONLY": "0"})
+
+    output_dir = tmp_path / "sdxl_dedupe"
+    prompt = "Deduplicated city skyline"
+    seed = 777
+    recent_index = dedupe_utils.RecentIndex()
+
+    with helpers.temp_output_dir(monkeypatch, "IMAGES_SDXL_OUTPUT_DIR", output_dir):
+        first_results = images_stage.render(
+            prompt,
+            {
+                "count": 1,
+                "seed": seed,
+                "dedupe": True,
+                "recent_index": recent_index,
+                "max_images_per_call": 1,
+                "dedupe_phash_threshold": 0,
+            },
+        )
+        second_results = images_stage.render(
+            prompt,
+            {
+                "count": 1,
+                "seed": seed,
+                "dedupe": True,
+                "recent_index": recent_index,
+                "max_images_per_call": 1,
+                "dedupe_phash_threshold": 0,
+            },
+        )
+
+    assert len(first_results) == 1 and len(second_results) == 1
+    primary = first_results[0]
+    duplicate = second_results[0]
+
+    assert "data" in primary, "First render must retain image payload"
+    assert "data" not in duplicate, "Deduped artifact should drop payload"
+
+    canonical_uri = primary.get("uri")
+    assert canonical_uri, "Canonical URI must be recorded for first artifact"
+    assert duplicate.get("uri") == canonical_uri
+    assert duplicate.get("duplicate_of") == canonical_uri
+
+    metadata = duplicate.get("metadata", {})
+    assert metadata.get("deduped") is True, "Deduped artifact metadata should flag dedupe"
+
+
+@pytest.mark.gpu
+def test_images_dedupe_phash_matching(monkeypatch: "pytest.MonkeyPatch", tmp_path: Path) -> None:
+    helpers.require_gpu_available()
+
+    helpers.ensure_real_adapter(
+        monkeypatch,
+        flags=["SMOKE_ADAPTERS", "SMOKE_IMAGES"],
+        disable_keys=["IMAGES_SDXL_FIXTURE_ONLY", "ADK_USE_FIXTURE"],
+    )
+    helpers.set_env(monkeypatch, {"IMAGES_SDXL_FIXTURE_ONLY": "0"})
+
+    prompt_a = "Golden sunset over ocean"
+    prompt_b = "Golden sunset over the ocean"
+    seed = 909
+
+    # Capture baseline perceptual hashes without dedupe to determine a safe threshold.
+    baseline_opts = {
+        "count": 1,
+        "seed": seed,
+        "steps": 20,
+        "cfg_scale": 7.5,
+        "width": 1024,
+        "height": 1024,
+    }
+    phash_a = _render_real_sdxl(
+        monkeypatch,
+        tmp_path,
+        prompt=prompt_a,
+        opts=baseline_opts,
+        subdir="sdxl_phash_baseline_a",
+    )[0].metadata.get("phash")
+    phash_b = _render_real_sdxl(
+        monkeypatch,
+        tmp_path,
+        prompt=prompt_b,
+        opts=baseline_opts,
+        subdir="sdxl_phash_baseline_b",
+    )[0].metadata.get("phash")
+
+    assert isinstance(phash_a, str) and phash_a, "First render must include phash metadata"
+    assert isinstance(phash_b, str) and phash_b, "Second render must include phash metadata"
+
+    phash_distance = dedupe_utils.hamming_distance(phash_a, phash_b)
+    assert phash_distance > 0, "Phash distance should reflect similar-but-not-identical images"
+    phash_threshold = max(phash_distance, 1)
+
+    output_dir = tmp_path / "sdxl_dedupe_phash"
+    recent_index = dedupe_utils.RecentIndex()
+
+    with helpers.temp_output_dir(monkeypatch, "IMAGES_SDXL_OUTPUT_DIR", output_dir):
+        first_results = images_stage.render(
+            prompt_a,
+            {
+                "count": 1,
+                "seed": seed,
+                "dedupe": True,
+                "recent_index": recent_index,
+                "max_images_per_call": 1,
+                "dedupe_phash_threshold": phash_threshold,
+            },
+        )
+        second_results = images_stage.render(
+            prompt_b,
+            {
+                "count": 1,
+                "seed": seed,
+                "dedupe": True,
+                "recent_index": recent_index,
+                "max_images_per_call": 1,
+                "dedupe_phash_threshold": phash_threshold,
+            },
+        )
+
+    assert len(first_results) == 1 and len(second_results) == 1
+    primary = first_results[0]
+    duplicate = second_results[0]
+
+    assert "data" in primary, "Canonical artifact must retain image payload"
+    assert "data" not in duplicate, "Deduped artifact should drop payload"
+
+    primary_uri = primary.get("uri")
+    assert primary_uri, "Canonical artifact must expose a URI"
+    assert duplicate.get("uri") == primary_uri, "Second render should reuse canonical URI"
+    assert duplicate.get("duplicate_of") == primary_uri
+
+    primary_meta = primary.get("metadata", {})
+    duplicate_meta = duplicate.get("metadata", {})
+    assert duplicate_meta.get("deduped") is True
+
+    dup_phash = duplicate_meta.get("phash")
+    assert isinstance(dup_phash, str) and dup_phash, "Deduped artifact metadata must retain phash"
+    assert dedupe_utils.hamming_distance(phash_a, dup_phash) <= phash_threshold
+    assert dedupe_utils.hamming_distance(phash_b, dup_phash) <= phash_threshold

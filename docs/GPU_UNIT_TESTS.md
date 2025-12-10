@@ -295,16 +295,19 @@ This document outlines a set of GPU-enabled unit tests that exercise the real mo
 - **Purpose**: Render same prompt twice with dedupe enabled, verify only 1 artifact stored.
 - **Inputs**: prompt="Test", seed=42, dedupe=True, run twice.
 - **Assertions**:
-  - Second render returns cached URI.
-  - Only 1 PNG file on disk.
+  - Second render reuses the canonical URI from the first call.
+  - Second artifact omits raw image payload and references `duplicate_of`.
   - Metadata includes `deduped=True` on second call.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_images_sdxl_gpu.py::test_images_dedupe_identical_prompts` once GPU run completes.
 
 ### `test_images_dedupe_phash_matching`
-- **Purpose**: Render similar prompts, verify perceptual hash deduplication.
-- **Inputs**: prompt1="Sunset", prompt2="Sunset scene", dedupe=True, phash_threshold=5.
+- **Purpose**: Render near-identical prompts and ensure perceptual-hash dedupe joins them.
+- **Inputs**: prompt1="Golden sunset over ocean", prompt2="Golden sunset over the ocean", dedupe=True, `dedupe_phash_threshold` tuned to measured distance.
 - **Assertions**:
-  - Second render reuses first artifact (phashes within threshold).
-  - Metadata includes `duplicate_of=<uri>`.
+  - Baseline renders expose non-zero phash distance.
+  - Second deduped run reuses the canonical URI from the first call.
+  - Deduped artifact drops payload, sets `duplicate_of`, and marks `metadata.deduped=true`.
+- **Status**: pending (2025-12-09) — see `tests/gpu/test_images_sdxl_gpu.py::test_images_dedupe_phash_matching` once GPU run completes.
 
 ---
 
